@@ -41,7 +41,7 @@ runs:
 
     - name: Restore Datasets
       id: cache-datasets
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: ${{ github.action_path }}/data/external
         key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
@@ -54,7 +54,7 @@ runs:
 
     - name: Save Datasets
       if: steps.cache-datasets.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: ${{ github.action_path }}/data/external
         key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
