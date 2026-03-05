@@ -22,6 +22,37 @@ import sys
 import subprocess
 import argparse
 import platform
+import hashlib
+
+def calculate_docker_hash(script_dir):
+    """Calculates a hash of the files used to build the ViSQOL Docker image."""
+    files_to_hash = [
+        "Dockerfile.visqol",
+        "config.py",
+        "phase2_mos.py",
+        "requirements.txt",
+        "requirements_visqol.txt"
+    ]
+    hasher = hashlib.sha256()
+    for fname in sorted(files_to_hash):
+        fpath = os.path.join(script_dir, fname)
+        if os.path.exists(fpath):
+            with open(fpath, "rb") as f:
+                # Hash the filename and content
+                hasher.update(fname.encode())
+                hasher.update(f.read())
+    return hasher.hexdigest()[:12]
+
+def get_git_tag():
+    """Returns the current git tag if exactly on a tag, else None."""
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--exact-match"],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="FAAC Benchmark Suite")
@@ -31,6 +62,7 @@ def main():
     parser.add_argument("output", help="Output JSON path")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
 
     args = parser.parse_args()
 
@@ -86,20 +118,62 @@ def main():
             print("  3. Run with --skip-mos if you only need encoding metrics.")
             sys.exit(1)
 
-        # Use central image if it exists, otherwise fall back to local build
-        visqol_image = os.environ.get("VISQOL_IMAGE", "faac-visqol")
+        # Docker Image Logic:
+        # 1. Use --visqol-image if provided.
+        # 2. Use VISQOL_IMAGE env var if set.
+        # 3. Otherwise, use ghcr.io/nschimme/faac-benchmark-visqol with a tag.
+        #    - Tag priority: Git tag > Content Hash > latest.
+
+        visqol_image = args.visqol_image or os.environ.get("VISQOL_IMAGE")
+
+        image_name = "ghcr.io/nschimme/faac-benchmark-visqol"
+        git_tag = get_git_tag()
+        content_hash = calculate_docker_hash(script_dir)
+
+        if not visqol_image:
+            # Determine the primary tag we want to use/pull
+            preferred_tag = git_tag or content_hash
+            visqol_image = f"{image_name}:{preferred_tag}"
 
         try:
-            if visqol_image == "faac-visqol":
-                # Build if needed
-                print(f"Building faac-visqol image using {container_tool} (forcing amd64)...")
-                subprocess.run([
-                    container_tool, "build", "--platform", "linux/amd64", "-t", "faac-visqol", "-f",
-                    os.path.join(script_dir, "Dockerfile.visqol"), script_dir
-                ], check=True)
+            # Try to see if we have it locally or can pull it
+            print(f"Checking for ViSQOL image: {visqol_image}")
+            pull_success = False
+
+            # Check if it exists locally first
+            inspect_cmd = [container_tool, "inspect", "--type=image", visqol_image]
+            if subprocess.run(inspect_cmd, capture_output=True).returncode == 0:
+                print(f"Found image {visqol_image} locally.")
+                pull_success = True
             else:
-                print(f"Using central image: {visqol_image}")
-                subprocess.run([container_tool, "pull", "--platform", "linux/amd64", visqol_image], check=True)
+                # Try to pull
+                print(f"Image not found locally. Attempting to pull {visqol_image}...")
+                pull_cmd = [container_tool, "pull", "--platform", "linux/amd64", visqol_image]
+                if subprocess.run(pull_cmd).returncode == 0:
+                    pull_success = True
+                else:
+                    print(f"Could not pull {visqol_image}.")
+
+            if not pull_success:
+                # Fallback: Build locally
+                print(f"Building {image_name} locally...")
+                build_tags = [f"{image_name}:{content_hash}", f"{image_name}:latest"]
+                if git_tag:
+                    build_tags.append(f"{image_name}:{git_tag}")
+
+                build_cmd = [
+                    container_tool, "build", "--platform", "linux/amd64",
+                    "-f", os.path.join(script_dir, "Dockerfile.visqol")
+                ]
+                for tag in build_tags:
+                    build_cmd.extend(["-t", tag])
+                build_cmd.append(script_dir)
+
+                subprocess.run(build_cmd, check=True)
+                # If we were looking for a specific image and build succeeded,
+                # we should use the one we just built (which will be one of the tags)
+                if not args.visqol_image and not os.environ.get("VISQOL_IMAGE"):
+                    visqol_image = f"{image_name}:{content_hash}"
 
             # Run
             print(f"Running MOS computation in {container_tool} (forcing amd64)...")

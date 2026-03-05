@@ -63,15 +63,16 @@ runs:
       shell: bash
       env:
         PYTHONPATH: ${{ github.action_path }}
-        VISQOL_IMAGE: ${{ inputs.visqol-image }}
       run: |
         EXTRA_ARGS=""
         if [ "${{ inputs.skip-mos }}" == "true" ]; then
-          EXTRA_ARGS="--skip-mos"
+          EXTRA_ARGS="$EXTRA_ARGS --skip-mos"
+        fi
+
+        if [ -n "${{ inputs.visqol-image }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --visqol-image ${{ inputs.visqol-image }}"
         fi
         
-        # We need to pass the central image if using container strategy
-        # run_benchmark.py will need to be updated to accept an image override or use a default
         python3 ${{ github.action_path }}/run_benchmark.py \
           "${{ inputs.faac-bin }}" \
           "${{ inputs.libfaac-so }}" \

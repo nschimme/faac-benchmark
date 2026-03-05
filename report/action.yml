@@ -31,7 +31,7 @@ runs:
     - name: Generate Report
       shell: bash
       run: |
-        ARGS="${{ inputs.results-path }}"
+        ARGS="${{ inputs.results-path }} --output report.md"
         if [ -n "${{ inputs.base-sha }}" ]; then ARGS="$ARGS --base-sha ${{ inputs.base-sha }}"; fi
         if [ -n "${{ inputs.cand-sha }}" ]; then ARGS="$ARGS --cand-sha ${{ inputs.cand-sha }}"; fi
         if [ "${{ inputs.summary-only }}" == "true" ]; then ARGS="$ARGS --summary-only"; fi

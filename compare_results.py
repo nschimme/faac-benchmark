@@ -20,6 +20,7 @@
 import json
 import sys
 import os
+import argparse
 from collections import defaultdict
 
 
@@ -219,29 +220,23 @@ def analyze_pair(base_file, cand_file):
 def main():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    summary_only = "--summary-only" in sys.argv
-    if summary_only:
-        sys.argv.remove("--summary-only")
+    parser = argparse.ArgumentParser(description="Consolidate FAAC benchmark results.")
+    parser.add_argument("results_dir", nargs="?", default=os.path.join(SCRIPT_DIR, "results"),
+                        help="Path to the directory containing result JSON files")
+    parser.add_argument("--base-sha", help="Baseline commit SHA")
+    parser.add_argument("--cand-sha", help="Candidate commit SHA")
+    parser.add_argument("--summary-only", action="store_true", help="Generate only the high-signal summary")
+    parser.add_argument("--output", help="Path to write the Markdown report file")
 
-    base_sha = None
-    if "--base-sha" in sys.argv:
-        idx = sys.argv.index("--base-sha")
-        base_sha = sys.argv[idx + 1]
-        sys.argv.pop(idx + 1)
-        sys.argv.pop(idx)
+    args = parser.parse_args()
 
-    cand_sha = None
-    if "--cand-sha" in sys.argv:
-        idx = sys.argv.index("--cand-sha")
-        cand_sha = sys.argv[idx + 1]
-        sys.argv.pop(idx + 1)
-        sys.argv.pop(idx)
-
-    results_dir = sys.argv[1] if len(
-        sys.argv) > 1 else os.path.join(
-        SCRIPT_DIR, "results")
+    results_dir = args.results_dir
+    summary_only = args.summary_only
+    base_sha = args.base_sha
+    cand_sha = args.cand_sha
 
     if not os.path.exists(results_dir):
+        sys.stderr.write(f"Error: Results directory '{results_dir}' does not exist.\n")
         sys.exit(1)
 
     files = os.listdir(results_dir)
@@ -508,8 +503,15 @@ def main():
 
         report.append("\n</details>")
 
-    output = "\n".join(report)
-    sys.stdout.write(output + "\n")
+    output = "\n".join(report) + "\n"
+    sys.stdout.write(output)
+
+    if args.output:
+        try:
+            with open(args.output, "w") as f:
+                f.write(output)
+        except Exception as e:
+            sys.stderr.write(f"Error: Could not write report to {args.output}: {e}\n")
 
     if overall_regression or overall_missing:
         sys.exit(1)

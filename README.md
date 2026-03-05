@@ -99,6 +99,14 @@ This script manages everything for you:
 1.  **Phase 1**: Encodes samples and measures throughput and library size.
 2.  **Phase 2**: Computes perceptual quality (MOS). It automatically attempts to use your local ViSQOL installation or falls back to containerized execution via **Docker** or **Podman**.
 
+#### Docker Image Discovery
+The benchmark suite uses a deterministic approach to find the correct ViSQOL Docker image:
+1.  **Search**: It first looks for a local image named `ghcr.io/nschimme/faac-benchmark-visqol` tagged with the current Git tag (if any) or a short hash of the build files (`Dockerfile.visqol`, etc.).
+2.  **Pull**: If not found locally, it attempts to pull that same image/tag from GitHub Container Registry.
+3.  **Build**: As a last resort, it builds the image locally.
+
+You can override this behavior by passing `--visqol-image <your-image>` to `run_benchmark.py`.
+
 ---
 
 ## Metric Definitions
