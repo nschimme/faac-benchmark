@@ -22,9 +22,9 @@ inputs:
     required: false
     default: 'false'
   visqol-image:
-    description: 'Docker image for ViSQOL'
+    description: 'Docker image for ViSQOL. Defaults to ghcr.io/nschimme/faac-benchmark-visqol with a tag matching the current commit/hash.'
     required: false
-    default: 'ghcr.io/nschimme/faac-benchmark-visqol:latest'
+    default: ''
 
 runs:
   using: 'composite'

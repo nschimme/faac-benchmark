@@ -36,4 +36,12 @@ runs:
         if [ -n "${{ inputs.cand-sha }}" ]; then ARGS="$ARGS --cand-sha ${{ inputs.cand-sha }}"; fi
         if [ "${{ inputs.summary-only }}" == "true" ]; then ARGS="$ARGS --summary-only"; fi
         
-        python3 ${{ github.action_path }}/../compare_results.py $ARGS
+        # Run report generation, but don't fail immediately so we can post the summary
+        python3 ${{ github.action_path }}/../compare_results.py $ARGS || EXIT_CODE=$?
+
+        # Also append to the GitHub Step Summary for visibility
+        if [ -f "report.md" ]; then
+          cat report.md >> $GITHUB_STEP_SUMMARY
+        fi
+
+        exit ${EXIT_CODE:-0}

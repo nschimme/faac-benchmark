@@ -10,7 +10,7 @@ This repository contains the FAAC Benchmark Suite, which provides the objective 
 
 You can use this action in your workflow to run benchmarks. It is recommended to run benchmarks in a matrix and then use the reporting tool to consolidate results.
 
-### Example Workflow
+### Example Workflow (PR Regression Testing)
 
 ```yaml
 jobs:
@@ -18,31 +18,107 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        arch: [amd64]
         precision: [single, double]
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Build FAAC
-        run: |
-          meson setup build -Dfloating-point=${{ matrix.precision }}
-          ninja -C build
-
-      - name: Run Benchmark
-        uses: nschimme/faac-benchmark@master
+      - name: Checkout Candidate
+        uses: actions/checkout@v4
         with:
-          faac-bin: ./build/frontend/faac
-          libfaac-so: ./build/libfaac/libfaac.so
-          run-name: ${{ matrix.precision }}_cand
-          output-json: ./results/${{ matrix.precision }}_cand.json
+          path: candidate
+
+      - name: Build Candidate
+        run: |
+          cd candidate
+          meson setup build_cand -Dfloating-point=${{ matrix.precision }} --buildtype=release
+          ninja -C build_cand
+
+      - name: Determine Baseline SHA
+        id: baseline-sha
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "sha=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout Baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.baseline-sha.outputs.sha }}
+          path: baseline
+
+      - name: Build Baseline
+        run: |
+          cd baseline
+          meson setup build_base -Dfloating-point=${{ matrix.precision }} --buildtype=release
+          ninja -C build_base
+
+      - name: Run Benchmark (Baseline)
+        uses: nschimme/faac-benchmark@v1
+        with:
+          faac-bin: ./baseline/build_base/frontend/faac
+          libfaac-so: ./baseline/build_base/libfaac/libfaac.so
+          run-name: ${{ matrix.arch }}_${{ matrix.precision }}_base
+          output-json: ./results/${{ matrix.arch }}_${{ matrix.precision }}_base.json
+
+      - name: Run Benchmark (Candidate)
+        uses: nschimme/faac-benchmark@v1
+        with:
+          faac-bin: ./candidate/build_cand/frontend/faac
+          libfaac-so: ./candidate/build_cand/libfaac/libfaac.so
+          run-name: ${{ matrix.arch }}_${{ matrix.precision }}_cand
+          output-json: ./results/${{ matrix.arch }}_${{ matrix.precision }}_cand.json
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.arch }}-${{ matrix.precision }}
+          path: results/*.json
 
   report:
     needs: benchmark
     runs-on: ubuntu-latest
+    if: always()
     steps:
-      - uses: nschimme/faac-benchmark/report@master
+      - name: Download all results
+        uses: actions/download-artifact@v4
+        with:
+          path: results
+          pattern: results-*
+          merge-multiple: true
+
+      - name: Generate Report
+        uses: nschimme/faac-benchmark/report@v1
         with:
           results-path: ./results
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          cand-sha: ${{ github.event.pull_request.head.sha }}
 ```
+
+### Action: `nschimme/faac-benchmark`
+
+Runs the encoding benchmark and MOS computation for a single configuration.
+
+| Input | Description | Required | Default |
+| :--- | :--- | :---: | :--- |
+| `faac-bin` | Path to the `faac` binary. | Yes | |
+| `libfaac-so` | Path to the `libfaac.so` library. | Yes | |
+| `run-name` | Identifier for this benchmark run (e.g., `amd64_single_base`). | Yes | |
+| `output-json` | Path where the result JSON should be saved. | Yes | |
+| `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
+| `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
+| `visqol-image` | Docker image for ViSQOL. Defaults to internal discovery logic. | No | `""` |
+
+### Action: `nschimme/faac-benchmark/report`
+
+Consolidates multiple result JSONs into a single Markdown report and GitHub Step Summary.
+
+| Input | Description | Required | Default |
+| :--- | :--- | :---: | :--- |
+| `results-path` | Path to the directory containing result JSON files. | Yes | |
+| `base-sha` | Baseline commit SHA for display in the report. | No | |
+| `cand-sha` | Candidate commit SHA for display in the report. | No | |
+| `summary-only` | Generate only the high-signal summary. | No | `false` |
 
 ---
 
