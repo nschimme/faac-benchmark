@@ -1,0 +1,34 @@
+name: 'FAAC Benchmark Report'
+description: 'Consolidates benchmark results and generates a report.'
+inputs:
+  results-path:
+    description: 'Path to the directory containing result JSON files'
+    required: true
+  base-sha:
+    description: 'Baseline commit SHA'
+    required: false
+  cand-sha:
+    description: 'Candidate commit SHA'
+    required: false
+  summary-only:
+    description: 'Generate only the high-signal summary'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Generate Report
+      shell: bash
+      run: |
+        ARGS="${{ inputs.results-path }}"
+        if [ -n "${{ inputs.base-sha }}" ]; then ARGS="$ARGS --base-sha ${{ inputs.base-sha }}"; fi
+        if [ -n "${{ inputs.cand-sha }}" ]; then ARGS="$ARGS --cand-sha ${{ inputs.cand-sha }}"; fi
+        if [ "${{ inputs.summary-only }}" == "true" ]; then ARGS="$ARGS --summary-only"; fi
+        
+        python3 ${{ github.action_path }}/../compare_results.py $ARGS

@@ -1,0 +1,83 @@
+name: 'FAAC Benchmark Suite'
+description: 'Runs encoding benchmarks and computes MOS scores using ViSQOL.'
+inputs:
+  faac-bin:
+    description: 'Path to the faac binary'
+    required: true
+  libfaac-so:
+    description: 'Path to the libfaac.so library'
+    required: true
+  run-name:
+    description: 'Identifier for this benchmark run'
+    required: true
+  output-json:
+    description: 'Path where the result JSON should be saved'
+    required: true
+  coverage:
+    description: 'Percentage of dataset to cover (1-100)'
+    required: false
+    default: '100'
+  skip-mos:
+    description: 'Skip perceptual quality (MOS) computation'
+    required: false
+    default: 'false'
+  visqol-image:
+    description: 'Docker image for ViSQOL'
+    required: false
+    default: 'ghcr.io/nschimme/faac-benchmark-visqol:latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+        cache-dependency-path: '${{ github.action_path }}/requirements.txt'
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        pip install -r ${{ github.action_path }}/requirements.txt
+
+    - name: Restore Datasets
+      id: cache-datasets
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ github.action_path }}/data/external
+        key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
+
+    - name: Setup Datasets
+      if: steps.cache-datasets.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        python3 ${{ github.action_path }}/setup_datasets.py
+
+    - name: Save Datasets
+      if: steps.cache-datasets.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ github.action_path }}/data/external
+        key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
+
+    - name: Run Benchmark
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        VISQOL_IMAGE: ${{ inputs.visqol-image }}
+      run: |
+        EXTRA_ARGS=""
+        if [ "${{ inputs.skip-mos }}" == "true" ]; then
+          EXTRA_ARGS="--skip-mos"
+        fi
+        
+        # We need to pass the central image if using container strategy
+        # run_benchmark.py will need to be updated to accept an image override or use a default
+        python3 ${{ github.action_path }}/run_benchmark.py \
+          "${{ inputs.faac-bin }}" \
+          "${{ inputs.libfaac-so }}" \
+          "${{ inputs.run-name }}" \
+          "${{ inputs.output-json }}" \
+          --coverage "${{ inputs.coverage }}" \
+          $EXTRA_ARGS
