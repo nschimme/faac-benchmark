@@ -6,6 +6,7 @@ on:
     paths:
       - 'Dockerfile.visqol'
       - 'requirements_visqol.txt'
+      - 'requirements.txt'
       - 'config.py'
       - 'phase2_mos.py'
 
@@ -18,6 +19,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Calculate Content Hash
+        id: calc-hash
+        shell: python
+        run: |
+          import hashlib
+          import os
+          files_to_hash = [
+              "Dockerfile.visqol",
+              "config.py",
+              "phase2_mos.py",
+              "requirements.txt",
+              "requirements_visqol.txt"
+          ]
+          hasher = hashlib.sha256()
+          for fname in sorted(files_to_hash):
+              if os.path.exists(fname):
+                  with open(fname, "rb") as f:
+                      hasher.update(fname.encode())
+                      hasher.update(f.read())
+          content_hash = hasher.hexdigest()[:12]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"hash={content_hash}\n")
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -39,5 +63,6 @@ jobs:
           tags: |
             ghcr.io/nschimme/faac-benchmark-visqol:latest
             ghcr.io/nschimme/faac-benchmark-visqol:${{ github.sha }}
+            ghcr.io/nschimme/faac-benchmark-visqol:${{ steps.calc-hash.outputs.hash }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
