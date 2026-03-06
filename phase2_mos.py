@@ -22,36 +22,75 @@ import sys
 import json
 import tempfile
 import concurrent.futures
-import multiprocessing
+import subprocess
+import shutil
 
 try:
     import ffmpeg
+except ImportError:
+    ffmpeg = None
+
+try:
     import visqol_py
     from visqol_py import ViSQOLMode
-    HAS_VISQOL = True
+    HAS_VISQOL_PY = True
 except ImportError:
-    HAS_VISQOL = False
+    HAS_VISQOL_PY = False
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import SCENARIOS
 
-# Process-local storage for ViSQOL instances
+# Global paths for binary mode
+VISQOL_BIN = os.environ.get("VISQOL_BIN")
+MODEL_DIR = os.environ.get("VISQOL_MODEL_DIR")
+
+def find_visqol_assets():
+    global VISQOL_BIN, MODEL_DIR
+
+    if not VISQOL_BIN:
+        VISQOL_BIN = shutil.which("visqol")
+
+    if not VISQOL_BIN:
+        # Check common location in Docker or build dirs
+        common_locs = ["/app/visqol/bazel-bin/visqol"]
+        for loc in common_locs:
+            if os.path.exists(loc):
+                VISQOL_BIN = loc
+                break
+
+    if VISQOL_BIN and not MODEL_DIR:
+        # Try to find model relative to binary
+        # Case 1: /app/visqol/bazel-bin/visqol -> /app/visqol/model
+        base_dir = os.path.dirname(VISQOL_BIN)
+        rel_model = os.path.abspath(os.path.join(base_dir, "..", "model"))
+        if os.path.exists(rel_model):
+            MODEL_DIR = rel_model
+        else:
+            # Case 2: /usr/local/bin/visqol -> /usr/local/share/visqol/model?
+            # For now, check /app/visqol/model as a fallback
+            if os.path.exists("/app/visqol/model"):
+                MODEL_DIR = "/app/visqol/model"
+
+# Initialize paths
+find_visqol_assets()
+
+# Process-local storage for ViSQOL instances (Python mode)
 _process_visqol_instances = {}
 
 def get_process_visqol(mode_str):
-    if not HAS_VISQOL:
+    if not HAS_VISQOL_PY:
         return None
     if mode_str not in _process_visqol_instances:
         try:
             mode = ViSQOLMode.SPEECH if mode_str == "speech" else ViSQOLMode.AUDIO
             _process_visqol_instances[mode_str] = visqol_py.ViSQOL(mode=mode)
         except Exception as e:
-            print(f" Failed to initialize ViSQOL: {e}")
+            print(f" Failed to initialize ViSQOL Python: {e}")
             _process_visqol_instances[mode_str] = None
     return _process_visqol_instances[mode_str]
 
-def compute_single_mos(key, entry, aac_dir, external_data_dir):
+def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path):
     scenario_name = entry.get("scenario")
     filename = entry.get("filename")
     cfg = SCENARIOS.get(scenario_name)
@@ -62,8 +101,6 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir):
     data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
     ref_input_path = os.path.join(external_data_dir, data_subdir, filename)
 
-    # Results JSON filename usually follows the pattern: {arch}_{precision}_{stage}.json
-    # We can derive the precision suffix from the results filename
     results_filename = os.path.basename(results_path)
     precision_suffix = ""
     if "_base.json" in results_filename:
@@ -71,17 +108,14 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir):
     elif "_cand.json" in results_filename:
         precision_suffix = results_filename.replace("_cand.json", "_cand.aac")
 
-    # Target file is f"{key}_{arch}_{precision}_{stage}.aac"
     target_filename = f"{key}_{precision_suffix}"
     aac_path = os.path.join(aac_dir, target_filename)
 
     if not os.path.exists(aac_path):
-        # Fallback to startswith if precision suffix derivation fails or file not found
         aac_files = [f for f in os.listdir(aac_dir) if f.startswith(key) and f.endswith(".aac")]
         if not aac_files:
             return key, None
         aac_path = os.path.join(aac_dir, aac_files[0])
-
 
     with tempfile.TemporaryDirectory() as tmpdir:
         v_ref = os.path.join(tmpdir, "vref.wav")
@@ -90,21 +124,52 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir):
         v_channels = 1 if cfg["mode"] == "speech" else 2
 
         try:
-            if not HAS_VISQOL:
-                return key, None
+            # 1. Try Python Mode (visqol_py)
+            if HAS_VISQOL_PY:
+                if ffmpeg:
+                    ffmpeg.input(ref_input_path).output(
+                        v_ref, ar=v_rate, ac=v_channels, sample_fmt='s16').run(
+                        quiet=True, overwrite_output=True)
+                    ffmpeg.input(aac_path).output(
+                        v_deg, ar=v_rate, ac=v_channels, sample_fmt='s16').run(
+                        quiet=True, overwrite_output=True)
+                else:
+                    subprocess.run(['ffmpeg', '-i', ref_input_path, '-ar', str(v_rate), '-ac', str(v_channels), '-sample_fmt', 's16', v_ref],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(['ffmpeg', '-i', aac_path, '-ar', str(v_rate), '-ac', str(v_channels), '-sample_fmt', 's16', v_deg],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            ffmpeg.input(ref_input_path).output(
-                v_ref, ar=v_rate, ac=v_channels, sample_fmt='s16').run(
-                quiet=True, overwrite_output=True)
-            ffmpeg.input(aac_path).output(
-                v_deg, ar=v_rate, ac=v_channels, sample_fmt='s16').run(
-                quiet=True, overwrite_output=True)
-
-            if os.path.exists(v_ref) and os.path.exists(v_deg):
                 visqol = get_process_visqol(cfg["mode"])
                 if visqol:
                     result = visqol.measure(v_ref, v_deg)
                     return key, float(result.moslqo)
+
+            # 2. Try Binary Mode
+            if VISQOL_BIN and os.path.exists(VISQOL_BIN):
+                # Ensure WAVs are generated if not already (though they should be from above if ffmpeg worked)
+                if not os.path.exists(v_ref):
+                    subprocess.run(['ffmpeg', '-i', ref_input_path, '-ar', str(v_rate), '-ac', str(v_channels), '-sample_fmt', 's16', v_ref],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(['ffmpeg', '-i', aac_path, '-ar', str(v_rate), '-ac', str(v_channels), '-sample_fmt', 's16', v_deg],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
+
+                if cfg["mode"] == "speech":
+                    cmd.append("--use_speech_mode")
+                    if MODEL_DIR:
+                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite")])
+                else:
+                    if MODEL_DIR:
+                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
+
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+                for line in result.stdout.splitlines():
+                    if "MOS-LQO:" in line:
+                        mos = float(line.split()[-1])
+                        return key, mos
+
         except Exception as e:
             print(f"  Error computing MOS for {key}: {e}")
 
@@ -115,7 +180,6 @@ def main():
         print("Usage: python3 phase2_mos.py <results_json> <aac_dir> <external_data_dir>")
         sys.exit(1)
 
-    global results_path
     results_path = sys.argv[1]
     aac_dir = sys.argv[2]
     external_data_dir = sys.argv[3]
@@ -126,11 +190,13 @@ def main():
     matrix = data.get("matrix", {})
     total = len(matrix)
     num_cpus = os.cpu_count() or 1
-    print(f"Computing MOS for {total} samples using {num_cpus} cores...")
+
+    mode_str = "Python" if HAS_VISQOL_PY else "Binary" if VISQOL_BIN else "Unknown"
+    print(f"Computing MOS for {total} samples using local ViSQOL ({mode_str}, {num_cpus} cores)...")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
         futures = {
-            executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir): key
+            executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path): key
             for key, entry in matrix.items()
         }
 

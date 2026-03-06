@@ -23,6 +23,7 @@ import subprocess
 import argparse
 import platform
 import hashlib
+import shutil
 
 def calculate_docker_hash(script_dir):
     """Calculates a hash of the files used to build the ViSQOL Docker image."""
@@ -86,9 +87,28 @@ def main():
     # Phase 2: MOS
     print(">>> Phase 2: Perceptual Quality (MOS)")
 
-    # Strategy 1: Local Python (check if requirements_visqol are met)
+    # Strategy 1 & 2: Local Python or Local Binary
+    has_local_visqol = False
+
+    # Check for visqol_py
     try:
         import visqol_py
+        print("Found local visqol_py package.")
+        has_local_visqol = True
+    except ImportError:
+        pass
+
+    # Check for visqol binary
+    if not has_local_visqol:
+        visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
+        if visqol_bin:
+            print(f"Found local visqol binary at: {visqol_bin}")
+            has_local_visqol = True
+        elif os.path.exists("/app/visqol/bazel-bin/visqol"):
+            print("Found local visqol binary at common location.")
+            has_local_visqol = True
+
+    if has_local_visqol:
         print("Using local ViSQOL installation...")
         cmd_phase2 = [
             sys.executable, phase2_script,
@@ -97,8 +117,8 @@ def main():
             os.path.join(script_dir, "data", "external")
         ]
         subprocess.run(cmd_phase2, check=True)
-    except ImportError:
-        # Strategy 2: Container (Docker/Podman)
+    else:
+        # Strategy 3: Container (Docker/Podman)
         print("Local ViSQOL not found. Attempting container strategy...")
 
         container_tool = None
@@ -111,11 +131,12 @@ def main():
                 continue
 
         if not container_tool:
-            print(">>> ERROR: No container tool (docker/podman) found.")
+            print(">>> ERROR: No local ViSQOL and no container tool (docker/podman) found.")
             print("Please either:")
             print("  1. Install ViSQOL dependencies: pip install -r requirements_visqol.txt")
-            print("  2. Install Docker or Podman and ensure the daemon/service is running.")
-            print("  3. Run with --skip-mos if you only need encoding metrics.")
+            print("  2. Install a 'visqol' binary and add it to your PATH.")
+            print("  3. Install Docker or Podman and ensure the daemon/service is running.")
+            print("  4. Run with --skip-mos if you only need encoding metrics.")
             sys.exit(1)
 
         # Docker Image Logic:

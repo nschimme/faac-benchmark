@@ -79,6 +79,8 @@ jobs:
     needs: benchmark
     runs-on: ubuntu-latest
     if: always()
+    permissions:
+      pull-requests: write
     steps:
       - name: Download all results
         uses: actions/download-artifact@v4
@@ -93,6 +95,14 @@ jobs:
           results-path: ./results
           base-sha: ${{ github.event.pull_request.base.sha }}
           cand-sha: ${{ github.event.pull_request.head.sha }}
+
+      - name: Post Summary to PR
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body-file summary.md
 ```
 
 ### Action: `nschimme/faac-benchmark`
@@ -111,7 +121,7 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 
 ### Action: `nschimme/faac-benchmark/report`
 
-Consolidates multiple result JSONs into a single Markdown report and GitHub Step Summary.
+Consolidates multiple result JSONs into a single Markdown report and GitHub Step Summary. It also generates a `summary.md` file that can be used to post a PR comment.
 
 | Input | Description | Required | Default |
 | :--- | :--- | :---: | :--- |
@@ -156,6 +166,9 @@ sudo apt-get update && sudo apt-get install -y meson ninja-build bc ffmpeg
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# (Optional) ViSQOL dependencies for MOS computation
+pip install -r requirements_visqol.txt
 ```
 
 ### 2. Prepare Datasets
@@ -173,7 +186,10 @@ python3 run_benchmark.py path/to/faac path/to/libfaac.so my_run results/my_run.j
 
 This script manages everything for you:
 1.  **Phase 1**: Encodes samples and measures throughput and library size.
-2.  **Phase 2**: Computes perceptual quality (MOS). It automatically attempts to use your local ViSQOL installation or falls back to containerized execution via **Docker** or **Podman**.
+2.  **Phase 2**: Computes perceptual quality (MOS). It automatically attempts to use your local ViSQOL installation in the following order:
+    - **Python**: `visqol_py` package.
+    - **Process**: `visqol` binary (found in PATH or via `VISQOL_BIN` env var).
+    - **Docker**: Falls back to containerized execution via **Docker** or **Podman**.
 
 #### Docker Image Discovery
 The benchmark suite uses a deterministic approach to find the correct ViSQOL Docker image:

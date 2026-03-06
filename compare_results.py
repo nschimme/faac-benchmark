@@ -227,6 +227,7 @@ def main():
     parser.add_argument("--cand-sha", help="Candidate commit SHA")
     parser.add_argument("--summary-only", action="store_true", help="Generate only the high-signal summary")
     parser.add_argument("--output", help="Path to write the Markdown report file")
+    parser.add_argument("--summary-output", help="Path to write the Markdown summary file")
 
     args = parser.parse_args()
 
@@ -329,53 +330,46 @@ def main():
         worst_tp_scen, worst_tp_delta = min(
             scenario_tp_deltas, key=lambda x: x[1])
 
-    report = []
+    summary_lines = []
     if overall_regression:
-        report.append("## ❌ Quality Regression Detected")
+        summary_lines.append("## ❌ Quality Regression Detected")
     elif worst_tp_delta < -5.0:
-        report.append("## ⚠️ Performance Regression Detected")
+        summary_lines.append("## ⚠️ Performance Regression Detected")
     elif overall_missing:
-        report.append("## ❌ Incomplete/Missing Data Detected")
+        summary_lines.append("## ❌ Incomplete/Missing Data Detected")
     elif bit_exact_percent == 100.0:
-        report.append("## ✅ Refactor Verified (Bit-Identical)")
+        summary_lines.append("## ✅ Refactor Verified (Bit-Identical)")
     elif total_new_wins > 0 or total_significant_wins > 0 or (total_mos_count > 0 and (total_mos_delta / total_mos_count) > 0.01) or avg_tp_reduction > 5:
-        report.append("## 🚀 Perceptual & Efficiency Improvement")
+        summary_lines.append("## 🚀 Perceptual & Efficiency Improvement")
     else:
-        report.append("## 📊 Benchmark Summary")
+        summary_lines.append("## 📊 Benchmark Summary")
 
-    if not summary_only and (base_sha or cand_sha):
-        report.append("\n### Environment")
-        if base_sha:
-            report.append(f"- **Baseline SHA**: `{base_sha}`")
-        if cand_sha:
-            report.append(f"- **Candidate SHA**: `{cand_sha}`")
-
-    report.append("\n### Summary")
-    report.append("| Metric | Value |")
-    report.append("| :--- | :--- |")
+    summary_lines.append("\n### Summary")
+    summary_lines.append("| Metric | Value |")
+    summary_lines.append("| :--- | :--- |")
 
     # Regressions (Always shown)
     reg_status = "0 ✅" if total_regressions == 0 else f"{total_regressions} ❌"
-    report.append(f"| **Regressions** | {reg_status} |")
+    summary_lines.append(f"| **Regressions** | {reg_status} |")
 
     # New Wins (Only if baseline < threshold and candidate >= threshold)
     if total_new_wins > 0:
-        report.append(f"| **New Wins** | {total_new_wins} 🆕 |")
+        summary_lines.append(f"| **New Wins** | {total_new_wins} 🆕 |")
 
     # Significant Wins (MOS delta > 0.1)
     if total_significant_wins > 0:
-        report.append(f"| **Significant Wins** | {total_significant_wins} 🌟 |")
+        summary_lines.append(f"| **Significant Wins** | {total_significant_wins} 🌟 |")
 
     # Bitstream Consistency (Against baseline)
     consist_status = f"{bit_exact_percent:.1f}%"
     if bit_exact_percent == 100.0:
         consist_status += " (MD5 Match)"
-    report.append(f"| **Consistency** | {consist_status} |")
+    summary_lines.append(f"| **Consistency** | {consist_status} |")
 
     # Throughput
     if abs(avg_tp_reduction) > 0.1:
         tp_icon = "🚀" if avg_tp_reduction > 1.0 else "📉" if avg_tp_reduction < -1.0 else ""
-        report.append(
+        summary_lines.append(
             f"| **Throughput (Avg)** | {avg_tp_reduction:+.1f}% {tp_icon} |")
 
     # Per-signal throughput deltas if available
@@ -394,16 +388,16 @@ def main():
                     f"{signal.split('.')[0]}: {delta:+.1f}% {icon}")
 
     if tp_details:
-        report.append(f"| **TP Breakdown** | {', '.join(tp_details)} |")
+        summary_lines.append(f"| **TP Breakdown** | {', '.join(tp_details)} |")
 
     if worst_tp_delta < -1.0:
-        report.append(
+        summary_lines.append(
             f"| **Worst-case TP Δ** | {worst_tp_delta:.1f}% ({worst_tp_scen}) ⚠️ |")
 
     # Binary Size
     if abs(avg_lib_chg) > 0.01:
         size_icon = "📉" if avg_lib_chg < -0.1 else "📈" if avg_lib_chg > 0.1 else ""
-        report.append(
+        summary_lines.append(
             f"| **Library Size** | {avg_lib_chg:+.2f}% {size_icon} |")
 
 
@@ -411,22 +405,32 @@ def main():
     if abs(avg_bitrate_chg) > 0.1:
         bitrate_icon = "📉" if avg_bitrate_chg < - \
             1.0 else "📈" if avg_bitrate_chg > 1.0 else ""
-        report.append(
+        summary_lines.append(
             f"| **Bitrate Δ** | {avg_bitrate_chg:+.2f}% {bitrate_icon} |")
 
     # Bitrate Accuracy
     if total_bitrate_acc_count > 0:
         acc_icon = "🎯" if avg_bitrate_acc > 95 else "⚠️" if avg_bitrate_acc < 80 else ""
-        report.append(
+        summary_lines.append(
             f"| **Bitrate Accuracy** | {avg_bitrate_acc:.1f}% {acc_icon} |")
 
     # Avg MOS Delta
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
-        report.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
+        summary_lines.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
 
     if total_missing_mos > 0:
-        report.append(
+        summary_lines.append(
             f"\n⚠️ **Warning**: {total_missing_mos} MOS scores were missing/failed (treated as ❌).")
+
+    # Build the full report
+    report = list(summary_lines)
+
+    if not summary_only and (base_sha or cand_sha):
+        report.insert(1, "\n### Environment")
+        if base_sha:
+            report.insert(2, f"- **Baseline SHA**: `{base_sha}`")
+        if cand_sha:
+            report.insert(3, f"- **Candidate SHA**: `{cand_sha}`")
 
     if not summary_only:
         # 1. Collapsible Details: Regressions
@@ -503,15 +507,40 @@ def main():
 
         report.append("\n</details>")
 
-    output = "\n".join(report) + "\n"
-    sys.stdout.write(output)
+    # Prepare outputs
+    full_output = "\n".join(report) + "\n"
 
+    # Add link to full report in summary if requested
+    github_server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    github_repository = os.environ.get("GITHUB_REPOSITORY", "")
+    github_run_id = os.environ.get("GITHUB_RUN_ID", "")
+
+    if github_repository and github_run_id:
+        full_report_url = f"{github_server_url}/{github_repository}/actions/runs/{github_run_id}"
+        summary_lines.append(f"\n[View Full Report]({full_report_url})")
+
+    summary_output = "\n".join(summary_lines) + "\n"
+
+    # Write to stdout
+    if summary_only:
+        sys.stdout.write(summary_output)
+    else:
+        sys.stdout.write(full_output)
+
+    # Write to files
     if args.output:
         try:
             with open(args.output, "w") as f:
-                f.write(output)
+                f.write(full_output)
         except Exception as e:
             sys.stderr.write(f"Error: Could not write report to {args.output}: {e}\n")
+
+    if args.summary_output:
+        try:
+            with open(args.summary_output, "w") as f:
+                f.write(summary_output)
+        except Exception as e:
+            sys.stderr.write(f"Error: Could not write summary to {args.summary_output}: {e}\n")
 
     if overall_regression or overall_missing:
         sys.exit(1)
