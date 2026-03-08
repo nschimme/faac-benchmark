@@ -135,7 +135,7 @@ def analyze_pair(base_file, cand_file):
                 suite_results["bit_exact_count"] += 1
 
             size_chg = "N/A"
-            if o_size is not None and b_size is not None:
+            if o_size is not None and b_size is not None and b_size > 0:
                 size_chg_val = (o_size - b_size) / b_size * 100
                 size_chg = f"{size_chg_val:+.2f}%"
                 suite_results["bitrate_chg_sum"] += size_chg_val
