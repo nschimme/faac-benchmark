@@ -25,6 +25,19 @@ inputs:
     description: 'Docker image for ViSQOL. Defaults to ghcr.io/nschimme/faac-benchmark-visqol with a tag matching the current commit/hash.'
     required: false
     default: ''
+  sha:
+    description: 'Commit SHA to associate with these results. Defaults to github.sha.'
+    required: false
+    default: '${{ github.sha }}'
+  scenarios:
+    description: 'Comma-separated list of scenarios to run'
+    required: false
+  include-tests:
+    description: 'Comma-separated list of test filename globs to include'
+    required: false
+  exclude-tests:
+    description: 'Comma-separated list of test filename globs to exclude'
+    required: false
 
 runs:
   using: 'composite'
@@ -71,6 +84,22 @@ runs:
 
         if [ -n "${{ inputs.visqol-image }}" ]; then
           EXTRA_ARGS="$EXTRA_ARGS --visqol-image ${{ inputs.visqol-image }}"
+        fi
+
+        if [ -n "${{ inputs.sha }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --sha ${{ inputs.sha }}"
+        fi
+
+        if [ -n "${{ inputs.scenarios }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --scenarios ${{ inputs.scenarios }}"
+        fi
+
+        if [ -n "${{ inputs.include-tests }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --include-tests ${{ inputs.include-tests }}"
+        fi
+
+        if [ -n "${{ inputs.exclude-tests }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --exclude-tests ${{ inputs.exclude-tests }}"
         fi
         
         python3 ${{ github.action_path }}/run_benchmark.py \

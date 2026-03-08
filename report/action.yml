@@ -5,10 +5,10 @@ inputs:
     description: 'Path to the directory containing result JSON files'
     required: true
   base-sha:
-    description: 'Baseline commit SHA'
+    description: 'Baseline commit SHA (Optional, will be pulled from result JSON if available)'
     required: false
   cand-sha:
-    description: 'Candidate commit SHA'
+    description: 'Candidate commit SHA (Optional, will be pulled from result JSON if available)'
     required: false
   summary-only:
     description: 'Generate only the high-signal summary'
