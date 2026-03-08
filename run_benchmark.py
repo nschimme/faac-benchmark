@@ -64,6 +64,10 @@ def main():
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
+    parser.add_argument("--sha", help="Commit SHA to associate with these results")
+    parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
+    parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
+    parser.add_argument("--exclude-tests", help="Comma-separated list of test filename globs to exclude")
 
     args = parser.parse_args()
 
@@ -78,6 +82,15 @@ def main():
         args.faac_bin, args.lib_path, args.name, args.output,
         "--coverage", str(args.coverage)
     ]
+    if args.sha:
+        cmd_phase1.extend(["--sha", args.sha])
+    if args.scenarios:
+        cmd_phase1.extend(["--scenarios", args.scenarios])
+    if args.include_tests:
+        cmd_phase1.extend(["--include-tests", args.include_tests])
+    if args.exclude_tests:
+        cmd_phase1.extend(["--exclude-tests", args.exclude_tests])
+
     subprocess.run(cmd_phase1, check=True)
 
     if args.skip_mos:

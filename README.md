@@ -118,6 +118,10 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
 | `visqol-image` | Docker image for ViSQOL. Defaults to internal discovery logic. | No | `""` |
+| `sha` | Commit SHA to associate with these results. | No | `${{ github.sha }}` |
+| `scenarios` | Comma-separated list of scenarios to run (e.g., `voip,vss`). | No | |
+| `include-tests` | Comma-separated list of test filename globs to include (e.g., `TCD_*`). | No | |
+| `exclude-tests` | Comma-separated list of test filename globs to exclude. | No | |
 
 ### Action: `nschimme/faac-benchmark/report`
 
@@ -126,8 +130,8 @@ Consolidates multiple result JSONs into a single Markdown report and GitHub Step
 | Input | Description | Required | Default |
 | :--- | :--- | :---: | :--- |
 | `results-path` | Path to the directory containing result JSON files. | Yes | |
-| `base-sha` | Baseline commit SHA for display in the report. | No | |
-| `cand-sha` | Candidate commit SHA for display in the report. | No | |
+| `base-sha` | Baseline commit SHA. If not provided, it is pulled from result JSONs. | No | |
+| `cand-sha` | Candidate commit SHA. If not provided, it is pulled from result JSONs. | No | |
 | `summary-only` | Generate only the high-signal summary. | No | `false` |
 
 ---
@@ -181,7 +185,20 @@ python3 setup_datasets.py
 
 You can run the full benchmark using the user-friendly entrypoint:
 ```bash
-python3 run_benchmark.py path/to/faac path/to/libfaac.so my_run results/my_run.json --coverage 100
+python3 run_benchmark.py path/to/faac path/to/libfaac.so my_run results/my_run.json --coverage 100 --sha $(git rev-parse HEAD)
+```
+
+#### Filtering Tests and Scenarios
+To speed up development, you can run only specific scenarios or test cases:
+```bash
+# Run only the music scenarios
+python3 run_benchmark.py ... --scenarios music_low,music_std
+
+# Run only samples starting with "TCD_"
+python3 run_benchmark.py ... --include-tests "TCD_*"
+
+# Exclude a specific noisy sample
+python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 ```
 
 This script manages everything for you:
@@ -206,7 +223,7 @@ You can override this behavior by passing `--visqol-image <your-image>` to `run_
 | Metric | Definition | Reference |
 | :--- | :--- | :--- |
 | **MOS** | Mean Opinion Score (LQO). Predicted perceptual quality from 1.0 (Bad) to 5.0 (Excellent), computed via the **ViSQOL** model. | [ITU-T P.800](https://www.itu.int/rec/T-REC-P.800), [ViSQOL](https://github.com/google/visqol) |
-| **Regressions** | Critical failure or a drop in MOS ≥ 0.1 compared to the baseline commit. Significant throughput drops (>10%) or increased binary size also warrant review. | |
+| **Regressions** | Categorized into three levels: **Critical** (💀) if quality drops below threshold, **Significant** (❌) if MOS drop > 0.1, and **Minor** (⚠️) if MOS drop > 0.05. | |
 | **Significant Win** | An improvement in MOS ≥ 0.1 compared to the baseline commit. | |
 | **Consistency** | Percentage of test cases where bitstreams are MD5-identical to the baseline. | |
 | **Throughput** | Normalized encoding speed improvement against baseline. Higher % indicates faster execution. | |

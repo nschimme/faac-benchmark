@@ -23,8 +23,10 @@ import time
 import sys
 import json
 import hashlib
+import argparse
 import concurrent.futures
 import multiprocessing
+import fnmatch
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -114,11 +116,16 @@ def run_benchmark(
         lib_path,
         precision,
         coverage=100,
-        run_perceptual=True):
+        run_perceptual=True,
+        sha=None,
+        scenarios=None,
+        include_tests=None,
+        exclude_tests=None):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     results = {
+        "sha": sha,
         "matrix": {},
         "throughput": {},
         "lib_size": get_binary_size(lib_path)
@@ -130,7 +137,15 @@ def run_benchmark(
         num_cpus = os.cpu_count() or 1
         print(f"Parallelizing across {num_cpus} threads.")
 
-        for name, cfg in SCENARIOS.items():
+        scenario_list = SCENARIOS.keys()
+        if scenarios:
+            scenario_list = [s.strip() for s in scenarios.split(",")]
+
+        for name in scenario_list:
+            if name not in SCENARIOS:
+                print(f"  [Scenario: {name}] Warning: Scenario not found in config, skipping.")
+                continue
+            cfg = SCENARIOS[name]
             data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
             data_dir = os.path.join(EXTERNAL_DATA_DIR, data_subdir)
             if not os.path.exists(data_dir):
@@ -140,9 +155,21 @@ def run_benchmark(
 
             all_samples = sorted(
                 [f for f in os.listdir(data_dir) if f.endswith(".wav")])
-            num_to_run = max(1, int(len(all_samples) * coverage / 100.0))
-            step = len(all_samples) / num_to_run if num_to_run > 0 else 1
-            samples = [all_samples[int(i * step)] for i in range(num_to_run)]
+
+            # Apply include/exclude filters
+            filtered_samples = []
+            includes = [i.strip() for i in include_tests.split(",")] if include_tests else ["*"]
+            excludes = [e.strip() for e in exclude_tests.split(",")] if exclude_tests else []
+
+            for sample in all_samples:
+                should_include = any(fnmatch.fnmatch(sample, i) for i in includes)
+                should_exclude = any(fnmatch.fnmatch(sample, e) for e in excludes)
+                if should_include and not should_exclude:
+                    filtered_samples.append(sample)
+
+            num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
+            step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
+            samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
 
             print(f"  [Scenario: {name}] Processing {len(samples)} samples (coverage {coverage}%)...")
 
@@ -234,26 +261,33 @@ def run_benchmark(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 5:
-        print(
-            "Usage: python3 phase1_encode.py <faac_bin_path> <lib_path> <precision_name> <output_json> [--skip-mos] [--coverage 100]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Phase 1: Encoding and Basic Metrics")
+    parser.add_argument("faac_bin", help="Path to faac binary")
+    parser.add_argument("lib_path", help="Path to libfaac.so")
+    parser.add_argument("precision", help="Precision name")
+    parser.add_argument("output", help="Output JSON path")
+    parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
+    parser.add_argument("--sha", help="Commit SHA")
+    parser.add_argument("--scenarios", help="Comma-separated scenarios")
+    parser.add_argument("--include-tests", help="Comma-separated include globs")
+    parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
 
-    do_perc = "--skip-mos" not in sys.argv
-    coverage = 100
-    if "--coverage" in sys.argv:
-        idx = sys.argv.index("--coverage")
-        coverage = int(sys.argv[idx + 1])
+    args = parser.parse_args()
 
     data = run_benchmark(
-        sys.argv[1],
-        sys.argv[2],
-        sys.argv[3],
-        coverage=coverage,
-        run_perceptual=do_perc)
+        args.faac_bin,
+        args.lib_path,
+        args.precision,
+        coverage=args.coverage,
+        run_perceptual=not args.skip_mos,
+        sha=args.sha,
+        scenarios=args.scenarios,
+        include_tests=args.include_tests,
+        exclude_tests=args.exclude_tests)
 
     # Ensure results directory exists
-    output_json = os.path.abspath(sys.argv[4])
+    output_json = os.path.abspath(args.output)
     os.makedirs(os.path.dirname(output_json), exist_ok=True)
     with open(output_json, "w") as f:
         json.dump(data, f, indent=2)

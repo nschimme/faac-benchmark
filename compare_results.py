@@ -53,20 +53,33 @@ def analyze_pair(base_file, cand_file):
         "bitrate_count": 0,
         "bitrate_acc_sum": 0,
         "bitrate_acc_count": 0,
+        "bitrate_bias_sum": 0,
         "regressions": [],
+        "reg_critical": [],
+        "reg_significant": [],
+        "reg_minor": [],
         "new_wins": [],
         "significant_wins": [],
         "opportunities": [],
         "bit_exact_count": 0,
         "total_cases": 0,
         "all_cases": [],
+        "worst_mos_drop": (0, "N/A"),
+        "worst_bitrate_err": (0, "N/A"),
         "scenario_stats": defaultdict(
             lambda: {
                 "tp_sum_cand": 0,
                 "tp_sum_base": 0,
+                "mos_delta_sum": 0,
+                "mos_count": 0,
+                "bitrate_acc_sum": 0,
+                "bitrate_acc_count": 0,
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
-        "cand_tp": cand.get("throughput", {})}
+        "cand_tp": cand.get("throughput", {}),
+        "base_sha": base.get("sha"),
+        "cand_sha": cand.get("sha")
+    }
 
     base_m = base.get("matrix", {})
     cand_m = cand.get("matrix", {})
@@ -91,18 +104,29 @@ def analyze_pair(base_file, cand_file):
             o_bitrate = o.get("bitrate")
             o_target = o.get("bitrate_target")
 
+            acc = None
+            bitrate_err = None
             if o_bitrate is not None and o_target is not None and o_target > 0:
+                bitrate_err = (o_bitrate - o_target) / o_target * 100
                 acc = (1.0 - abs(o_bitrate - o_target) / o_target) * 100
                 suite_results["bitrate_acc_sum"] += acc
                 suite_results["bitrate_acc_count"] += 1
+                suite_results["bitrate_bias_sum"] += bitrate_err
+                suite_results["scenario_stats"][scenario]["bitrate_acc_sum"] += acc
+                suite_results["scenario_stats"][scenario]["bitrate_acc_count"] += 1
+
+                if abs(bitrate_err) > abs(suite_results["worst_bitrate_err"][0]):
+                    suite_results["worst_bitrate_err"] = (bitrate_err, display_name)
 
             o_time = o.get("time")
             b_time = b.get("time")
+            speed_delta = None
 
             if o_time is not None and b_time is not None and b_time > 0:
                 suite_results["scenario_stats"][scenario]["tp_sum_cand"] += o_time
                 suite_results["scenario_stats"][scenario]["tp_sum_base"] += b_time
                 suite_results["scenario_stats"][scenario]["count"] += 1
+                speed_delta = (1 - o_time / b_time) * 100
 
             o_md5 = o.get("md5", "")
             b_md5 = b.get("md5", "")
@@ -111,7 +135,7 @@ def analyze_pair(base_file, cand_file):
                 suite_results["bit_exact_count"] += 1
 
             size_chg = "N/A"
-            if o_size is not None and b_size is not None:
+            if o_size is not None and b_size is not None and b_size > 0:
                 size_chg_val = (o_size - b_size) / b_size * 100
                 size_chg = f"{size_chg_val:+.2f}%"
                 suite_results["bitrate_chg_sum"] += size_chg_val
@@ -121,11 +145,18 @@ def analyze_pair(base_file, cand_file):
 
             status = "✅"
             delta = 0
+            bit_exact = "MATCH" if o_md5 and b_md5 and o_md5 == b_md5 else "❌"
+
             if o_mos is not None:
                 if b_mos is not None:
                     delta = o_mos - b_mos
                     suite_results["mos_delta_sum"] += delta
                     suite_results["mos_count"] += 1
+                    suite_results["scenario_stats"][scenario]["mos_delta_sum"] += delta
+                    suite_results["scenario_stats"][scenario]["mos_count"] += 1
+
+                    if delta < suite_results["worst_mos_drop"][0]:
+                        suite_results["worst_mos_drop"] = (delta, display_name)
 
                 if o_mos < (thresh - 0.5):
                     status = "🤮"  # Awful
@@ -133,10 +164,15 @@ def analyze_pair(base_file, cand_file):
                     status = "📉"  # Bad/Poor
 
                 if b_mos is not None:
-                    if (o_mos - b_mos) < -0.1:
-                        status = "❌"  # Regression
+                    if b_mos >= thresh and o_mos < thresh:
+                        status = "💀" # Critical Regression
                         suite_results["has_regression"] = True
-                    elif (o_mos - b_mos) > 0.1:
+                    elif delta < -0.1:
+                        status = "❌"  # Significant Regression
+                        suite_results["has_regression"] = True
+                    elif delta < -0.05:
+                        status = "⚠️"  # Minor Regression
+                    elif delta > 0.1:
                         status = "🌟"  # Significant Win
 
                 # Check for New Win (Baseline failed, Candidate passed)
@@ -158,6 +194,10 @@ def analyze_pair(base_file, cand_file):
             b_mos_str = f"{b_mos:.2f}" if b_mos is not None else "N/A"
             delta_mos = f"{(o_mos - b_mos):+.2f}" if (
                 o_mos is not None and b_mos is not None) else "N/A"
+            target_str = f"{o_target}k" if o_target else "N/A"
+            actual_str = f"{o_bitrate:.1f}k" if o_bitrate else "N/A"
+            acc_str = f"{acc:.1f}%" if acc is not None else "N/A"
+            speed_str = f"{speed_delta:+.1f}%" if speed_delta is not None else "N/A"
 
             case_data = {
                 "display_name": display_name,
@@ -166,11 +206,18 @@ def analyze_pair(base_file, cand_file):
                 "b_mos": b_mos,
                 "delta": delta,
                 "size_chg": size_chg,
-                "line": f"| {display_name} | {status} | {mos_str} ({b_mos_str}) | {delta_mos} | {size_chg} |"
+                "line": f"| {display_name} | {status} | {mos_str} ({b_mos_str}) | {delta_mos} | {target_str} | {actual_str} | {acc_str} | {speed_str} | {bit_exact} |"
             }
 
             suite_results["all_cases"].append(case_data)
-            if status == "❌":
+            if status == "💀":
+                suite_results["reg_critical"].append(case_data)
+                suite_results["regressions"].append(case_data)
+            elif status == "❌":
+                suite_results["reg_significant"].append(case_data)
+                suite_results["regressions"].append(case_data)
+            elif status == "⚠️":
+                suite_results["reg_minor"].append(case_data)
                 suite_results["regressions"].append(case_data)
             elif status == "🌟":
                 suite_results["significant_wins"].append(case_data)
@@ -180,6 +227,9 @@ def analyze_pair(base_file, cand_file):
         suite_results["missing_data"] = True
 
     # Sorts
+    suite_results["reg_critical"].sort(key=lambda x: x["delta"])
+    suite_results["reg_significant"].sort(key=lambda x: x["delta"])
+    suite_results["reg_minor"].sort(key=lambda x: x["delta"])
     suite_results["regressions"].sort(key=lambda x: x["delta"])
     suite_results["new_wins"].sort(key=lambda x: x["delta"], reverse=True)
     suite_results["significant_wins"].sort(
@@ -269,12 +319,22 @@ def main():
     total_bitrate_count = 0
     total_bitrate_acc_sum = 0
     total_bitrate_acc_count = 0
+    total_bitrate_bias_sum = 0
 
     total_regressions = 0
+    total_reg_critical = 0
+    total_reg_significant = 0
+    total_reg_minor = 0
     total_new_wins = 0
     total_significant_wins = 0
     total_bit_exact = 0
     total_cases_all = 0
+
+    final_base_sha = base_sha
+    final_cand_sha = cand_sha
+
+    worst_mos_drop = (0, "N/A")
+    worst_bitrate_err = (0, "N/A")
 
     # For worst-case scenario throughput
     scenario_tp_deltas = []
@@ -296,12 +356,27 @@ def main():
             total_bitrate_count += data["bitrate_count"]
             total_bitrate_acc_sum += data["bitrate_acc_sum"]
             total_bitrate_acc_count += data["bitrate_acc_count"]
+            total_bitrate_bias_sum += data["bitrate_bias_sum"]
 
             total_regressions += len(data["regressions"])
+            total_reg_critical += len(data["reg_critical"])
+            total_reg_significant += len(data["reg_significant"])
+            total_reg_minor += len(data["reg_minor"])
+
             total_new_wins += len(data["new_wins"])
             total_significant_wins += len(data["significant_wins"])
             total_bit_exact += data["bit_exact_count"]
             total_cases_all += data["total_cases"]
+
+            if not final_base_sha and data["base_sha"]:
+                final_base_sha = data["base_sha"]
+            if not final_cand_sha and data["cand_sha"]:
+                final_cand_sha = data["cand_sha"]
+
+            if data["worst_mos_drop"][0] < worst_mos_drop[0]:
+                worst_mos_drop = data["worst_mos_drop"]
+            if abs(data["worst_bitrate_err"][0]) > abs(worst_bitrate_err[0]):
+                worst_bitrate_err = data["worst_bitrate_err"]
 
             for sc_name, sc_data in data["scenario_stats"].items():
                 if sc_data["tp_sum_base"] > 0:
@@ -317,6 +392,8 @@ def main():
     avg_bitrate_chg = total_bitrate_chg / \
         total_bitrate_count if total_bitrate_count > 0 else 0
     avg_bitrate_acc = total_bitrate_acc_sum / \
+        total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
+    avg_bitrate_bias = total_bitrate_bias_sum / \
         total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
 
     bit_exact_percent = (
@@ -349,8 +426,22 @@ def main():
     summary_lines.append("| :--- | :--- |")
 
     # Regressions (Always shown)
-    reg_status = "0 ✅" if total_regressions == 0 else f"{total_regressions} ❌"
-    summary_lines.append(f"| **Regressions** | {reg_status} |")
+    if total_regressions == 0:
+        summary_lines.append(f"| **Regressions** | 0 ✅ |")
+    else:
+        reg_parts = []
+        if total_reg_critical: reg_parts.append(f"{total_reg_critical} 💀")
+        if total_reg_significant: reg_parts.append(f"{total_reg_significant} ❌")
+        if total_reg_minor: reg_parts.append(f"{total_reg_minor} ⚠️")
+        summary_lines.append(f"| **Regressions** | {', '.join(reg_parts)} |")
+
+    # Worst-Case Outliers
+    if worst_mos_drop[0] < -0.01:
+        summary_lines.append(f"| **Worst MOS Drop** | {worst_mos_drop[0]:.2f} ({worst_mos_drop[1]}) |")
+
+    if abs(worst_bitrate_err[0]) > 1.0:
+        err_icon = "📈" if worst_bitrate_err[0] > 0 else "📉"
+        summary_lines.append(f"| **Max Bitrate Err** | {worst_bitrate_err[0]:+.1f}% ({worst_bitrate_err[1]}) {err_icon} |")
 
     # New Wins (Only if baseline < threshold and candidate >= threshold)
     if total_new_wins > 0:
@@ -408,11 +499,16 @@ def main():
         summary_lines.append(
             f"| **Bitrate Δ** | {avg_bitrate_chg:+.2f}% {bitrate_icon} |")
 
-    # Bitrate Accuracy
+    # Bitrate Accuracy & Bias
     if total_bitrate_acc_count > 0:
         acc_icon = "🎯" if avg_bitrate_acc > 95 else "⚠️" if avg_bitrate_acc < 80 else ""
         summary_lines.append(
             f"| **Bitrate Accuracy** | {avg_bitrate_acc:.1f}% {acc_icon} |")
+
+        bias_icon = "📈" if avg_bitrate_bias > 2.0 else "📉" if avg_bitrate_bias < -2.0 else "🎯"
+        bias_desc = "(Overshooting)" if avg_bitrate_bias > 0.5 else "(Undershooting)" if avg_bitrate_bias < -0.5 else "(Balanced)"
+        summary_lines.append(
+            f"| **Bitrate Bias** | {avg_bitrate_bias:+.1f}% {bias_desc} {bias_icon} |")
 
     # Avg MOS Delta
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
@@ -425,14 +521,37 @@ def main():
     # Build the full report
     report = list(summary_lines)
 
-    if not summary_only and (base_sha or cand_sha):
+    if not summary_only and (final_base_sha or final_cand_sha):
         report.insert(1, "\n### Environment")
-        if base_sha:
-            report.insert(2, f"- **Baseline SHA**: `{base_sha}`")
-        if cand_sha:
-            report.insert(3, f"- **Candidate SHA**: `{cand_sha}`")
+        if final_base_sha:
+            report.insert(2, f"- **Baseline SHA**: `{final_base_sha}`")
+        if final_cand_sha:
+            report.insert(3, f"- **Candidate SHA**: `{final_cand_sha}`")
 
     if not summary_only:
+        # Scenario Performance Table
+        report.append("\n### Scenario Performance")
+        report.append("| Scenario | Avg MOS Δ | Throughput Δ | Bitrate Acc |")
+        report.append("| :--- | :---: | :---: | :---: |")
+
+        # Aggregating across all suites for scenarios
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0})
+        for suite_data in all_suite_data.values():
+            for sc_name, sc_stats in suite_data["scenario_stats"].items():
+                global_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
+                global_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
+                global_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
+                global_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
+                global_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
+                global_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
+
+        for sc_name in sorted(global_scenario_stats.keys()):
+            gs = global_scenario_stats[sc_name]
+            sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
+            sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
+            sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
+            report.append(f"| {sc_name} | {sc_mos_delta} | {sc_tp_delta} | {sc_acc} |")
+
         # 1. Collapsible Details: Regressions
         if total_regressions > 0:
             report.append(
@@ -441,8 +560,8 @@ def main():
                 if data["regressions"]:
                     report.append(f"\n#### {name}")
                     report.append(
-                        "| Test Case | Status | MOS (Base) | Delta | Size Δ |")
-                    report.append("| :--- | :---: | :---: | :---: | :---: |")
+                        "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                     for r in data["regressions"]:
                         report.append(r["line"])
             report.append("\n</details>")
@@ -482,16 +601,16 @@ def main():
             if data["significant_wins"]:
                 report.append("\n**🌟 Significant Wins**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Size Δ |")
-                report.append("| :--- | :---: | :---: | :---: | :---: |")
+                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for w in data["significant_wins"]:
                     report.append(w["line"])
 
             if data["opportunities"]:
                 report.append("\n**💡 Opportunities**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Size Δ |")
-                report.append("| :--- | :---: | :---: | :---: | :---: |")
+                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for o in data["opportunities"]:
                     report.append(o["line"])
 
@@ -499,8 +618,8 @@ def main():
                 report.append(
                     f"\n<details><summary>View all {len(data['all_cases'])} cases for {name}</summary>\n")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Size Δ |")
-                report.append("| :--- | :---: | :---: | :---: | :---: |")
+                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for c in data["all_cases"]:
                     report.append(c["line"])
                 report.append("\n</details>")
