@@ -64,7 +64,7 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env):
+def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.aac")
@@ -72,6 +72,8 @@ def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env):
     # Determine encoding parameters
     cmd = [faac_bin_path, "-o", output_path, input_path]
     cmd.extend(["-b", str(cfg["bitrate"])])
+    if extra_args:
+        cmd.extend(extra_args)
 
     try:
         t_start = time.time()
@@ -120,7 +122,8 @@ def run_benchmark(
         sha=None,
         scenarios=None,
         include_tests=None,
-        exclude_tests=None):
+        exclude_tests=None,
+        extra_args=None):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -197,7 +200,8 @@ def run_benchmark(
                         sample,
                         data_dir,
                         precision,
-                        env): sample for sample in samples}
+                        env,
+                        extra_args): sample for sample in samples}
                 for i, future in enumerate(
                         concurrent.futures.as_completed(futures)):
                     result = future.result()
@@ -276,9 +280,11 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", help="Comma-separated scenarios")
     parser.add_argument("--include-tests", help="Comma-separated include globs")
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
+    parser.add_argument("--extra-args", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
 
     args = parser.parse_args()
 
+    extra_args = args.extra_args.split() if args.extra_args else None
     data = run_benchmark(
         args.faac_bin,
         args.lib_path,
@@ -288,7 +294,8 @@ if __name__ == "__main__":
         sha=args.sha,
         scenarios=args.scenarios,
         include_tests=args.include_tests,
-        exclude_tests=args.exclude_tests)
+        exclude_tests=args.exclude_tests,
+        extra_args=extra_args)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

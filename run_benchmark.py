@@ -68,6 +68,7 @@ def main():
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
     parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
     parser.add_argument("--exclude-tests", help="Comma-separated list of test filename globs to exclude")
+    parser.add_argument("--extra-args", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
 
     args = parser.parse_args()
 
@@ -90,6 +91,8 @@ def main():
         cmd_phase1.extend(["--include-tests", args.include_tests])
     if args.exclude_tests:
         cmd_phase1.extend(["--exclude-tests", args.exclude_tests])
+    if args.extra_args:
+        cmd_phase1.extend(["--extra-args", args.extra_args])
 
     subprocess.run(cmd_phase1, check=True)
 
