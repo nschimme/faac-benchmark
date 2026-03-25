@@ -117,6 +117,14 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path):
             return key, None
         aac_path = os.path.join(aac_dir, aac_files[0])
 
+    # FFmpeg read gate: verify the AAC file decodes without error
+    try:
+        ffmpeg.input(aac_path).output('pipe:', format='s16le').run(
+            quiet=True, capture_stdout=True, capture_stderr=True)
+    except Exception as e:
+        print(f"  FFmpeg decode gate failed for {key}: {e}")
+        return key, 1.0
+
     with tempfile.TemporaryDirectory() as tmpdir:
         v_ref = os.path.join(tmpdir, "vref.wav")
         v_deg = os.path.join(tmpdir, "vdeg.wav")
@@ -191,13 +199,19 @@ def main():
     total = len(matrix)
     num_cpus = os.cpu_count() or 1
 
+    # Filter to entries that don't already have a MOS score
+    pending = {key: entry for key, entry in matrix.items() if entry.get("mos") is None}
+    skipped = total - len(pending)
+    if skipped > 0:
+        print(f"Skipping {skipped} entries with existing MOS scores.")
+
     mode_str = "Python" if HAS_VISQOL_PY else "Binary" if VISQOL_BIN else "Unknown"
-    print(f"Computing MOS for {total} samples using local ViSQOL ({mode_str}, {num_cpus} cores)...")
+    print(f"Computing MOS for {len(pending)} samples using local ViSQOL ({mode_str}, {num_cpus} cores)...")
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
         futures = {
             executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path): key
-            for key, entry in matrix.items()
+            for key, entry in pending.items()
         }
 
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
@@ -205,7 +219,7 @@ def main():
             if mos is not None:
                 matrix[key]["mos"] = mos
             mos_str = f"{mos:.2f}" if mos is not None else "N/A"
-            print(f"  ({i+1}/{total}) {key}: {mos_str}")
+            print(f"  ({i+1}/{len(pending)}) {key}: {mos_str}")
 
     with open(results_path, 'w') as f:
         json.dump(data, f, indent=2)
