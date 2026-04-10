@@ -67,6 +67,8 @@ def main():
     parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
     parser.add_argument("--exclude-tests", help="Comma-separated list of test filename globs to exclude")
     parser.add_argument("--extra-args", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
+    parser.add_argument("--backend", choices=["auto", "docker", "visqol", "visqol-py", "visqol-python"],
+                        default="auto", help="ViSQOL backend to use")
 
     args = parser.parse_args()
 
@@ -101,66 +103,83 @@ def main():
     # Phase 2: MOS
     print(">>> Phase 2: Perceptual Quality (MOS)")
 
-    # Strategy 1 & 2: Local Python or Local Binary
-    has_local_visqol = False
+    selected_backend = args.backend
 
-    # Check for visqol-python
+    # Detection logic
+    has_visqol_bin = False
+    visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
+    if visqol_bin or os.path.exists("/app/visqol/bazel-bin/visqol"):
+        has_visqol_bin = True
+
+    has_visqol_python = False
     try:
         from visqol import VisqolApi
-        print("Found local visqol-python package.")
-        has_local_visqol = True
+        has_visqol_python = True
     except ImportError:
         pass
 
-    # Check for visqol_py
-    if not has_local_visqol:
+    has_visqol_py = False
+    try:
+        import visqol_py
+        has_visqol_py = True
+    except ImportError:
+        pass
+
+    container_tool = None
+    for tool in ["docker", "podman"]:
         try:
-            import visqol_py
-            print("Found local visqol_py package.")
-            has_local_visqol = True
-        except ImportError:
-            pass
+            subprocess.run([tool, "--version"], check=True, capture_output=True)
+            container_tool = tool
+            break
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
 
-    # Check for visqol binary
-    if not has_local_visqol:
-        visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
-        if visqol_bin:
-            print(f"Found local visqol binary at: {visqol_bin}")
-            has_local_visqol = True
-        elif os.path.exists("/app/visqol/bazel-bin/visqol"):
-            print("Found local visqol binary at common location.")
-            has_local_visqol = True
-
-    if has_local_visqol:
-        print("Using local ViSQOL installation...")
-        cmd_phase2 = [
-            sys.executable, phase2_script,
-            args.output,
-            os.path.join(script_dir, "output"),
-            os.path.join(script_dir, "data", "external")
-        ]
-        subprocess.run(cmd_phase2, check=True)
-    else:
-        # Strategy 3: Container (Docker/Podman)
-        print("Local ViSQOL not found. Attempting container strategy...")
-
-        container_tool = None
-        for tool in ["docker", "podman"]:
-            try:
-                subprocess.run([tool, "--version"], check=True, capture_output=True)
-                container_tool = tool
-                break
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                continue
-
-        if not container_tool:
-            print(">>> ERROR: No local ViSQOL and no container tool (docker/podman) found.")
+    # Auto-selection logic
+    if selected_backend == "auto":
+        if has_visqol_bin:
+            selected_backend = "visqol"
+        elif container_tool:
+            selected_backend = "docker"
+        elif has_visqol_py:
+            selected_backend = "visqol-py"
+        elif has_visqol_python:
+            selected_backend = "visqol-python"
+        else:
+            print(">>> ERROR: No ViSQOL backend found.")
             print("Please either:")
             print("  1. Install ViSQOL dependencies: pip install \"visqol-python[accel]\"")
             print("  2. Install a 'visqol' binary and add it to your PATH.")
             print("  3. Install Docker or Podman and ensure the daemon/service is running.")
             print("  4. Run with --skip-mos if you only need encoding metrics.")
             sys.exit(1)
+
+    # Validate selected backend
+    if selected_backend == "docker" and not container_tool:
+        print(">>> ERROR: Docker/Podman not found but requested.")
+        sys.exit(1)
+    elif selected_backend == "visqol" and not has_visqol_bin:
+        print(">>> ERROR: visqol binary not found but requested.")
+        sys.exit(1)
+    elif selected_backend == "visqol-py" and not has_visqol_py:
+        print(">>> ERROR: visqol-py not found but requested.")
+        sys.exit(1)
+    elif selected_backend == "visqol-python" and not has_visqol_python:
+        print(">>> ERROR: visqol-python not found but requested.")
+        sys.exit(1)
+
+    if selected_backend != "docker":
+        print(f"Using local ViSQOL backend: {selected_backend}")
+        cmd_phase2 = [
+            sys.executable, phase2_script,
+            args.output,
+            os.path.join(script_dir, "output"),
+            os.path.join(script_dir, "data", "external"),
+            "--backend", selected_backend
+        ]
+        subprocess.run(cmd_phase2, check=True)
+    else:
+        # Strategy 3: Container (Docker/Podman)
+        print(f"Using container strategy with {container_tool}...")
 
         # Docker Image Logic:
         # 1. Use --visqol-image if provided.
@@ -233,7 +252,8 @@ def main():
                 "-v", f"{abs_results_dir}:/results",
                 "-v", f"{abs_output_dir}:/output",
                 "-v", f"{abs_data_dir}:/data",
-                visqol_image, f"/results/{results_file}", "/output", "/data"
+                visqol_image, f"/results/{results_file}", "/output", "/data",
+                "--backend", "auto"
             ]
             subprocess.run(cmd_container, check=True)
 

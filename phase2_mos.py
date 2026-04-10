@@ -24,6 +24,7 @@ import tempfile
 import concurrent.futures
 import subprocess
 import shutil
+import argparse
 
 try:
     import ffmpeg
@@ -172,7 +173,7 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "v_channels": 1 if cfg["mode"] == "speech" else 2
     }
 
-def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac_files=None):
+def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
         return key, None
@@ -199,35 +200,48 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac
 
         try:
             # 1. Try Binary Mode (Highest consistency with known-good results)
-            if VISQOL_BIN and os.path.exists(VISQOL_BIN):
-                cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
-                if cfg["mode"] == "speech":
-                    cmd.append("--use_speech_mode")
-                    if MODEL_DIR:
-                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite")])
-                else:
-                    if MODEL_DIR:
-                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
+            if backend in ["auto", "visqol"]:
+                if VISQOL_BIN and os.path.exists(VISQOL_BIN):
+                    cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
+                    if cfg["mode"] == "speech":
+                        cmd.append("--use_speech_mode")
+                        if MODEL_DIR:
+                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite")])
+                    else:
+                        if MODEL_DIR:
+                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
 
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                for line in result.stdout.splitlines():
-                    if "MOS-LQO:" in line:
-                        mos = float(line.split()[-1])
-                        return key, mos
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    for line in result.stdout.splitlines():
+                        if "MOS-LQO:" in line:
+                            mos = float(line.split()[-1])
+                            return key, mos
+                elif backend == "visqol":
+                    print(f"  ERROR: visqol binary not found but requested for {key}")
+                    return key, None
 
             # 2. Try visqol_py (Legacy)
-            if HAS_VISQOL_PY:
-                visqol = get_process_visqol_py(cfg["mode"])
-                if visqol:
-                    result = visqol.measure(v_ref, v_deg)
-                    return key, float(result.moslqo)
+            if backend in ["auto", "visqol-py"]:
+                if HAS_VISQOL_PY:
+                    visqol = get_process_visqol_py(cfg["mode"])
+                    if visqol:
+                        result = visqol.measure(v_ref, v_deg)
+                        return key, float(result.moslqo)
+                elif backend == "visqol-py":
+                    print(f"  ERROR: visqol-py not found but requested for {key}")
+                    return key, None
 
             # 3. Try visqol-python (Modern) - Moved to end due to MOS discrepancy in speech mode
-            if HAS_VISQOL_PYTHON:
-                api = get_process_visqol_python(cfg["mode"])
-                if api:
-                    result = api.measure(v_ref, v_deg)
-                    return key, float(result.moslqo)
+            if backend in ["auto", "visqol-python"]:
+                if HAS_VISQOL_PYTHON:
+                    api = get_process_visqol_python(cfg["mode"])
+                    if api:
+                        result = api.measure(v_ref, v_deg)
+                        return key, float(result.moslqo)
+                elif backend == "visqol-python":
+                    print(f"  ERROR: visqol-python not found but requested for {key}")
+                    return key, None
+
         except Exception as e:
             print(f"  Error computing MOS for {key}: {e}")
 
@@ -285,13 +299,18 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
     return results
 
 def main():
-    if len(sys.argv) < 4:
-        print("Usage: python3 phase2_mos.py <results_json> <aac_dir> <external_data_dir>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="ViSQOL MOS computation (Phase 2)")
+    parser.add_argument("results_json", help="Path to results JSON file")
+    parser.add_argument("aac_dir", help="Path to directory containing AAC files")
+    parser.add_argument("external_data_dir", help="Path to external data directory")
+    parser.add_argument("--backend", choices=["auto", "visqol", "visqol-py", "visqol-python"],
+                        default="auto", help="ViSQOL backend to use")
 
-    results_path = sys.argv[1]
-    aac_dir = sys.argv[2]
-    external_data_dir = sys.argv[3]
+    args = parser.parse_args()
+
+    results_path = args.results_json
+    aac_dir = args.aac_dir
+    external_data_dir = args.external_data_dir
 
     with open(results_path, 'r') as f:
         data = json.load(f)
@@ -322,12 +341,15 @@ def main():
     # We no longer use unconditional visqol-python batching to ensure binary priority.
     still_pending = pending
     if still_pending:
-        mode_str = "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "visqol-python" if HAS_VISQOL_PYTHON else "None"
-        print(f"Computing MOS for {len(still_pending)} samples using prioritized stack (Primary: {mode_str}, {num_cpus} cores)...")
+        if args.backend == "auto":
+            mode_str = "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "visqol-python" if HAS_VISQOL_PYTHON else "None"
+            print(f"Computing MOS for {len(still_pending)} samples using prioritized stack (Primary: {mode_str}, {num_cpus} cores)...")
+        else:
+            print(f"Computing MOS for {len(still_pending)} samples using backend '{args.backend}' ({num_cpus} cores)...")
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
             futures = {
-                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, aac_files): key
+                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, args.backend, aac_files): key
                 for key, entry in still_pending.items()
             }
 

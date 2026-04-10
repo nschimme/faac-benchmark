@@ -122,6 +122,7 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `scenarios` | Comma-separated list of scenarios to run (e.g., `voip,vss`). | No | |
 | `include-tests` | Comma-separated list of test filename globs to include (e.g., `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated list of test filename globs to exclude. | No | |
+| `backend` | ViSQOL backend to use (`auto`, `docker`, `visqol`, `visqol-py`, `visqol-python`). | No | `docker` |
 
 ### Action: `nschimme/faac-benchmark/report`
 
@@ -184,6 +185,16 @@ You can run the full benchmark using the user-friendly entrypoint:
 python3 run_benchmark.py path/to/faac path/to/libfaac.so my_run results/my_run.json --coverage 100 --sha $(git rev-parse HEAD)
 ```
 
+#### Selecting the ViSQOL Backend
+You can explicitly select which ViSQOL implementation to use for MOS computation:
+```bash
+# Force using Docker even if local packages are installed
+python3 run_benchmark.py ... --backend docker
+
+# Use a local visqol binary
+python3 run_benchmark.py ... --backend visqol
+```
+
 #### Filtering Tests and Scenarios
 To speed up development, you can run only specific scenarios or test cases:
 ```bash
@@ -199,11 +210,11 @@ python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 
 This script manages everything for you:
 1.  **Phase 1**: Encodes samples and measures throughput and library size.
-2.  **Phase 2**: Computes perceptual quality (MOS). It automatically attempts to use your local ViSQOL installation in the following order:
-    - **Python (Modern)**: `visqol-python` package (preferred, supports batch mode & Numba acceleration).
-    - **Python (Legacy)**: `visqol_py` package.
+2.  **Phase 2**: Computes perceptual quality (MOS). In `auto` mode (default), it attempts to use a ViSQOL backend in the following order:
     - **Process**: `visqol` binary (found in PATH or via `VISQOL_BIN` env var).
-    - **Docker**: Falls back to containerized execution via **Docker** or **Podman**.
+    - **Docker**: Containerized execution via **Docker** or **Podman**.
+    - **Python (Legacy)**: `visqol_py` package.
+    - **Python (Modern)**: `visqol-python` package.
 
 #### Docker Image Discovery
 The benchmark suite uses a deterministic approach to find the correct ViSQOL Docker image:

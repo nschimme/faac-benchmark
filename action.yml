@@ -38,6 +38,10 @@ inputs:
   exclude-tests:
     description: 'Comma-separated list of test filename globs to exclude'
     required: false
+  backend:
+    description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
+    required: false
+    default: 'docker'
 
 runs:
   using: 'composite'
@@ -100,6 +104,10 @@ runs:
 
         if [ -n "${{ inputs.exclude-tests }}" ]; then
           EXTRA_ARGS="$EXTRA_ARGS --exclude-tests ${{ inputs.exclude-tests }}"
+        fi
+
+        if [ -n "${{ inputs.backend }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --backend ${{ inputs.backend }}"
         fi
         
         python3 ${{ github.action_path }}/run_benchmark.py \
