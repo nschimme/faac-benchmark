@@ -256,57 +256,6 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
 
     return key, None
 
-def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files=None):
-    print(f"Using visqol-python batch mode for {len(pending)} samples...")
-
-    # We need to group by mode (audio vs speech)
-    modes = {"audio": [], "speech": []}
-    for key, entry in pending.items():
-        info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
-        if info:
-            modes[info["cfg"]["mode"]].append((key, entry, info))
-
-    results = {}
-    with tempfile.TemporaryDirectory() as batch_tmpdir:
-        for mode, items in modes.items():
-            if not items:
-                continue
-
-            print(f"  Processing {len(items)} {mode} samples...")
-            api = get_process_visqol_python(mode, MODEL_DIR)
-            if not api:
-                print(f"    Failed to get VisqolApi for {mode}, skipping batch.")
-                continue
-
-            file_pairs = []
-            valid_keys = []
-            for key, entry, info in items:
-                v_rate = info["v_rate"]
-                v_channels = info["v_channels"]
-                ref_input_path = info["ref_input_path"]
-                aac_path = info["aac_path"]
-
-                if aac_path and os.path.exists(ref_input_path):
-                    v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
-                    v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
-
-                    if convert_to_wav(ref_input_path, v_ref, v_rate, v_channels) and \
-                       convert_to_wav(aac_path, v_deg, v_rate, v_channels):
-                        file_pairs.append((v_ref, v_deg))
-                        valid_keys.append(key)
-                else:
-                    print(f"    Missing file for {key}, skipping.")
-
-            if file_pairs:
-                batch_results = api.measure_batch(file_pairs, parallel=True)
-                for key, result in zip(valid_keys, batch_results):
-                    if isinstance(result, Exception):
-                        print(f"    Error for {key}: {result}")
-                    else:
-                        results[key] = float(result.moslqo)
-
-    return results
-
 def main():
     parser = argparse.ArgumentParser(description="ViSQOL MOS computation (Phase 2)")
     parser.add_argument("results_json", help="Path to results JSON file")

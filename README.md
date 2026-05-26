@@ -122,7 +122,7 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `scenarios` | Comma-separated list of scenarios to run (e.g., `voip,vss`). | No | |
 | `include-tests` | Comma-separated list of test filename globs to include (e.g., `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated list of test filename globs to exclude. | No | |
-| `backend` | ViSQOL backend to use (`auto`, `docker`, `visqol`, `visqol-py`, `visqol-python`). | No | `docker` |
+| `backend` | ViSQOL backend to use (`auto`, `docker`, `visqol`, `visqol-py`, `visqol-python`). | No | `visqol-python` |
 
 ### Action: `nschimme/faac-benchmark/report`
 
@@ -211,10 +211,10 @@ python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 This script manages everything for you:
 1.  **Phase 1**: Encodes samples and measures throughput and library size.
 2.  **Phase 2**: Computes perceptual quality (MOS). In `auto` mode (default), it attempts to use a ViSQOL backend in the following order:
+    - **Python (Modern)**: `visqol-python` package (Preferred).
     - **Process**: `visqol` binary (found in PATH or via `VISQOL_BIN` env var).
     - **Docker**: Containerized execution via **Docker** or **Podman**.
     - **Python (Legacy)**: `visqol_py` package.
-    - **Python (Modern)**: `visqol-python` package.
 
 #### Docker Image Discovery
 The benchmark suite uses a deterministic approach to find the correct ViSQOL Docker image:
