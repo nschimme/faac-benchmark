@@ -7,6 +7,12 @@ on:
       - 'Dockerfile.visqol'
       - 'config.py'
       - 'phase2_mos.py'
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'Dockerfile.visqol'
+      - 'config.py'
+      - 'phase2_mos.py'
 
 jobs:
   build:
@@ -55,7 +61,7 @@ jobs:
           context: .
           file: Dockerfile.visqol
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ghcr.io/nschimme/faac-benchmark-visqol:latest
             ghcr.io/nschimme/faac-benchmark-visqol:${{ github.sha }}

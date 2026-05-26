@@ -109,6 +109,63 @@ def get_process_visqol_python(mode_str, model_dir=None):
             _process_visqol_api_instances[cache_key] = None
     return _process_visqol_api_instances[cache_key]
 
+def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files=None):
+    """
+    Attempts to process a batch of samples using visqol-python's internal parallelization.
+    This is often more efficient for large batches when visqol-python is the preferred backend.
+    """
+    # We need to group by mode (audio vs speech)
+    modes = {"audio": [], "speech": []}
+    for key, entry in pending.items():
+        info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
+        if info:
+            modes[info["cfg"]["mode"]].append((key, entry, info))
+
+    results = {}
+    with tempfile.TemporaryDirectory() as batch_tmpdir:
+        for mode, items in modes.items():
+            if not items:
+                continue
+
+            print(f"  Batch processing {len(items)} {mode} samples with visqol-python...")
+            api = get_process_visqol_python(mode, MODEL_DIR)
+            if not api:
+                print(f"    Failed to initialize VisqolApi for {mode}, skipping batch.")
+                continue
+
+            file_pairs = []
+            valid_keys = []
+            for key, entry, info in items:
+                v_rate = info["v_rate"]
+                v_channels = info["v_channels"]
+                ref_input_path = info["ref_input_path"]
+                aac_path = info["aac_path"]
+
+                if aac_path and os.path.exists(ref_input_path):
+                    v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
+                    v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
+
+                    if convert_to_wav(ref_input_path, v_ref, v_rate, v_channels) and \
+                       convert_to_wav(aac_path, v_deg, v_rate, v_channels):
+                        file_pairs.append((v_ref, v_deg))
+                        valid_keys.append(key)
+                else:
+                    # Don't print error here, let the fallback handle it
+                    pass
+
+            if file_pairs:
+                try:
+                    batch_results = api.measure_batch(file_pairs, parallel=True)
+                    for key, result in zip(valid_keys, batch_results):
+                        if isinstance(result, Exception):
+                            print(f"    Error for {key} in batch: {result}")
+                        else:
+                            results[key] = float(result.moslqo)
+                except Exception as e:
+                    print(f"    Batch execution failed for {mode}: {e}")
+
+    return results
+
 def get_process_visqol_py(mode_str):
     if not HAS_VISQOL_PY:
         return None
@@ -295,7 +352,14 @@ def main():
 
     mos_results = {}
 
-    # Sequential/Parallel fallback stack (Modern -> Binary -> Legacy)
+    # 1. Attempt batch processing with visqol-python if it's the preferred backend
+    if (args.backend in ["auto", "visqol-python"]) and HAS_VISQOL_PYTHON:
+        batch_results = run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files)
+        mos_results.update(batch_results)
+        # Update pending list to only include those that still need processing (failures)
+        pending = {k: v for k, v in pending.items() if k not in mos_results}
+
+    # 2. Sequential/Parallel fallback stack for remaining samples (Modern -> Binary -> Legacy)
     still_pending = pending
     if still_pending:
         if args.backend == "auto":

@@ -14,7 +14,8 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 
 RUN pip3 install --prefix=/install --no-cache-dir \
     ffmpeg-python \
-    "visqol-python[accel,lattice]>=3.5.0" \
+    numpy \
+    protobuf==3.20.3 \
     "visqol-py @ git+https://github.com/diggerdu/visqol-py.git@452eb5c4f17fd2404f968ec2eeadfcad74925485"
 
 FROM --platform=${BUILDPLATFORM} ubuntu:22.04
