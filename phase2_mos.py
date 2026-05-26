@@ -52,6 +52,7 @@ from config import SCENARIOS
 # Global paths for binary mode
 VISQOL_BIN = os.environ.get("VISQOL_BIN")
 MODEL_DIR = os.environ.get("VISQOL_MODEL_DIR")
+SPEECH_MODEL_NAME = "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite"
 
 def find_visqol_assets():
     global VISQOL_BIN, MODEL_DIR
@@ -87,18 +88,26 @@ find_visqol_assets()
 _process_visqol_instances = {}
 _process_visqol_api_instances = {}
 
-def get_process_visqol_python(mode_str):
+def get_process_visqol_python(mode_str, model_dir=None):
     if not HAS_VISQOL_PYTHON:
         return None
-    if mode_str not in _process_visqol_api_instances:
+
+    cache_key = f"{mode_str}_{model_dir}"
+    if cache_key not in _process_visqol_api_instances:
         try:
             api = VisqolApi()
-            api.create(mode=mode_str)
-            _process_visqol_api_instances[mode_str] = api
+            kwargs = {"mode": mode_str}
+            if mode_str == "speech" and model_dir:
+                model_path = os.path.join(model_dir, SPEECH_MODEL_NAME)
+                if os.path.exists(model_path):
+                    kwargs["lattice_model_path"] = model_path
+
+            api.create(**kwargs)
+            _process_visqol_api_instances[cache_key] = api
         except Exception as e:
             print(f" Failed to initialize ViSQOL Python (modern): {e}")
-            _process_visqol_api_instances[mode_str] = None
-    return _process_visqol_api_instances[mode_str]
+            _process_visqol_api_instances[cache_key] = None
+    return _process_visqol_api_instances[cache_key]
 
 def get_process_visqol_py(mode_str):
     if not HAS_VISQOL_PY:
@@ -199,14 +208,25 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
             return key, 1.0
 
         try:
-            # 1. Try Binary Mode (Highest consistency with known-good results)
+            # 1. Try visqol-python (Modern) - Now preferred as MOS discrepancy is fixed
+            if backend in ["auto", "visqol-python"]:
+                if HAS_VISQOL_PYTHON:
+                    api = get_process_visqol_python(cfg["mode"], MODEL_DIR)
+                    if api:
+                        result = api.measure(v_ref, v_deg)
+                        return key, float(result.moslqo)
+                elif backend == "visqol-python":
+                    print(f"  ERROR: visqol-python not found but requested for {key}")
+                    return key, None
+
+            # 2. Try Binary Mode
             if backend in ["auto", "visqol"]:
                 if VISQOL_BIN and os.path.exists(VISQOL_BIN):
                     cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
                     if cfg["mode"] == "speech":
                         cmd.append("--use_speech_mode")
                         if MODEL_DIR:
-                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite")])
+                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
                     else:
                         if MODEL_DIR:
                             cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
@@ -220,7 +240,7 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                     print(f"  ERROR: visqol binary not found but requested for {key}")
                     return key, None
 
-            # 2. Try visqol_py (Legacy)
+            # 3. Try visqol_py (Legacy)
             if backend in ["auto", "visqol-py"]:
                 if HAS_VISQOL_PY:
                     visqol = get_process_visqol_py(cfg["mode"])
@@ -229,17 +249,6 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                         return key, float(result.moslqo)
                 elif backend == "visqol-py":
                     print(f"  ERROR: visqol-py not found but requested for {key}")
-                    return key, None
-
-            # 3. Try visqol-python (Modern) - Moved to end due to MOS discrepancy in speech mode
-            if backend in ["auto", "visqol-python"]:
-                if HAS_VISQOL_PYTHON:
-                    api = get_process_visqol_python(cfg["mode"])
-                    if api:
-                        result = api.measure(v_ref, v_deg)
-                        return key, float(result.moslqo)
-                elif backend == "visqol-python":
-                    print(f"  ERROR: visqol-python not found but requested for {key}")
                     return key, None
 
         except Exception as e:
@@ -264,7 +273,7 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                 continue
 
             print(f"  Processing {len(items)} {mode} samples...")
-            api = get_process_visqol_python(mode)
+            api = get_process_visqol_python(mode, MODEL_DIR)
             if not api:
                 print(f"    Failed to get VisqolApi for {mode}, skipping batch.")
                 continue
@@ -337,12 +346,11 @@ def main():
 
     mos_results = {}
 
-    # Sequential/Parallel fallback stack (Binary -> Legacy -> Modern)
-    # We no longer use unconditional visqol-python batching to ensure binary priority.
+    # Sequential/Parallel fallback stack (Modern -> Binary -> Legacy)
     still_pending = pending
     if still_pending:
         if args.backend == "auto":
-            mode_str = "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "visqol-python" if HAS_VISQOL_PYTHON else "None"
+            mode_str = "visqol-python" if HAS_VISQOL_PYTHON else "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "None"
             print(f"Computing MOS for {len(still_pending)} samples using prioritized stack (Primary: {mode_str}, {num_cpus} cores)...")
         else:
             print(f"Computing MOS for {len(still_pending)} samples using backend '{args.backend}' ({num_cpus} cores)...")

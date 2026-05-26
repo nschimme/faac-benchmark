@@ -41,7 +41,7 @@ inputs:
   backend:
     description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
     required: false
-    default: 'docker'
+    default: 'visqol-python'
 
 runs:
   using: 'composite'

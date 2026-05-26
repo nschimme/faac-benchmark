@@ -144,14 +144,14 @@ def main():
 
     # Auto-selection logic
     if selected_backend == "auto":
-        if has_visqol_bin:
+        if has_visqol_python:
+            selected_backend = "visqol-python"
+        elif has_visqol_bin:
             selected_backend = "visqol"
         elif container_tool:
             selected_backend = "docker"
         elif has_visqol_py:
             selected_backend = "visqol-py"
-        elif has_visqol_python:
-            selected_backend = "visqol-python"
         else:
             print(">>> ERROR: No ViSQOL backend found.")
             print("Please either:")
