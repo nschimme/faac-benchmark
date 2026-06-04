@@ -1,2 +1,2 @@
 ffmpeg-python
-visqol-python[accel,lattice]>=3.5.0
+visqol-python[accel,lattice]>=3.7.0
