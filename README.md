@@ -23,6 +23,14 @@ We evaluate every contribution against the **Golden Triangle**:
 2.  **Computational Efficiency**: Optimized for low-power cores.
 3.  **Minimal Footprint**: Small binary size for embedded systems.
 
+## Dataset Sources
+
+We are grateful to the following projects for providing high-quality research material:
+
+*   **TCD-VoIP (Sigmedia-VoIP)**: [Listener Test Database](https://www.sigmedia.tv/datasets/tcd_voip_ltd/) — designed for assessing quality in VoIP applications.
+*   **PMLT2014**: [Public Multiformat Listening Test](https://listening-test.coresv.net/) — a community-defined comprehensive multi-codec benchmark.
+*   **SoundExpert**: [Sound Samples](https://soundexpert.org/sound-samples) — high-precision EBU SQAM CD excerpts for transparency testing.
+
 ## License
 
 This project is licensed under the LGPL v2.1. See the [LICENSE.md](LICENSE.md) file for details.
