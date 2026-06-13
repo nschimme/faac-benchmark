@@ -28,30 +28,31 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
+from utils import decode_validate, calculate_provenance_hash, get_binary_size, get_file_hash
+
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import SCENARIOS
+from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+
+
+def gate_filter(name, filtered_samples):
+    """Restrict a scenario's samples to its fixed gate subset (config.GATE_CLIPS),
+    intersected with what's on disk. Falls back to a deterministic even-spaced
+    slice when no curated list exists, so --gate works for any scenario."""
+    available = set(filtered_samples)
+    picked = [c for c in GATE_CLIPS.get(name, []) if c in available]
+    if picked:
+        return picked
+    n = min(GATE_FALLBACK_N, len(filtered_samples))
+    if n <= 0:
+        return []
+    step = len(filtered_samples) / n
+    return [filtered_samples[int(i * step)] for i in range(n)]
 
 # Paths relative to script directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXTERNAL_DATA_DIR = os.path.join(SCRIPT_DIR, "data", "external")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
-
-
-def get_binary_size(path):
-    if os.path.exists(path):
-        return os.path.getsize(path)
-    return 0
-
-
-def get_md5(path):
-    if not os.path.exists(path):
-        return ""
-    hash_md5 = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
 
 
 def worker_init(cpu_id_queue):
@@ -64,7 +65,7 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
+def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.aac")
@@ -97,16 +98,26 @@ def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, e
         except ImportError:
             pass
 
+        # Decode validation
+        valid, decode_err = decode_validate(output_path)
+        if not valid:
+            print(f"    [DECODE ERROR] {sample}: {decode_err}")
+
+        # Provenance hash
+        prov_hash = calculate_provenance_hash(faac_bin_path, lib_path, extra_args, input_path)
+
         return key, {
             "mos": mos,
             "size": aac_size,
             "bitrate": actual_bitrate,
             "bitrate_target": cfg.get("bitrate"),
             "time": t_duration,
-            "md5": get_md5(output_path),
+            "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],
             "scenario": name,
-            "filename": sample
+            "filename": sample,
+            "decode_error": decode_err if not valid else None,
+            "prov_hash": prov_hash
         }
     except Exception as e:
         print(f" failed: {e}")
@@ -123,12 +134,16 @@ def run_benchmark(
         scenarios=None,
         include_tests=None,
         exclude_tests=None,
-        extra_args=None):
+        extra_args=None,
+        gate=False):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     results = {
         "sha": sha,
+        "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
+        "faac_precision": os.environ.get("FAAC_PRECISION"),
+        "faac_args": " ".join(extra_args) if extra_args else "",
         "matrix": {},
         "throughput": {},
         "lib_size": get_binary_size(lib_path)
@@ -170,9 +185,17 @@ def run_benchmark(
                 if should_include and not should_exclude:
                     filtered_samples.append(sample)
 
-            num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
-            step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
-            samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
+            if len(filtered_samples) == 0:
+                print(f"  [Scenario: {name}] No samples found.")
+                continue
+
+            if gate:
+                samples = gate_filter(name, filtered_samples)
+                print(f"  [Scenario: {name}] Gate subset: {len(samples)} clip(s).")
+            else:
+                num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
+                step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
+                samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
 
             print(f"  [Scenario: {name}] Processing {len(samples)} samples (coverage {coverage}%)...")
 
@@ -195,6 +218,7 @@ def run_benchmark(
                     executor.submit(
                         process_sample,
                         faac_bin_path,
+                        lib_path,
                         name,
                         cfg,
                         sample,
@@ -281,6 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-tests", help="Comma-separated include globs")
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
+    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
 
     args, unknown = parser.parse_known_args()
 
@@ -291,7 +316,8 @@ if __name__ == "__main__":
         for arg in args.extra_args:
             extra_args_list.extend(arg.split())
     if unknown:
-        extra_args_list.extend(unknown)
+        for arg in unknown:
+            extra_args_list.extend(arg.split())
 
     extra_args = extra_args_list if extra_args_list else None
     data = run_benchmark(
@@ -304,7 +330,8 @@ if __name__ == "__main__":
         scenarios=args.scenarios,
         include_tests=args.include_tests,
         exclude_tests=args.exclude_tests,
-        extra_args=extra_args)
+        extra_args=extra_args,
+        gate=args.gate)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

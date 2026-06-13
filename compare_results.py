@@ -24,6 +24,13 @@ import argparse
 from collections import defaultdict
 
 
+# Set from main()'s --strict-decode. When False (default), a candidate that
+# failed decode validation is counted and reported but does NOT fail the run,
+# so the long-reliable LC benchmark can't be red-walled by a benign ffmpeg
+# stderr quirk before the strict check is proven clean on the LC corpus.
+STRICT_DECODE = False
+
+
 def analyze_pair(base_file, cand_file):
     try:
         with open(base_file, "r") as f:
@@ -43,6 +50,7 @@ def analyze_pair(base_file, cand_file):
 
     suite_results = {
         "has_regression": False,
+        "decode_error_count": 0,
         "missing_data": False,
         "mos_delta_sum": 0,
         "mos_count": 0,
@@ -202,12 +210,23 @@ def analyze_pair(base_file, cand_file):
                         "b_mos": b_mos,
                         "delta": delta
                     })
-            else:
+
+            if o_mos is None:
                 status = "❌"  # Missing MOS is a failure
                 suite_results["missing_mos_count"] += 1
                 suite_results["has_regression"] = True
                 suite_results["missing_data"] = True
                 delta = -10.0  # Force to top of regressions
+
+            # Decode validation (phase1). A candidate that fails to decode is a
+            # broken bitstream regardless of MOS. Always count it; only hard-fail
+            # the run when --strict-decode is set (see STRICT_DECODE note above).
+            if o.get("decode_error"):
+                suite_results["decode_error_count"] += 1
+                if STRICT_DECODE:
+                    status = "💀"
+                    suite_results["has_regression"] = True
+                    delta = min(delta, -9.0)  # sort near the top of regressions
 
             mos_str = f"{o_mos:.2f}" if o_mos is not None else "N/A"
             b_mos_str = f"{b_mos:.2f}" if b_mos is not None else "N/A"
@@ -297,8 +316,14 @@ def main():
     parser.add_argument("--summary-only", action="store_true", help="Generate only the high-signal summary")
     parser.add_argument("--output", help="Path to write the Markdown report file")
     parser.add_argument("--summary-output", help="Path to write the Markdown summary file")
+    parser.add_argument("--strict-decode", action="store_true",
+                        help="Treat candidate decode-validation failures as hard regressions "
+                             "(default: report only, do not fail the run)")
 
     args = parser.parse_args()
+
+    global STRICT_DECODE
+    STRICT_DECODE = args.strict_decode
 
     results_dir = args.results_dir
     summary_only = args.summary_only
@@ -332,6 +357,7 @@ def main():
     total_mos_delta = 0
     total_mos_count = 0
     total_missing_mos = 0
+    total_decode_errors = 0
     total_ic_delta = 0
     total_ic_count = 0
     worst_ic_regression = (0, "N/A")
@@ -372,6 +398,7 @@ def main():
             total_mos_delta += data["mos_delta_sum"]
             total_mos_count += data["mos_count"]
             total_missing_mos += data["missing_mos_count"]
+            total_decode_errors += data["decode_error_count"]
             total_ic_delta += data["ic_delta_sum"]
             total_ic_count += data["ic_count"]
             if data["worst_ic_regression"][0] < worst_ic_regression[0]:
@@ -551,6 +578,12 @@ def main():
         if worst_ic_regression[0] < -0.005:
             summary_lines.append(
                 f"| **Worst Stereo Drop** | {worst_ic_regression[0]:+.4f} ({worst_ic_regression[1]}) |")
+
+    # Decode errors (candidate bitstreams ffmpeg could not decode cleanly).
+    if total_decode_errors > 0:
+        gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
+        summary_lines.append(
+            f"| **Decode Errors** | {total_decode_errors} 🧨 ({gate}) |")
 
     if total_missing_mos > 0:
         summary_lines.append(

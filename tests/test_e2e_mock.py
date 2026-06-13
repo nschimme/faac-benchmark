@@ -4,6 +4,94 @@ import json
 import shutil
 import unittest
 import sys
+import wave
+import struct
+import tempfile
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+
+
+def _write_wav(path, seconds=1, sr=48000, ch=2):
+    with wave.open(path, "w") as f:
+        f.setnchannels(ch)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        for j in range(sr * seconds):
+            for _ in range(ch):
+                f.writeframes(struct.pack('<h', (j % 1000) - 500))
+
+
+class TestEnhancements(unittest.TestCase):
+    """Unit tests for the ergonomics/correctness enhancements (no ViSQOL needed)."""
+
+    def test_decode_validate_clean_vs_corrupt(self):
+        from utils import decode_validate
+        with tempfile.TemporaryDirectory() as td:
+            wav = os.path.join(td, "a.wav")
+            _write_wav(wav)
+            ok, err = decode_validate(wav)
+            self.assertTrue(ok, f"clean wav should pass, got: {err}")
+            # Corrupt: truncated/garbage file ffmpeg cannot decode cleanly.
+            bad = os.path.join(td, "bad.aac")
+            with open(bad, "wb") as f:
+                f.write(b"\xff\xf1" + os.urandom(64))
+            ok2, err2 = decode_validate(bad)
+            self.assertFalse(ok2, "garbage should fail decode validation")
+            self.assertTrue(err2)
+
+    def test_provenance_hash_sensitivity(self):
+        from utils import calculate_provenance_hash
+        with tempfile.TemporaryDirectory() as td:
+            binp = os.path.join(td, "faac")
+            with open(binp, "wb") as fh:
+                fh.write(b"BIN")
+            lib = os.path.join(td, "lib")
+            with open(lib, "wb") as fh:
+                fh.write(b"LIB")
+            inp = os.path.join(td, "in.wav"); _write_wav(inp)
+            h0 = calculate_provenance_hash(binp, lib, "--pns 2", inp, env={})
+            self.assertEqual(h0, calculate_provenance_hash(binp, lib, "--pns 2", inp, env={}))
+            # Args change → hash changes
+            self.assertNotEqual(h0, calculate_provenance_hash(binp, lib, "--pns 4", inp, env={}))
+            # FAAC_* env change → hash changes; unrelated env does not
+            self.assertNotEqual(h0, calculate_provenance_hash(binp, lib, "--pns 2", inp, env={"FAAC_SBR_Q": "6"}))
+            self.assertEqual(h0, calculate_provenance_hash(binp, lib, "--pns 2", inp, env={"PATH": "/x"}))
+
+    def test_gate_filter(self):
+        from phase1_encode import gate_filter
+        music = ["sandman.16b48k.wav", "velvet.16b48k.wav", "x.wav", "y.wav", "z.wav"]
+        picked = gate_filter("music_low", music)
+        self.assertIn("sandman.16b48k.wav", picked)
+        self.assertIn("velvet.16b48k.wav", picked)
+        # Unknown scenario → deterministic non-empty fallback subset
+        fb = gate_filter("does_not_exist", music)
+        self.assertTrue(0 < len(fb) <= len(music))
+        self.assertEqual([], gate_filter("music_low", []))
+
+    def test_sweep_rejects_bitrate(self):
+        r = subprocess.run(
+            [sys.executable, "run_benchmark.py", "f", "l", "n", "out.json", "--sweep", "-b=40,48"],
+            cwd=REPO, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("scenario", (r.stdout + r.stderr).lower())
+
+    def test_compare_clips_ranking(self):
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            a = os.path.join(td, "a.json"); b = os.path.join(td, "b.json")
+            save_results(a, {"matrix": {
+                "r_c1.wav": {"mos": 3.5, "scenario": "music_low", "filename": "c1.wav", "bitrate": 64, "time": 1.0},
+                "r_c2.wav": {"mos": 3.0, "scenario": "music_low", "filename": "c2.wav", "bitrate": 64, "time": 1.0}}})
+            save_results(b, {"matrix": {
+                "r_c1.wav": {"mos": 2.5, "scenario": "music_low", "filename": "c1.wav", "bitrate": 64, "time": 1.0},
+                "r_c2.wav": {"mos": 3.6, "scenario": "music_low", "filename": "c2.wav", "bitrate": 64, "time": 1.0}}})
+            r = subprocess.run([sys.executable, "compare_clips.py", a, b],
+                               cwd=REPO, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("music_low", r.stdout)
+            self.assertIn("worst", r.stdout)  # c1 regressed -1.0
+
 
 class TestE2EMock(unittest.TestCase):
     def setUp(self):
@@ -49,6 +137,18 @@ class TestE2EMock(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir)
+        # test_full_workflow copies mock samples into the real data/external dir
+        # (the scripts resolve corpus paths relative to SCRIPT_DIR). Remove them
+        # so they can't pollute real benchmark runs or leak into git.
+        real = os.path.join(REPO, "data", "external")
+        for sub in ("audio", "speech"):
+            for i in range(3):
+                p = os.path.join(real, sub, f"sample_{i}.wav")
+                if os.path.exists(p):
+                    os.remove(p)
+        sine = os.path.join(real, "throughput", "sine.wav")
+        if os.path.exists(sine) and os.path.getsize(sine) < 100:  # mock stub only
+            os.remove(sine)
 
     def test_full_workflow(self):
         # 1. Run Base Benchmark (VoIP only)
