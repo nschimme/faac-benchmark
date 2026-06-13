@@ -1,2 +1,3 @@
 ffmpeg-python
+scipy
 visqol-python[accel,lattice]>=3.7.0

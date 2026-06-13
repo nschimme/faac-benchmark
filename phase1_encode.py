@@ -51,7 +51,7 @@ def gate_filter(name, filtered_samples):
 
 # Paths relative to script directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-EXTERNAL_DATA_DIR = os.path.join(SCRIPT_DIR, "data", "external")
+EXTERNAL_DATA_DIR = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 
 
