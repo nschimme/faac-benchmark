@@ -77,7 +77,7 @@ def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, e
 
     try:
         t_start = time.time()
-        subprocess.run(cmd, env=env, check=True, capture_output=True)
+        subprocess.run(cmd, env=env, check=True, capture_output=True, shell=False)
         t_duration = time.time() - t_start
 
         mos = None
@@ -239,7 +239,8 @@ def run_benchmark(
                                     input_path],
                                    env=env,
                                    check=True,
-                                   capture_output=True)
+                                   capture_output=True,
+                                   shell=False)
 
                     # Multiple runs to average noise
                     durations = []
@@ -251,7 +252,8 @@ def run_benchmark(
                                         input_path],
                                        env=env,
                                        check=True,
-                                       capture_output=True)
+                                       capture_output=True,
+                                       shell=False)
                         durations.append(time.perf_counter() - start_time)
 
                     avg_dur = sum(durations) / len(durations)

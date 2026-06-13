@@ -212,7 +212,7 @@ def convert_to_wav(input_path, output_path, rate, channels):
                 quiet=True, overwrite_output=True)
         else:
             subprocess.run(['ffmpeg', '-i', input_path, '-ar', str(rate), '-ac', str(channels), '-sample_fmt', 's16', output_path],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
         return True
     except Exception as e:
         print(f"  FFmpeg conversion failed for {input_path}: {e}")
@@ -288,7 +288,7 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                         if MODEL_DIR:
                             cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
 
-                    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=True, shell=False)
                     for line in result.stdout.splitlines():
                         if "MOS-LQO:" in line:
                             mos = float(line.split()[-1])

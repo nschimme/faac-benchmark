@@ -215,6 +215,7 @@ This script manages everything for you:
     - **Process**: `visqol` binary (found in PATH or via `VISQOL_BIN` env var).
     - **Docker**: Containerized execution via **Docker** or **Podman**.
     - **Python (Legacy)**: `visqol_py` package.
+3.  **Phase 3**: Computes stereo image fidelity (inter-channel coherence error) to ensure that joint stereo encoding does not degrade the stereo image.
 
 #### Docker Image Discovery
 The benchmark suite uses a deterministic approach to find the correct ViSQOL Docker image:
@@ -231,6 +232,7 @@ You can override this behavior by passing `--visqol-image <your-image>` to `run_
 | Metric | Definition | Reference |
 | :--- | :--- | :--- |
 | **MOS** | Mean Opinion Score (LQO). Predicted perceptual quality from 1.0 (Bad) to 5.0 (Excellent), computed via the **ViSQOL** model. | [ITU-T P.800](https://www.itu.int/rec/T-REC-P.800), [ViSQOL](https://github.com/google/visqol) |
+| **Stereo Image Δ** | Change in inter-channel coherence error. A positive delta indicates the candidate has a truer stereo image than the baseline. Used as a regression guard for stereo image fidelity. | |
 | **Regressions** | Categorized into three levels: **Critical** (💀) if quality drops below threshold, **Significant** (❌) if MOS drop > 0.1, and **Minor** (⚠️) if MOS drop > 0.05. | |
 | **Significant Win** | An improvement in MOS ≥ 0.1 compared to the baseline commit. | |
 | **Consistency** | Percentage of test cases where bitstreams are MD5-identical to the baseline. | |
