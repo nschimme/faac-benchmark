@@ -50,6 +50,7 @@ import concurrent.futures
 import hashlib
 
 import numpy as np
+from scipy.signal import fftconvolve
 
 try:
     import ffmpeg
@@ -57,7 +58,7 @@ except ImportError:
     ffmpeg = None
 
 from config import SCENARIOS
-from phase2_mos import get_aac_path
+from utils import get_aac_path
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
@@ -107,7 +108,8 @@ def estimate_delay(ref, deg, win=50000, maxlag=4096):
         return 0
     r = r - r.mean()
     d = d - d.mean()
-    return int(np.argmax(np.correlate(d, r, mode="valid")))
+    corr = fftconvolve(d, r[::-1], mode="valid")
+    return int(np.argmax(corr))
 
 
 def coherence_vectorized(L, R, frame_size):
@@ -159,22 +161,13 @@ def coherence_error(ref_path, deg_path):
     return float(np.mean(errs)) if errs.size > 0 else None
 
 
-def compute_single(key, entry, aac_dir, external_data_dir, results_path, aac_files=None, ref_wav_path=None):
-    scenario_name = entry.get("scenario")
-    cfg = SCENARIOS.get(scenario_name)
-    if not cfg or cfg["mode"] == "speech":
-        return key, None  # speech corpus is mono
-
-    filename = entry.get("filename")
-    ref_path = os.path.join(external_data_dir, "audio", filename)
-    aac_path = get_aac_path(key, aac_dir, results_path, aac_files=aac_files)
-    if not aac_path or not os.path.exists(ref_path):
-        return key, None
-
+def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
         else:
+            if not ref_path or not os.path.exists(ref_path):
+                return key, None
             ref_wav = decode_stereo(ref_path, td, "ref")
 
         deg_wav = decode_stereo(aac_path, td, "deg")
@@ -221,45 +214,52 @@ def main():
     print(f"Computing inter-channel coherence error for {len(pending)} stereo samples "
           f"({num_cpus} cores)...")
 
+    # Pre-resolve AAC paths in the main process so workers don't touch the filesystem.
+    resolved = {}
+    for k, v in pending.items():
+        p = get_aac_path(k, args.aac_dir, args.results_json, aac_files=aac_files)
+        if p:
+            resolved[k] = (v, p)
+
+    if not resolved:
+        print("No resolvable AAC paths for pending stereo samples.")
+        return
+
     results = {}
     with tempfile.TemporaryDirectory() as ref_cache_dir:
         ref_wav_map = {}
-        if len(unique_refs) < len(pending):
-            print(f"Pre-decoding {len(unique_refs)} unique reference files...")
-            for i, filename in enumerate(unique_refs):
-                ref_path = os.path.join(args.external_data_dir, "audio", filename)
-                if os.path.exists(ref_path):
-                    # Use a hash or safe name for the cached wav
-                    tag = hashlib.md5(filename.encode()).hexdigest()
-                    wav_path = decode_stereo(ref_path, ref_cache_dir, tag)
+        if len(unique_refs) < len(resolved):
+            print(f"Pre-decoding {len(unique_refs)} unique reference files (parallel)...")
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                ref_futs = {}
+                for filename in unique_refs:
+                    ref_path = os.path.join(args.external_data_dir, "audio", filename)
+                    if os.path.exists(ref_path):
+                        tag = hashlib.md5(filename.encode()).hexdigest()
+                        ref_futs[pool.submit(decode_stereo, ref_path, ref_cache_dir, tag)] = filename
+                for fut in concurrent.futures.as_completed(ref_futs):
+                    filename = ref_futs[fut]
+                    wav_path = fut.result()
                     if wav_path:
                         ref_wav_map[filename] = wav_path
-                print(f"  ({i+1}/{len(unique_refs)}) {filename} decoded.", end="\r")
-            print("")
-
-        # Group pending by scenario for progress reporting
-        scenarios_pending = {}
-        for k, v in pending.items():
-            s = v.get("scenario")
-            if s not in scenarios_pending:
-                scenarios_pending[s] = []
-            scenarios_pending[s].append((k, v))
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
-            for scenario_name, items in scenarios_pending.items():
-                print(f"  [Scenario: {scenario_name}] Processing {len(items)} samples...")
-                futures = {
-                    executor.submit(compute_single, k, v, args.aac_dir,
-                                    args.external_data_dir, args.results_json,
-                                    aac_files, ref_wav_map.get(v.get("filename"))): k
-                    for k, v in items
-                }
-                for i, fut in enumerate(concurrent.futures.as_completed(futures)):
-                    key, ic = fut.result()
-                    if ic is not None:
-                        results[key] = ic
-                    ic_str = f"{ic:.4f}" if ic is not None else "N/A"
-                    print(f"    ({i+1}/{len(items)}) {key}: {ic_str}")
+            futures = {
+                executor.submit(
+                    compute_single, k, aac_path,
+                    ref_wav_map.get(entry.get("filename")),
+                    args.external_data_dir,
+                    os.path.join(args.external_data_dir, "audio", entry.get("filename", ""))
+                ): k
+                for k, (entry, aac_path) in resolved.items()
+            }
+            total = len(futures)
+            for i, fut in enumerate(concurrent.futures.as_completed(futures)):
+                key, ic = fut.result()
+                if ic is not None:
+                    results[key] = ic
+                ic_str = f"{ic:.4f}" if ic is not None else "N/A"
+                print(f"  ({i+1}/{total}) {key}: {ic_str}")
 
     for key, ic in results.items():
         if key in matrix:

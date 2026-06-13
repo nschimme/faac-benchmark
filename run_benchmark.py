@@ -77,6 +77,7 @@ def main():
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
     phase3_script = os.path.join(script_dir, "phase3_stereo.py")
+    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or external_data_dir
 
     # Logic for A/B or Sweep
     runs = []
@@ -201,7 +202,7 @@ def main():
                     sys.executable, phase2_script,
                     run["output"],
                     os.path.join(script_dir, "output"),
-                    os.path.join(script_dir, "data", "external"),
+                    external_data_dir,
                     "--backend", selected_backend,
                     "--faac-bin", args.faac_bin,
                     "--lib-path", args.lib_path
@@ -259,7 +260,7 @@ def main():
                     abs_results_dir = os.path.dirname(abs_output)
                     results_file = os.path.basename(abs_output)
                     abs_output_dir = os.path.abspath(os.path.join(script_dir, "output"))
-                    abs_data_dir = os.path.abspath(os.path.join(script_dir, "data", "external"))
+                    abs_data_dir = os.path.abspath(external_data_dir)
 
                     cmd_container = [
                         container_tool, "run", "--rm", "--platform", "linux/amd64",
@@ -281,7 +282,7 @@ def main():
                 sys.executable, phase3_script,
                 run["output"],
                 os.path.join(script_dir, "output"),
-                os.path.join(script_dir, "data", "external"),
+                external_data_dir,
             ], check=True)
 
         print(f">>> Benchmark run {run['tag']} complete.")
