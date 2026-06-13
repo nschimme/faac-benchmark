@@ -50,6 +50,11 @@ import concurrent.futures
 
 import numpy as np
 
+try:
+    import ffmpeg
+except ImportError:
+    ffmpeg = None
+
 from config import SCENARIOS
 from phase2_mos import get_aac_path
 
@@ -60,18 +65,32 @@ FRAME = 2400
 def decode_stereo(path, tmpdir, tag, rate=48000):
     """Decode/transcode any audio file to 48 kHz 16-bit stereo wav."""
     out = os.path.join(tmpdir, f"{tag}.wav")
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-i", path, "-ar", str(rate), "-ac", "2",
-         "-sample_fmt", "s16", out],
-        capture_output=True)
-    return out if r.returncode == 0 else None
+    try:
+        if ffmpeg:
+            try:
+                ffmpeg.input(path).output(
+                    out, ar=rate, ac=2, sample_fmt='s16').run(
+                    quiet=True, overwrite_output=True)
+            except ffmpeg.Error as e:
+                print(f"ffmpeg-python failed for {path}:\n{e.stderr.decode() if e.stderr else str(e)}", file=sys.stderr)
+                return None
+        else:
+            r = subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", str(rate), "-ac", "2",
+                               "-sample_fmt", "s16", out],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"ffmpeg failed for {path}:\n{r.stderr}", file=sys.stderr)
+                return None
+        return out
+    except Exception as e:
+        print(f"ffmpeg failed for {path}: {e}", file=sys.stderr)
+        return None
 
 
 def read_stereo(path):
-    w = wave.open(path, "rb")
-    ch = w.getnchannels()
-    raw = w.readframes(w.getnframes())
-    w.close()
+    with wave.open(path, "rb") as w:
+        ch = w.getnchannels()
+        raw = w.readframes(w.getnframes())
     a = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
     if ch >= 2:
         a = a.reshape(-1, ch)
@@ -116,6 +135,12 @@ def coherence_error(ref_path, deg_path):
         ec = abs(coherence(rL[s:s + FRAME], rR[s:s + FRAME])
                  - coherence(dL[s:s + FRAME], dR[s:s + FRAME]))
         errs.append(ec)
+
+    if not errs and m > 0:
+        # Fallback for short clips: compute coherence over the whole available segment.
+        ec = abs(coherence(rL, rR) - coherence(dL, dR))
+        errs.append(ec)
+
     return float(np.mean(errs)) if errs else None
 
 

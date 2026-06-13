@@ -207,9 +207,13 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None):
 def convert_to_wav(input_path, output_path, rate, channels):
     try:
         if ffmpeg:
-            ffmpeg.input(input_path).output(
-                output_path, ar=rate, ac=channels, sample_fmt='s16').run(
-                quiet=True, overwrite_output=True)
+            try:
+                ffmpeg.input(input_path).output(
+                    output_path, ar=rate, ac=channels, sample_fmt='s16').run(
+                    quiet=True, overwrite_output=True)
+            except ffmpeg.Error as e:
+                print(f"  ffmpeg-python conversion failed for {input_path}:\n{e.stderr.decode() if e.stderr else str(e)}")
+                return False
         else:
             subprocess.run(['ffmpeg', '-i', input_path, '-ar', str(rate), '-ac', str(channels), '-sample_fmt', 's16', output_path],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
