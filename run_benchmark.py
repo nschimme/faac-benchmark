@@ -61,6 +61,7 @@ def main():
     parser.add_argument("output", help="Output JSON path")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -82,6 +83,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
+    phase3_script = os.path.join(script_dir, "phase3_stereo.py")
 
     # Phase 1: Encoding
     print(">>> Phase 1: Encoding and Basic Metrics")
@@ -268,6 +270,16 @@ def main():
         except subprocess.CalledProcessError as e:
             print(f">>> ERROR: {container_tool} execution failed: {e}")
             sys.exit(1)
+
+    # Phase 3: Stereo image fidelity (local; needs only ffmpeg + numpy, no ViSQOL).
+    if not args.skip_stereo:
+        print(">>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
+        subprocess.run([
+            sys.executable, phase3_script,
+            args.output,
+            os.path.join(script_dir, "output"),
+            os.path.join(script_dir, "data", "external"),
+        ], check=True)
 
     print(">>> Benchmark complete.")
 
