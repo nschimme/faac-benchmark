@@ -55,6 +55,7 @@ from config import SCENARIOS
 VISQOL_BIN = os.environ.get("VISQOL_BIN")
 MODEL_DIR = os.environ.get("VISQOL_MODEL_DIR")
 SPEECH_MODEL_NAME = "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite"
+AUDIO_MODEL_NAME = "libsvm_nu_svr_model.txt"
 
 def find_visqol_assets():
     global VISQOL_BIN, MODEL_DIR
@@ -237,7 +238,7 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                             cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
                     else:
                         if MODEL_DIR:
-                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
+                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, AUDIO_MODEL_NAME)])
 
                     result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                     for line in result.stdout.splitlines():
@@ -294,35 +295,29 @@ def main():
     except FileNotFoundError:
         aac_files = []
 
-    # Provenance-aware caching
-    pending = {}
+    # Provenance-aware caching: invalidate any cached MOS whose recorded
+    # provenance hash no longer matches the current binary/args/env/input, so a
+    # stale .aac can never be silently re-scored. Mutating entry["mos"]=None
+    # here makes the single `pending` comprehension below pick it up.
     stale_count = 0
-
     verify_provenance = args.faac_bin and args.lib_path
-
-    for key, entry in matrix.items():
-        if entry.get("mos") is None:
-            pending[key] = entry
-            continue
-
-        if verify_provenance:
+    if verify_provenance:
+        for key, entry in matrix.items():
+            if entry.get("mos") is None:
+                continue
             info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files)
-            if info:
-                expected_hash = calculate_provenance_hash(args.faac_bin, args.lib_path, args.extra_args, info["ref_input_path"])
-                actual_hash = entry.get("prov_hash")
-                if actual_hash != expected_hash:
-                    print(f"!!! ERROR: Provenance mismatch for {key} !!!")
-                    print(f"    Expected: {expected_hash}")
-                    print(f"    Found in JSON: {actual_hash}")
-                    print(f"    The encoded .aac is STALE. Refusing to use its MOS.")
-                    entry["mos"] = None
-                    pending[key] = entry
-                    stale_count += 1
+            if not info:
+                continue
+            expected_hash = calculate_provenance_hash(args.faac_bin, args.lib_path, args.extra_args, info["ref_input_path"])
+            if entry.get("prov_hash") != expected_hash:
+                print(f"!!! Provenance mismatch for {key}: expected {expected_hash}, "
+                      f"found {entry.get('prov_hash')}. The encoded .aac is STALE; refusing its MOS.")
+                entry["mos"] = None
+                stale_count += 1
 
     if stale_count > 0:
         print(f"Found {stale_count} stale entries with provenance mismatch.")
 
-    # Re-read pending for those without MOS
     pending = {key: entry for key, entry in matrix.items() if entry.get("mos") is None}
     skipped = total - len(pending)
     if skipped > 0:

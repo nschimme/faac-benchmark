@@ -32,7 +32,22 @@ from utils import decode_validate, calculate_provenance_hash, get_binary_size, g
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import SCENARIOS
+from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+
+
+def gate_filter(name, filtered_samples):
+    """Restrict a scenario's samples to its fixed gate subset (config.GATE_CLIPS),
+    intersected with what's on disk. Falls back to a deterministic even-spaced
+    slice when no curated list exists, so --gate works for any scenario."""
+    available = set(filtered_samples)
+    picked = [c for c in GATE_CLIPS.get(name, []) if c in available]
+    if picked:
+        return picked
+    n = min(GATE_FALLBACK_N, len(filtered_samples))
+    if n <= 0:
+        return []
+    step = len(filtered_samples) / n
+    return [filtered_samples[int(i * step)] for i in range(n)]
 
 # Paths relative to script directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +134,8 @@ def run_benchmark(
         scenarios=None,
         include_tests=None,
         exclude_tests=None,
-        extra_args=None):
+        extra_args=None,
+        gate=False):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -169,12 +185,17 @@ def run_benchmark(
                 if should_include and not should_exclude:
                     filtered_samples.append(sample)
 
-            num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
             if len(filtered_samples) == 0:
                 print(f"  [Scenario: {name}] No samples found.")
                 continue
-            step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
-            samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
+
+            if gate:
+                samples = gate_filter(name, filtered_samples)
+                print(f"  [Scenario: {name}] Gate subset: {len(samples)} clip(s).")
+            else:
+                num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
+                step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
+                samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
 
             print(f"  [Scenario: {name}] Processing {len(samples)} samples (coverage {coverage}%)...")
 
@@ -284,6 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--include-tests", help="Comma-separated include globs")
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
+    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
 
     args, unknown = parser.parse_known_args()
 
@@ -308,7 +330,8 @@ if __name__ == "__main__":
         scenarios=args.scenarios,
         include_tests=args.include_tests,
         exclude_tests=args.exclude_tests,
-        extra_args=extra_args)
+        extra_args=extra_args,
+        gate=args.gate)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

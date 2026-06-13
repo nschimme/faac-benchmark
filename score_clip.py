@@ -13,7 +13,7 @@ import sys
 import argparse
 import tempfile
 from utils import wav_conv, safe_run
-from phase2_mos import get_process_visqol_python, MODEL_DIR, SPEECH_MODEL_NAME
+from phase2_mos import get_process_visqol_python, MODEL_DIR, SPEECH_MODEL_NAME, AUDIO_MODEL_NAME
 
 def score_clip(ref, deg, mode="audio"):
     if not os.path.exists(ref):
@@ -50,6 +50,12 @@ def score_clip(ref, deg, mode="audio"):
                     cmd.append("--use_speech_mode")
                     if MODEL_DIR:
                         cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
+                else:
+                    # Audio mode: the visqol binary needs the SVR model explicitly
+                    # or it fails to load the default ("Failed to load the default
+                    # SVR model"). Speech already passes its lattice model above.
+                    if MODEL_DIR:
+                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, AUDIO_MODEL_NAME)])
 
                 res = safe_run(cmd)
                 for line in res.stdout.splitlines():

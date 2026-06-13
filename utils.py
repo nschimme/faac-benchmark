@@ -92,12 +92,20 @@ def ffmpeg_probe(path):
         return None
 
 def decode_validate(path):
-    """Validates if an AAC file can be decoded by ffmpeg."""
+    """Validates that an AAC file decodes cleanly with ffmpeg.
+
+    ffmpeg exits 0 even when the decoder logs hard errors (e.g. a corrupt SBR
+    payload prints "env_facs_q 255 is invalid" but the process still returns 0).
+    So a returncode check alone silently passes broken bitstreams. With
+    "-v error" ffmpeg only writes to stderr when something actually went wrong,
+    so we treat ANY non-empty stderr as a failure too.
+    """
     cmd = ["ffmpeg", "-v", "error", "-i", path, "-f", "null", "-"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            return False, result.stderr
+        err = (result.stderr or "").strip()
+        if result.returncode != 0 or err:
+            return False, err or f"ffmpeg exited {result.returncode}"
         return True, ""
     except Exception as e:
         return False, str(e)
@@ -121,7 +129,17 @@ def wav_conv(input_path, output_path, rate=None, channels=None):
         print(f"FFmpeg conversion failed for {input_path}: {e}", file=sys.stderr)
         return False
 
-def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path):
+def encoder_env_signature(env=None):
+    """Stable signature of the FAAC_*-prefixed env vars that can change the
+    encode (used by --sweep ENV= runs). Both phase1 (encode) and phase2 (cache
+    check) must compute this from the same environment or every swept clip
+    would look stale; run_benchmark passes the run env to both phases."""
+    if env is None:
+        env = os.environ
+    items = sorted((k, v) for k, v in env.items() if k.startswith("FAAC_"))
+    return ";".join(f"{k}={v}" for k, v in items)
+
+def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path, env=None):
     """Calculates a provenance hash for a specific encoding run."""
     hasher = hashlib.sha256()
 
@@ -135,6 +153,9 @@ def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path):
             hasher.update(" ".join(extra_args).encode())
         else:
             hasher.update(extra_args.encode())
+
+    # Hash the FAAC_* env (env-var sweeps)
+    hasher.update(encoder_env_signature(env).encode())
 
     # Hash the input file
     hasher.update(get_file_hash(input_path, "sha256").encode())

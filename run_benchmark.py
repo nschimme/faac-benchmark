@@ -54,7 +54,8 @@ def main():
     parser.add_argument("--backend", choices=["auto", "docker", "visqol", "visqol-py", "visqol-python"],
                         default="auto", help="ViSQOL backend to use")
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
-    parser.add_argument("--sweep", help="Parameter sweep mode: 'ENV_VAR=val1,val2,val3'")
+    parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
+    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
     parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
     parser.add_argument("--diff", nargs=2, help="Standalone diff of two result JSONs")
@@ -87,9 +88,24 @@ def main():
             else:
                 runs.append({"tag": item, "extra_args": extra_args_list, "output": args.output.replace(".json", f"_{item}.json"), "env": {}})
     elif args.sweep:
-        var, vals = args.sweep.split("=", 1)
+        if "=" not in args.sweep:
+            print("Error: --sweep must be 'KEY=v1,v2,...' (KEY is an env var, or a faac flag like --pns).")
+            sys.exit(1)
+        key, vals = args.sweep.split("=", 1)
+        # Bitrate is a scenario's identity (e.g. music_low == 64k); sweeping it
+        # would mislabel results. Study bitrate ranges with dedicated scenarios.
+        if key in ("-b", "--bitrate", "-q"):
+            print(f"Error: cannot sweep '{key}' — bitrate/quality define a scenario. "
+                  "Add a scenario at the target bitrate in config.py instead.")
+            sys.exit(1)
+        is_flag = key.startswith("-")
         for val in vals.split(","):
-            runs.append({"tag": val, "extra_args": extra_args_list, "output": args.output.replace(".json", f"_{val}.json"), "env": {var: val}})
+            tag = f"{key.lstrip('-')}{val}"
+            run = {"tag": tag,
+                   "extra_args": extra_args_list + ([key, val] if is_flag else []),
+                   "output": args.output.replace(".json", f"_{tag}.json"),
+                   "env": {} if is_flag else {key: val}}
+            runs.append(run)
     else:
         runs.append({"tag": args.name, "extra_args": extra_args_list, "output": args.output, "env": {}})
 
@@ -121,6 +137,8 @@ def main():
             cmd_phase1.extend(["--include-tests", args.include_tests])
         if args.exclude_tests:
             cmd_phase1.extend(["--exclude-tests", args.exclude_tests])
+        if args.gate:
+            cmd_phase1.append("--gate")
         if run["extra_args"]:
             cmd_phase1.append(f"--extra-args={' '.join(run['extra_args'])}")
 
@@ -190,7 +208,9 @@ def main():
                 ]
                 if run["extra_args"]:
                     cmd_phase2.append(f"--extra-args={' '.join(run['extra_args'])}")
-                subprocess.run(cmd_phase2, check=True)
+                # Pass the run env so phase2's provenance hash matches phase1's
+                # (FAAC_* env-sweep vars are folded into the hash).
+                subprocess.run(cmd_phase2, env=run_env, check=True)
             else:
                 # Strategy 3: Container (Docker/Podman)
                 print(f"Using container strategy with {container_tool}...")
