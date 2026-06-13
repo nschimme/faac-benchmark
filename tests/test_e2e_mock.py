@@ -15,10 +15,20 @@ class TestE2EMock(unittest.TestCase):
         os.makedirs(os.path.join(self.data_dir, "throughput"), exist_ok=True)
 
         # Create mock samples
+        import wave
+        import struct
         for d in ["speech", "audio"]:
             for i in range(3):
-                with open(os.path.join(self.data_dir, d, f"sample_{i}.wav"), "w") as f:
-                    f.write("mock")
+                path = os.path.join(self.data_dir, d, f"sample_{i}.wav")
+                with wave.open(path, "w") as f:
+                    f.setnchannels(2 if d == "audio" else 1)
+                    f.setsampwidth(2)
+                    f.setframerate(48000 if d == "audio" else 16000)
+                    # Write 1 second of noise or silence
+                    for j in range(48000 if d == "audio" else 16000):
+                        f.writeframes(struct.pack('<h', j % 1000))
+                        if d == "audio":
+                            f.writeframes(struct.pack('<h', (j + 500) % 1000))
 
         with open(os.path.join(self.data_dir, "throughput", "sine.wav"), "w") as f:
             f.write("mock")
@@ -26,8 +36,8 @@ class TestE2EMock(unittest.TestCase):
         # Create dummy faac
         self.faac_bin = os.path.abspath(os.path.join(self.test_dir, "dummy_faac"))
         with open(self.faac_bin, "w") as f:
-            # We must use absolute path for output_path because the benchmark script might run from different dirs
-            f.write("#!/bin/bash\nwhile [[ $# -gt 0 ]]; do case $1 in -o) touch \"$2\"; shift 2;; *) shift;; esac; done")
+            # Copy input to output so that it's a valid wav (renamed to aac)
+            f.write("#!/bin/bash\noutput=\"\"\nwhile [[ $# -gt 0 ]]; do case $1 in -o) output=\"$2\"; shift 2;; -*) shift 2;; *) input=\"$1\"; shift;; esac; done\ncp \"$input\" \"$output\"")
         os.chmod(self.faac_bin, 0o755)
 
         self.lib_path = os.path.abspath(os.path.join(self.test_dir, "libfaac.so"))
@@ -72,12 +82,12 @@ class TestE2EMock(unittest.TestCase):
             self.assertTrue(any(k.startswith("voip_") for k in data_base["matrix"]))
             self.assertFalse(any(k.startswith("vss_") for k in data_base["matrix"]))
 
-        # 2. Run Cand Benchmark (VoIP + VSS, with filtering)
+        # 2. Run Cand Benchmark (VoIP + VSS + music_std, with filtering)
         cand_json = os.path.join(self.results_dir, "test_cand.json")
         cmd_cand = [
             sys.executable, "run_benchmark.py",
             self.faac_bin, self.lib_path, "test", cand_json,
-            "--scenarios", "voip,vss", "--include-tests", "sample_0.wav,sample_1.wav",
+            "--scenarios", "voip,vss,music_std", "--include-tests", "sample_0.wav,sample_1.wav",
             "--sha", "cand_456", "--skip-mos"
         ]
         subprocess.run(cmd_cand, env=env, check=True)
@@ -90,6 +100,12 @@ class TestE2EMock(unittest.TestCase):
             self.assertTrue(all("sample_0.wav" in k or "sample_1.wav" in k for k in keys))
             self.assertTrue(any("voip_" in k for k in keys))
             self.assertTrue(any("vss_" in k for k in keys))
+            self.assertTrue(any("music_std_" in k for k in keys))
+
+            # Verify Phase 3 (stereo) results are present for music_std
+            music_keys = [k for k in keys if "music_std_" in k]
+            for mk in music_keys:
+                self.assertIn("ic_err", data_cand["matrix"][mk])
 
         # 3. Generate Report
         report_md = os.path.join(self.test_dir, "report.md")

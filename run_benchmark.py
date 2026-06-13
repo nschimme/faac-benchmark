@@ -106,170 +106,169 @@ def main():
 
     subprocess.run(cmd_phase1, check=True)
 
+    # Phase 2: MOS
     if args.skip_mos:
         print(">>> Skipping Phase 2 as requested.")
-        return
+    else:
+        print(">>> Phase 2: Perceptual Quality (MOS)")
 
-    # Phase 2: MOS
-    print(">>> Phase 2: Perceptual Quality (MOS)")
+        selected_backend = args.backend
 
-    selected_backend = args.backend
+        # Detection logic
+        has_visqol_bin = False
+        visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
+        if visqol_bin or os.path.exists("/app/visqol/bazel-bin/visqol"):
+            has_visqol_bin = True
 
-    # Detection logic
-    has_visqol_bin = False
-    visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
-    if visqol_bin or os.path.exists("/app/visqol/bazel-bin/visqol"):
-        has_visqol_bin = True
-
-    has_visqol_python = False
-    try:
-        from visqol import VisqolApi
-        has_visqol_python = True
-    except ImportError:
-        pass
-
-    has_visqol_py = False
-    try:
-        import visqol_py
-        has_visqol_py = True
-    except ImportError:
-        pass
-
-    container_tool = None
-    for tool in ["docker", "podman"]:
+        has_visqol_python = False
         try:
-            subprocess.run([tool, "--version"], check=True, capture_output=True)
-            container_tool = tool
-            break
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
+            from visqol import VisqolApi
+            has_visqol_python = True
+        except ImportError:
+            pass
 
-    # Auto-selection logic
-    if selected_backend == "auto":
-        if has_visqol_python:
-            selected_backend = "visqol-python"
-        elif has_visqol_bin:
-            selected_backend = "visqol"
-        elif container_tool:
-            selected_backend = "docker"
-        elif has_visqol_py:
-            selected_backend = "visqol-py"
-        else:
-            print(">>> ERROR: No ViSQOL backend found.")
-            print("Please either:")
-            print("  1. Install ViSQOL dependencies: pip install \"visqol-python[accel]\"")
-            print("  2. Install a 'visqol' binary and add it to your PATH.")
-            print("  3. Install Docker or Podman and ensure the daemon/service is running.")
-            print("  4. Run with --skip-mos if you only need encoding metrics.")
+        has_visqol_py = False
+        try:
+            import visqol_py
+            has_visqol_py = True
+        except ImportError:
+            pass
+
+        container_tool = None
+        for tool in ["docker", "podman"]:
+            try:
+                subprocess.run([tool, "--version"], check=True, capture_output=True)
+                container_tool = tool
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+
+        # Auto-selection logic
+        if selected_backend == "auto":
+            if has_visqol_python:
+                selected_backend = "visqol-python"
+            elif has_visqol_bin:
+                selected_backend = "visqol"
+            elif container_tool:
+                selected_backend = "docker"
+            elif has_visqol_py:
+                selected_backend = "visqol-py"
+            else:
+                print(">>> ERROR: No ViSQOL backend found.")
+                print("Please either:")
+                print("  1. Install ViSQOL dependencies: pip install \"visqol-python[accel]\"")
+                print("  2. Install a 'visqol' binary and add it to your PATH.")
+                print("  3. Install Docker or Podman and ensure the daemon/service is running.")
+                print("  4. Run with --skip-mos if you only need encoding metrics.")
+                sys.exit(1)
+
+        # Validate selected backend
+        if selected_backend == "docker" and not container_tool:
+            print(">>> ERROR: Docker/Podman not found but requested.")
+            sys.exit(1)
+        elif selected_backend == "visqol" and not has_visqol_bin:
+            print(">>> ERROR: visqol binary not found but requested.")
+            sys.exit(1)
+        elif selected_backend == "visqol-py" and not has_visqol_py:
+            print(">>> ERROR: visqol-py not found but requested.")
+            sys.exit(1)
+        elif selected_backend == "visqol-python" and not has_visqol_python:
+            print(">>> ERROR: visqol-python not found but requested.")
             sys.exit(1)
 
-    # Validate selected backend
-    if selected_backend == "docker" and not container_tool:
-        print(">>> ERROR: Docker/Podman not found but requested.")
-        sys.exit(1)
-    elif selected_backend == "visqol" and not has_visqol_bin:
-        print(">>> ERROR: visqol binary not found but requested.")
-        sys.exit(1)
-    elif selected_backend == "visqol-py" and not has_visqol_py:
-        print(">>> ERROR: visqol-py not found but requested.")
-        sys.exit(1)
-    elif selected_backend == "visqol-python" and not has_visqol_python:
-        print(">>> ERROR: visqol-python not found but requested.")
-        sys.exit(1)
+        if selected_backend != "docker":
+            print(f"Using local ViSQOL backend: {selected_backend}")
+            cmd_phase2 = [
+                sys.executable, phase2_script,
+                args.output,
+                os.path.join(script_dir, "output"),
+                os.path.join(script_dir, "data", "external"),
+                "--backend", selected_backend
+            ]
+            subprocess.run(cmd_phase2, check=True)
+        else:
+            # Strategy 3: Container (Docker/Podman)
+            print(f"Using container strategy with {container_tool}...")
 
-    if selected_backend != "docker":
-        print(f"Using local ViSQOL backend: {selected_backend}")
-        cmd_phase2 = [
-            sys.executable, phase2_script,
-            args.output,
-            os.path.join(script_dir, "output"),
-            os.path.join(script_dir, "data", "external"),
-            "--backend", selected_backend
-        ]
-        subprocess.run(cmd_phase2, check=True)
-    else:
-        # Strategy 3: Container (Docker/Podman)
-        print(f"Using container strategy with {container_tool}...")
+            # Docker Image Logic:
+            # 1. Use --visqol-image if provided.
+            # 2. Use VISQOL_IMAGE env var if set.
+            # 3. Otherwise, use ghcr.io/nschimme/faac-benchmark-visqol with a tag.
+            #    - Tag priority: Git tag > Content Hash > latest.
 
-        # Docker Image Logic:
-        # 1. Use --visqol-image if provided.
-        # 2. Use VISQOL_IMAGE env var if set.
-        # 3. Otherwise, use ghcr.io/nschimme/faac-benchmark-visqol with a tag.
-        #    - Tag priority: Git tag > Content Hash > latest.
+            visqol_image = args.visqol_image or os.environ.get("VISQOL_IMAGE")
 
-        visqol_image = args.visqol_image or os.environ.get("VISQOL_IMAGE")
+            image_name = "ghcr.io/nschimme/faac-benchmark-visqol"
+            git_tag = get_git_tag()
+            content_hash = calculate_docker_hash(script_dir)
 
-        image_name = "ghcr.io/nschimme/faac-benchmark-visqol"
-        git_tag = get_git_tag()
-        content_hash = calculate_docker_hash(script_dir)
+            if not visqol_image:
+                # Determine the primary tag we want to use/pull
+                preferred_tag = git_tag or content_hash
+                visqol_image = f"{image_name}:{preferred_tag}"
 
-        if not visqol_image:
-            # Determine the primary tag we want to use/pull
-            preferred_tag = git_tag or content_hash
-            visqol_image = f"{image_name}:{preferred_tag}"
+            try:
+                # Try to see if we have it locally or can pull it
+                print(f"Checking for ViSQOL image: {visqol_image}")
+                pull_success = False
 
-        try:
-            # Try to see if we have it locally or can pull it
-            print(f"Checking for ViSQOL image: {visqol_image}")
-            pull_success = False
-
-            # Check if it exists locally first
-            inspect_cmd = [container_tool, "inspect", "--type=image", visqol_image]
-            if subprocess.run(inspect_cmd, capture_output=True).returncode == 0:
-                print(f"Found image {visqol_image} locally.")
-                pull_success = True
-            else:
-                # Try to pull
-                print(f"Image not found locally. Attempting to pull {visqol_image}...")
-                pull_cmd = [container_tool, "pull", "--platform", "linux/amd64", visqol_image]
-                if subprocess.run(pull_cmd).returncode == 0:
+                # Check if it exists locally first
+                inspect_cmd = [container_tool, "inspect", "--type=image", visqol_image]
+                if subprocess.run(inspect_cmd, capture_output=True).returncode == 0:
+                    print(f"Found image {visqol_image} locally.")
                     pull_success = True
                 else:
-                    print(f"Could not pull {visqol_image}.")
+                    # Try to pull
+                    print(f"Image not found locally. Attempting to pull {visqol_image}...")
+                    pull_cmd = [container_tool, "pull", "--platform", "linux/amd64", visqol_image]
+                    if subprocess.run(pull_cmd).returncode == 0:
+                        pull_success = True
+                    else:
+                        print(f"Could not pull {visqol_image}.")
 
-            if not pull_success:
-                # Fallback: Build locally
-                print(f"Building {image_name} locally...")
-                build_tags = [f"{image_name}:{content_hash}", f"{image_name}:latest"]
-                if git_tag:
-                    build_tags.append(f"{image_name}:{git_tag}")
+                if not pull_success:
+                    # Fallback: Build locally
+                    print(f"Building {image_name} locally...")
+                    build_tags = [f"{image_name}:{content_hash}", f"{image_name}:latest"]
+                    if git_tag:
+                        build_tags.append(f"{image_name}:{git_tag}")
 
-                build_cmd = [
-                    container_tool, "build", "--platform", "linux/amd64",
-                    "-f", os.path.join(script_dir, "Dockerfile.visqol")
+                    build_cmd = [
+                        container_tool, "build", "--platform", "linux/amd64",
+                        "-f", os.path.join(script_dir, "Dockerfile.visqol")
+                    ]
+                    for tag in build_tags:
+                        build_cmd.extend(["-t", tag])
+                    build_cmd.append(script_dir)
+
+                    subprocess.run(build_cmd, check=True)
+                    # If we were looking for a specific image and build succeeded,
+                    # we should use the one we just built (which will be one of the tags)
+                    if not args.visqol_image and not os.environ.get("VISQOL_IMAGE"):
+                        visqol_image = f"{image_name}:{content_hash}"
+
+                # Run
+                print(f"Running MOS computation in {container_tool} (forcing amd64)...")
+                # We need absolute paths for volume mounting
+                abs_output = os.path.abspath(args.output)
+                abs_results_dir = os.path.dirname(abs_output)
+                results_file = os.path.basename(abs_output)
+                abs_output_dir = os.path.abspath(os.path.join(script_dir, "output"))
+                abs_data_dir = os.path.abspath(os.path.join(script_dir, "data", "external"))
+
+                cmd_container = [
+                    container_tool, "run", "--rm", "--platform", "linux/amd64",
+                    "-v", f"{abs_results_dir}:/results",
+                    "-v", f"{abs_output_dir}:/output",
+                    "-v", f"{abs_data_dir}:/data",
+                    visqol_image, f"/results/{results_file}", "/output", "/data",
+                    "--backend", "auto"
                 ]
-                for tag in build_tags:
-                    build_cmd.extend(["-t", tag])
-                build_cmd.append(script_dir)
+                subprocess.run(cmd_container, check=True)
 
-                subprocess.run(build_cmd, check=True)
-                # If we were looking for a specific image and build succeeded,
-                # we should use the one we just built (which will be one of the tags)
-                if not args.visqol_image and not os.environ.get("VISQOL_IMAGE"):
-                    visqol_image = f"{image_name}:{content_hash}"
-
-            # Run
-            print(f"Running MOS computation in {container_tool} (forcing amd64)...")
-            # We need absolute paths for volume mounting
-            abs_output = os.path.abspath(args.output)
-            abs_results_dir = os.path.dirname(abs_output)
-            results_file = os.path.basename(abs_output)
-            abs_output_dir = os.path.abspath(os.path.join(script_dir, "output"))
-            abs_data_dir = os.path.abspath(os.path.join(script_dir, "data", "external"))
-
-            cmd_container = [
-                container_tool, "run", "--rm", "--platform", "linux/amd64",
-                "-v", f"{abs_results_dir}:/results",
-                "-v", f"{abs_output_dir}:/output",
-                "-v", f"{abs_data_dir}:/data",
-                visqol_image, f"/results/{results_file}", "/output", "/data",
-                "--backend", "auto"
-            ]
-            subprocess.run(cmd_container, check=True)
-
-        except subprocess.CalledProcessError as e:
-            print(f">>> ERROR: {container_tool} execution failed: {e}")
-            sys.exit(1)
+            except subprocess.CalledProcessError as e:
+                print(f">>> ERROR: {container_tool} execution failed: {e}")
+                sys.exit(1)
 
     # Phase 3: Stereo image fidelity (local; needs only ffmpeg + numpy, no ViSQOL).
     if not args.skip_stereo:
