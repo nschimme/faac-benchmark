@@ -26,6 +26,8 @@ import subprocess
 import shutil
 import argparse
 
+from utils import wav_conv, get_aac_path, calculate_provenance_hash
+
 try:
     import ffmpeg
 except ImportError:
@@ -70,14 +72,11 @@ def find_visqol_assets():
 
     if VISQOL_BIN and not MODEL_DIR:
         # Try to find model relative to binary
-        # Case 1: /app/visqol/bazel-bin/visqol -> /app/visqol/model
         base_dir = os.path.dirname(VISQOL_BIN)
         rel_model = os.path.abspath(os.path.join(base_dir, "..", "model"))
         if os.path.exists(rel_model):
             MODEL_DIR = rel_model
         else:
-            # Case 2: /usr/local/bin/visqol -> /usr/local/share/visqol/model?
-            # For now, check /app/visqol/model as a fallback
             if os.path.exists("/app/visqol/model"):
                 MODEL_DIR = "/app/visqol/model"
 
@@ -112,9 +111,7 @@ def get_process_visqol_python(mode_str, model_dir=None):
 def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files=None):
     """
     Attempts to process a batch of samples using visqol-python's internal parallelization.
-    This is often more efficient for large batches when visqol-python is the preferred backend.
     """
-    # We need to group by mode (audio vs speech)
     modes = {"audio": [], "speech": []}
     for key, entry in pending.items():
         info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
@@ -145,13 +142,10 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                     v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
                     v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
 
-                    if convert_to_wav(ref_input_path, v_ref, v_rate, v_channels) and \
-                       convert_to_wav(aac_path, v_deg, v_rate, v_channels):
+                    if wav_conv(ref_input_path, v_ref, v_rate, v_channels) and \
+                       wav_conv(aac_path, v_deg, v_rate, v_channels):
                         file_pairs.append((v_ref, v_deg))
                         valid_keys.append(key)
-                else:
-                    # Don't print error here, let the fallback handle it
-                    pass
 
             if file_pairs:
                 try:
@@ -177,50 +171,6 @@ def get_process_visqol_py(mode_str):
             print(f" Failed to initialize ViSQOL Python (legacy): {e}")
             _process_visqol_instances[mode_str] = None
     return _process_visqol_instances[mode_str]
-
-def get_aac_path(key, aac_dir, results_path, aac_files=None):
-    results_filename = os.path.basename(results_path)
-    precision_suffix = ""
-    if "_base.json" in results_filename:
-        precision_suffix = "_base"
-    elif "_cand.json" in results_filename:
-        precision_suffix = "_cand"
-
-    # Try exact match first
-    target_filename = f"{key}{precision_suffix}.aac"
-    aac_path = os.path.join(aac_dir, target_filename)
-    if os.path.exists(aac_path):
-        return aac_path
-
-    # Fallback to prefix matching
-    if aac_files is None:
-        try:
-            aac_files = [f for f in os.listdir(aac_dir) if f.endswith(".aac")]
-        except FileNotFoundError:
-            return None
-
-    matching = [f for f in aac_files if f.startswith(key)]
-    if not matching:
-        return None
-    return os.path.join(aac_dir, matching[0])
-
-def convert_to_wav(input_path, output_path, rate, channels):
-    try:
-        if ffmpeg:
-            try:
-                ffmpeg.input(input_path).output(
-                    output_path, ar=rate, ac=channels, sample_fmt='s16').run(
-                    quiet=True, overwrite_output=True)
-            except ffmpeg.Error as e:
-                print(f"  ffmpeg-python conversion failed for {input_path}:\n{e.stderr.decode() if e.stderr else str(e)}")
-                return False
-        else:
-            subprocess.run(['ffmpeg', '-i', input_path, '-ar', str(rate), '-ac', str(channels), '-sample_fmt', 's16', output_path],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception as e:
-        print(f"  FFmpeg conversion failed for {input_path}: {e}")
-        return False
 
 def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=None):
     scenario_name = entry.get("scenario")
@@ -258,18 +208,15 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
         v_ref = os.path.join(tmpdir, "vref.wav")
         v_deg = os.path.join(tmpdir, "vdeg.wav")
 
-        if not convert_to_wav(ref_input_path, v_ref, v_rate, v_channels):
+        if not wav_conv(ref_input_path, v_ref, v_rate, v_channels):
             return key, None
 
-        # Combined decode gate and conversion
-        if not convert_to_wav(aac_path, v_deg, v_rate, v_channels):
-            # If conversion fails, it might be a decode error. Returning 1.0 as "worst case"
-            # though convert_to_wav already prints the error.
+        if not wav_conv(aac_path, v_deg, v_rate, v_channels):
             print(f"  FFmpeg decode gate failed for {key}")
             return key, 1.0
 
         try:
-            # 1. Try visqol-python (Modern) - Now preferred as MOS discrepancy is fixed
+            # 1. Try visqol-python (Modern)
             if backend in ["auto", "visqol-python"]:
                 if HAS_VISQOL_PYTHON:
                     api = get_process_visqol_python(cfg["mode"], MODEL_DIR)
@@ -324,6 +271,9 @@ def main():
     parser.add_argument("external_data_dir", help="Path to external data directory")
     parser.add_argument("--backend", choices=["auto", "visqol", "visqol-py", "visqol-python"],
                         default="auto", help="ViSQOL backend to use")
+    parser.add_argument("--faac-bin", help="Path to faac binary for provenance verification")
+    parser.add_argument("--lib-path", help="Path to libfaac.so for provenance verification")
+    parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
 
     args = parser.parse_args()
 
@@ -344,11 +294,39 @@ def main():
     except FileNotFoundError:
         aac_files = []
 
-    # Filter to entries that don't already have a MOS score
+    # Provenance-aware caching
+    pending = {}
+    stale_count = 0
+
+    verify_provenance = args.faac_bin and args.lib_path
+
+    for key, entry in matrix.items():
+        if entry.get("mos") is None:
+            pending[key] = entry
+            continue
+
+        if verify_provenance:
+            info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files)
+            if info:
+                expected_hash = calculate_provenance_hash(args.faac_bin, args.lib_path, args.extra_args, info["ref_input_path"])
+                actual_hash = entry.get("prov_hash")
+                if actual_hash != expected_hash:
+                    print(f"!!! ERROR: Provenance mismatch for {key} !!!")
+                    print(f"    Expected: {expected_hash}")
+                    print(f"    Found in JSON: {actual_hash}")
+                    print(f"    The encoded .aac is STALE. Refusing to use its MOS.")
+                    entry["mos"] = None
+                    pending[key] = entry
+                    stale_count += 1
+
+    if stale_count > 0:
+        print(f"Found {stale_count} stale entries with provenance mismatch.")
+
+    # Re-read pending for those without MOS
     pending = {key: entry for key, entry in matrix.items() if entry.get("mos") is None}
     skipped = total - len(pending)
     if skipped > 0:
-        print(f"Skipping {skipped} entries with existing MOS scores.")
+        print(f"Skipping {skipped} entries with valid existing MOS scores.")
 
     if not pending:
         print("No pending MOS computations.")
@@ -356,14 +334,11 @@ def main():
 
     mos_results = {}
 
-    # 1. Attempt batch processing with visqol-python if it's the preferred backend
     if (args.backend in ["auto", "visqol-python"]) and HAS_VISQOL_PYTHON:
         batch_results = run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files)
         mos_results.update(batch_results)
-        # Update pending list to only include those that still need processing (failures)
         pending = {k: v for k, v in pending.items() if k not in mos_results}
 
-    # 2. Sequential/Parallel fallback stack for remaining samples (Modern -> Binary -> Legacy)
     still_pending = pending
     if still_pending:
         if args.backend == "auto":
@@ -385,7 +360,6 @@ def main():
                 mos_str = f"{mos:.2f}" if mos is not None else "N/A"
                 print(f"  ({i+1}/{len(still_pending)}) {key}: {mos_str}")
 
-    # Update data with results
     for key, mos in mos_results.items():
         if key in matrix:
             matrix[key]["mos"] = mos

@@ -28,6 +28,8 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
+from utils import decode_validate, calculate_provenance_hash, get_binary_size, get_file_hash
+
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import SCENARIOS
@@ -36,22 +38,6 @@ from config import SCENARIOS
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXTERNAL_DATA_DIR = os.path.join(SCRIPT_DIR, "data", "external")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
-
-
-def get_binary_size(path):
-    if os.path.exists(path):
-        return os.path.getsize(path)
-    return 0
-
-
-def get_md5(path):
-    if not os.path.exists(path):
-        return ""
-    hash_md5 = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
 
 
 def worker_init(cpu_id_queue):
@@ -64,7 +50,7 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
+def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.aac")
@@ -97,16 +83,26 @@ def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, e
         except ImportError:
             pass
 
+        # Decode validation
+        valid, decode_err = decode_validate(output_path)
+        if not valid:
+            print(f"    [DECODE ERROR] {sample}: {decode_err}")
+
+        # Provenance hash
+        prov_hash = calculate_provenance_hash(faac_bin_path, lib_path, extra_args, input_path)
+
         return key, {
             "mos": mos,
             "size": aac_size,
             "bitrate": actual_bitrate,
             "bitrate_target": cfg.get("bitrate"),
             "time": t_duration,
-            "md5": get_md5(output_path),
+            "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],
             "scenario": name,
-            "filename": sample
+            "filename": sample,
+            "decode_error": decode_err if not valid else None,
+            "prov_hash": prov_hash
         }
     except Exception as e:
         print(f" failed: {e}")
@@ -129,6 +125,9 @@ def run_benchmark(
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     results = {
         "sha": sha,
+        "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
+        "faac_precision": os.environ.get("FAAC_PRECISION"),
+        "faac_args": " ".join(extra_args) if extra_args else "",
         "matrix": {},
         "throughput": {},
         "lib_size": get_binary_size(lib_path)
@@ -171,6 +170,9 @@ def run_benchmark(
                     filtered_samples.append(sample)
 
             num_to_run = max(1, int(len(filtered_samples) * coverage / 100.0))
+            if len(filtered_samples) == 0:
+                print(f"  [Scenario: {name}] No samples found.")
+                continue
             step = len(filtered_samples) / num_to_run if num_to_run > 0 else 1
             samples = [filtered_samples[int(i * step)] for i in range(num_to_run)]
 
@@ -195,6 +197,7 @@ def run_benchmark(
                     executor.submit(
                         process_sample,
                         faac_bin_path,
+                        lib_path,
                         name,
                         cfg,
                         sample,
@@ -291,7 +294,8 @@ if __name__ == "__main__":
         for arg in args.extra_args:
             extra_args_list.extend(arg.split())
     if unknown:
-        extra_args_list.extend(unknown)
+        for arg in unknown:
+            extra_args_list.extend(arg.split())
 
     extra_args = extra_args_list if extra_args_list else None
     data = run_benchmark(
