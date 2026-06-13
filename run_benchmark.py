@@ -24,13 +24,15 @@ import argparse
 import platform
 import hashlib
 import shutil
+from utils import safe_run
 
 def calculate_docker_hash(script_dir):
     """Calculates a hash of the files used to build the ViSQOL Docker image."""
     files_to_hash = [
         "Dockerfile.visqol",
         "config.py",
-        "phase2_mos.py"
+        "phase2_mos.py",
+        "utils.py"
     ]
     hasher = hashlib.sha256()
     for fname in sorted(files_to_hash):
@@ -45,9 +47,9 @@ def calculate_docker_hash(script_dir):
 def get_git_tag():
     """Returns the current git tag if exactly on a tag, else None."""
     try:
-        result = subprocess.run(
+        result = safe_run(
             ["git", "describe", "--tags", "--exact-match"],
-            capture_output=True, text=True, check=True, shell=False
+            capture_output=True, text=True, check=True
         )
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -104,7 +106,7 @@ def main():
         # Use = format to ensure hyphenated values are correctly passed to the sub-process
         cmd_phase1.append(f"--extra-args={' '.join(extra_args_list)}")
 
-    subprocess.run(cmd_phase1, check=True, shell=False)
+    safe_run(cmd_phase1, check=True)
 
     if args.skip_mos:
         print(">>> Skipping Phase 2 as requested.")
@@ -138,7 +140,7 @@ def main():
     container_tool = None
     for tool in ["docker", "podman"]:
         try:
-            subprocess.run([tool, "--version"], check=True, capture_output=True, shell=False)
+            safe_run([tool, "--version"], check=True, capture_output=True)
             container_tool = tool
             break
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -186,7 +188,7 @@ def main():
             os.path.join(script_dir, "data", "external"),
             "--backend", selected_backend
         ]
-        subprocess.run(cmd_phase2, check=True, shell=False)
+        safe_run(cmd_phase2, check=True)
     else:
         # Strategy 3: Container (Docker/Podman)
         print(f"Using container strategy with {container_tool}...")
@@ -215,14 +217,14 @@ def main():
 
             # Check if it exists locally first
             inspect_cmd = [container_tool, "inspect", "--type=image", visqol_image]
-            if subprocess.run(inspect_cmd, capture_output=True, shell=False).returncode == 0:
+            if safe_run(inspect_cmd, capture_output=True).returncode == 0:
                 print(f"Found image {visqol_image} locally.")
                 pull_success = True
             else:
                 # Try to pull
                 print(f"Image not found locally. Attempting to pull {visqol_image}...")
                 pull_cmd = [container_tool, "pull", "--platform", "linux/amd64", visqol_image]
-                if subprocess.run(pull_cmd, shell=False).returncode == 0:
+                if safe_run(pull_cmd).returncode == 0:
                     pull_success = True
                 else:
                     print(f"Could not pull {visqol_image}.")
@@ -242,7 +244,7 @@ def main():
                     build_cmd.extend(["-t", tag])
                 build_cmd.append(script_dir)
 
-                subprocess.run(build_cmd, check=True, shell=False)
+                safe_run(build_cmd, check=True)
                 # If we were looking for a specific image and build succeeded,
                 # we should use the one we just built (which will be one of the tags)
                 if not args.visqol_image and not os.environ.get("VISQOL_IMAGE"):
@@ -265,7 +267,7 @@ def main():
                 visqol_image, f"/results/{results_file}", "/output", "/data",
                 "--backend", "auto"
             ]
-            subprocess.run(cmd_container, check=True, shell=False)
+            safe_run(cmd_container, check=True)
 
         except subprocess.CalledProcessError as e:
             print(f">>> ERROR: {container_tool} execution failed: {e}")
@@ -274,12 +276,12 @@ def main():
     # Phase 3: Stereo image fidelity (local; needs only ffmpeg + numpy, no ViSQOL).
     if not args.skip_stereo:
         print(">>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
-        subprocess.run([
+        safe_run([
             sys.executable, phase3_script,
             args.output,
             os.path.join(script_dir, "output"),
             os.path.join(script_dir, "data", "external"),
-        ], check=True, shell=False)
+        ], check=True)
 
     print(">>> Benchmark complete.")
 

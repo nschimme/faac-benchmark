@@ -25,6 +25,7 @@ import concurrent.futures
 import subprocess
 import shutil
 import argparse
+from utils import safe_run
 
 try:
     import ffmpeg
@@ -207,12 +208,16 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None):
 def convert_to_wav(input_path, output_path, rate, channels):
     try:
         if ffmpeg:
-            ffmpeg.input(input_path).output(
-                output_path, ar=rate, ac=channels, sample_fmt='s16').run(
-                quiet=True, overwrite_output=True)
+            try:
+                ffmpeg.input(input_path).output(
+                    output_path, ar=rate, ac=channels, sample_fmt='s16').run(
+                    quiet=True, overwrite_output=True)
+            except ffmpeg.Error as e:
+                print(f"  ffmpeg-python conversion failed for {input_path}:\n{e.stderr.decode() if e.stderr else str(e)}")
+                return False
         else:
-            subprocess.run(['ffmpeg', '-i', input_path, '-ar', str(rate), '-ac', str(channels), '-sample_fmt', 's16', output_path],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+            safe_run(['ffmpeg', '-i', input_path, '-ar', str(rate), '-ac', str(channels), '-sample_fmt', 's16', output_path],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception as e:
         print(f"  FFmpeg conversion failed for {input_path}: {e}")
@@ -288,7 +293,7 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                         if MODEL_DIR:
                             cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, "libsvm_nu_svr_model.txt")])
 
-                    result = subprocess.run(cmd, capture_output=True, text=True, check=True, shell=False)
+                    result = safe_run(cmd, capture_output=True, text=True, check=True)
                     for line in result.stdout.splitlines():
                         if "MOS-LQO:" in line:
                             mos = float(line.split()[-1])

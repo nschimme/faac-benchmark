@@ -24,6 +24,7 @@ import sys
 import json
 import hashlib
 import argparse
+from utils import safe_run
 import concurrent.futures
 import multiprocessing
 import fnmatch
@@ -77,7 +78,7 @@ def process_sample(faac_bin_path, name, cfg, sample, data_dir, precision, env, e
 
     try:
         t_start = time.time()
-        subprocess.run(cmd, env=env, check=True, capture_output=True, shell=False)
+        safe_run(cmd, env=env, check=True, capture_output=True)
         t_duration = time.time() - t_start
 
         mos = None
@@ -233,27 +234,25 @@ def run_benchmark(
                 print(f"  Benchmarking throughput with {sample}...")
                 try:
                     # Warmup
-                    subprocess.run([faac_bin_path,
+                    safe_run([faac_bin_path,
                                     "-o",
                                     output_path,
                                     input_path],
                                    env=env,
                                    check=True,
-                                   capture_output=True,
-                                   shell=False)
+                                   capture_output=True)
 
                     # Multiple runs to average noise
                     durations = []
                     for _ in range(3):
                         start_time = time.perf_counter()
-                        subprocess.run([faac_bin_path,
+                        safe_run([faac_bin_path,
                                         "-o",
                                         output_path,
                                         input_path],
                                        env=env,
                                        check=True,
-                                       capture_output=True,
-                                       shell=False)
+                                       capture_output=True)
                         durations.append(time.perf_counter() - start_time)
 
                     avg_dur = sum(durations) / len(durations)

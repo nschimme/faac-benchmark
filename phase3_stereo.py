@@ -45,6 +45,7 @@ import json
 import argparse
 import subprocess
 import tempfile
+from utils import safe_run
 import wave
 import concurrent.futures
 
@@ -67,14 +68,18 @@ def decode_stereo(path, tmpdir, tag, rate=48000):
     out = os.path.join(tmpdir, f"{tag}.wav")
     try:
         if ffmpeg:
-            ffmpeg.input(path).output(
-                out, ar=rate, ac=2, sample_fmt='s16').run(
-                quiet=True, overwrite_output=True)
+            try:
+                ffmpeg.input(path).output(
+                    out, ar=rate, ac=2, sample_fmt='s16').run(
+                    quiet=True, overwrite_output=True)
+            except ffmpeg.Error as e:
+                print(f"ffmpeg-python failed for {path}:\n{e.stderr.decode() if e.stderr else str(e)}", file=sys.stderr)
+                return None
         else:
-            r = subprocess.run(
+            r = safe_run(
                 ["ffmpeg", "-y", "-i", path, "-ar", str(rate), "-ac", "2",
                  "-sample_fmt", "s16", out],
-                capture_output=True, text=True, shell=False)
+                capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"ffmpeg failed for {path}:\n{r.stderr}", file=sys.stderr)
                 return None
