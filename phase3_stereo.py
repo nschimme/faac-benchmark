@@ -47,6 +47,7 @@ import subprocess
 import tempfile
 import wave
 import concurrent.futures
+import hashlib
 
 import numpy as np
 
@@ -109,9 +110,22 @@ def estimate_delay(ref, deg, win=50000, maxlag=4096):
     return int(np.argmax(np.correlate(d, r, mode="valid")))
 
 
-def coherence(L, R):
-    den = np.sqrt(np.sum(L * L) * np.sum(R * R)) + 1e-9
-    return np.sum(L * R) / den
+def coherence_vectorized(L, R, frame_size):
+    """Compute coherence for each frame of size `frame_size`."""
+    num_frames = L.shape[0] // frame_size
+    if num_frames == 0:
+        return np.array([])
+
+    L_f = L[:num_frames * frame_size].reshape(-1, frame_size)
+    R_f = R[:num_frames * frame_size].reshape(-1, frame_size)
+
+    # Sums across the frame dimension (axis=1)
+    sum_L2 = np.sum(L_f * L_f, axis=1)
+    sum_R2 = np.sum(R_f * R_f, axis=1)
+    sum_LR = np.sum(L_f * R_f, axis=1)
+
+    den = np.sqrt(sum_L2 * sum_R2) + 1e-9
+    return sum_LR / den
 
 
 def coherence_error(ref_path, deg_path):
@@ -130,21 +144,22 @@ def coherence_error(ref_path, deg_path):
     m = min(len(rL), len(dL))
     rL, rR, dL, dR = rL[:m], rR[:m], dL[:m], dR[:m]
 
-    errs = []
-    for s in range(0, m - FRAME, FRAME):
-        ec = abs(coherence(rL[s:s + FRAME], rR[s:s + FRAME])
-                 - coherence(dL[s:s + FRAME], dR[s:s + FRAME]))
-        errs.append(ec)
+    ref_coh = coherence_vectorized(rL, rR, FRAME)
+    deg_coh = coherence_vectorized(dL, dR, FRAME)
 
-    if not errs and m > 0:
+    if ref_coh.size > 0 and deg_coh.size > 0:
+        errs = np.abs(ref_coh - deg_coh)
+    else:
         # Fallback for short clips: compute coherence over the whole available segment.
-        ec = abs(coherence(rL, rR) - coherence(dL, dR))
-        errs.append(ec)
+        def simple_coherence(L, R):
+            den = np.sqrt(np.sum(L * L) * np.sum(R * R)) + 1e-9
+            return np.sum(L * R) / den
+        errs = np.array([abs(simple_coherence(rL, rR) - simple_coherence(dL, dR))])
 
-    return float(np.mean(errs)) if errs else None
+    return float(np.mean(errs)) if errs.size > 0 else None
 
 
-def compute_single(key, entry, aac_dir, external_data_dir, results_path, aac_files=None):
+def compute_single(key, entry, aac_dir, external_data_dir, results_path, aac_files=None, ref_wav_path=None):
     scenario_name = entry.get("scenario")
     cfg = SCENARIOS.get(scenario_name)
     if not cfg or cfg["mode"] == "speech":
@@ -157,7 +172,11 @@ def compute_single(key, entry, aac_dir, external_data_dir, results_path, aac_fil
         return key, None
 
     with tempfile.TemporaryDirectory() as td:
-        ref_wav = decode_stereo(ref_path, td, "ref")
+        if ref_wav_path and os.path.exists(ref_wav_path):
+            ref_wav = ref_wav_path
+        else:
+            ref_wav = decode_stereo(ref_path, td, "ref")
+
         deg_wav = decode_stereo(aac_path, td, "deg")
         if not ref_wav or not deg_wav:
             return key, None
@@ -195,23 +214,52 @@ def main():
         print("No pending stereo computations.")
         return
 
+    # Identify unique reference files for caching
+    unique_refs = sorted(list(set(v.get("filename") for v in pending.values())))
+
     num_cpus = os.cpu_count() or 1
     print(f"Computing inter-channel coherence error for {len(pending)} stereo samples "
           f"({num_cpus} cores)...")
 
     results = {}
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
-        futures = {
-            executor.submit(compute_single, k, v, args.aac_dir,
-                            args.external_data_dir, args.results_json, aac_files): k
-            for k, v in pending.items()
-        }
-        for i, fut in enumerate(concurrent.futures.as_completed(futures)):
-            key, ic = fut.result()
-            if ic is not None:
-                results[key] = ic
-            ic_str = f"{ic:.4f}" if ic is not None else "N/A"
-            print(f"  ({i+1}/{len(pending)}) {key}: {ic_str}")
+    with tempfile.TemporaryDirectory() as ref_cache_dir:
+        ref_wav_map = {}
+        if len(unique_refs) < len(pending):
+            print(f"Pre-decoding {len(unique_refs)} unique reference files...")
+            for i, filename in enumerate(unique_refs):
+                ref_path = os.path.join(args.external_data_dir, "audio", filename)
+                if os.path.exists(ref_path):
+                    # Use a hash or safe name for the cached wav
+                    tag = hashlib.md5(filename.encode()).hexdigest()
+                    wav_path = decode_stereo(ref_path, ref_cache_dir, tag)
+                    if wav_path:
+                        ref_wav_map[filename] = wav_path
+                print(f"  ({i+1}/{len(unique_refs)}) {filename} decoded.", end="\r")
+            print("")
+
+        # Group pending by scenario for progress reporting
+        scenarios_pending = {}
+        for k, v in pending.items():
+            s = v.get("scenario")
+            if s not in scenarios_pending:
+                scenarios_pending[s] = []
+            scenarios_pending[s].append((k, v))
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+            for scenario_name, items in scenarios_pending.items():
+                print(f"  [Scenario: {scenario_name}] Processing {len(items)} samples...")
+                futures = {
+                    executor.submit(compute_single, k, v, args.aac_dir,
+                                    args.external_data_dir, args.results_json,
+                                    aac_files, ref_wav_map.get(v.get("filename"))): k
+                    for k, v in items
+                }
+                for i, fut in enumerate(concurrent.futures.as_completed(futures)):
+                    key, ic = fut.result()
+                    if ic is not None:
+                        results[key] = ic
+                    ic_str = f"{ic:.4f}" if ic is not None else "N/A"
+                    print(f"    ({i+1}/{len(items)}) {key}: {ic_str}")
 
     for key, ic in results.items():
         if key in matrix:
