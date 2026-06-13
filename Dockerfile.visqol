@@ -33,6 +33,8 @@ COPY --from=builder /install /usr
 
 ENV PYTHONPATH=/usr/local/lib/python3.10/dist-packages:/usr/local/lib/python3.10/site-packages
 
-COPY config.py phase2_mos.py /app/
+# phase2_mos.py imports the shared helpers in utils.py, so it must be in the
+# image too or the entrypoint fails with ModuleNotFoundError: No module 'utils'.
+COPY config.py utils.py phase2_mos.py /app/
 
 ENTRYPOINT ["python3", "/app/phase2_mos.py"]
