@@ -47,6 +47,9 @@ def analyze_pair(base_file, cand_file):
         "mos_delta_sum": 0,
         "mos_count": 0,
         "missing_mos_count": 0,
+        "ic_delta_sum": 0,
+        "ic_count": 0,
+        "worst_ic_regression": (0, "N/A"),
         "tp_reduction": 0,
         "lib_size_chg": 0,
         "bitrate_chg_sum": 0,
@@ -72,6 +75,8 @@ def analyze_pair(base_file, cand_file):
                 "tp_sum_base": 0,
                 "mos_delta_sum": 0,
                 "mos_count": 0,
+                "ic_delta_sum": 0,
+                "ic_count": 0,
                 "bitrate_acc_sum": 0,
                 "bitrate_acc_count": 0,
                 "count": 0}),
@@ -127,6 +132,20 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["tp_sum_base"] += b_time
                 suite_results["scenario_stats"][scenario]["count"] += 1
                 speed_delta = (1 - o_time / b_time) * 100
+
+            # Stereo image fidelity (Phase 3). ic_err = inter-channel coherence
+            # error, lower = truer stereo image. Sign matches MOS: a positive
+            # delta means the candidate reduced the error (better stereo).
+            o_ic = o.get("ic_err")
+            b_ic = b.get("ic_err")
+            if o_ic is not None and b_ic is not None:
+                ic_delta = b_ic - o_ic
+                suite_results["ic_delta_sum"] += ic_delta
+                suite_results["ic_count"] += 1
+                suite_results["scenario_stats"][scenario]["ic_delta_sum"] += ic_delta
+                suite_results["scenario_stats"][scenario]["ic_count"] += 1
+                if ic_delta < suite_results["worst_ic_regression"][0]:
+                    suite_results["worst_ic_regression"] = (ic_delta, display_name)
 
             o_md5 = o.get("md5", "")
             b_md5 = b.get("md5", "")
@@ -313,6 +332,9 @@ def main():
     total_mos_delta = 0
     total_mos_count = 0
     total_missing_mos = 0
+    total_ic_delta = 0
+    total_ic_count = 0
+    worst_ic_regression = (0, "N/A")
     total_tp_reduction = 0
     total_lib_chg = 0
     total_bitrate_chg = 0
@@ -350,6 +372,10 @@ def main():
             total_mos_delta += data["mos_delta_sum"]
             total_mos_count += data["mos_count"]
             total_missing_mos += data["missing_mos_count"]
+            total_ic_delta += data["ic_delta_sum"]
+            total_ic_count += data["ic_count"]
+            if data["worst_ic_regression"][0] < worst_ic_regression[0]:
+                worst_ic_regression = data["worst_ic_regression"]
             total_tp_reduction += data["tp_reduction"]
             total_lib_chg += data["lib_size_chg"]
             total_bitrate_chg += data["bitrate_chg_sum"]
@@ -514,6 +540,18 @@ def main():
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
         summary_lines.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
 
+    # Stereo Image Δ (inter-channel coherence; positive = candidate truer stereo).
+    # MOS is monaural and cannot see this — see phase3_stereo.py.
+    if total_ic_count > 0:
+        avg_ic_delta = total_ic_delta / total_ic_count
+        if abs(avg_ic_delta) > 0.0005:
+            ic_icon = "🎧" if avg_ic_delta > 0.002 else "📉" if avg_ic_delta < -0.002 else ""
+            summary_lines.append(
+                f"| **Stereo Image Δ** | {avg_ic_delta:+.4f} (coherence) {ic_icon} |")
+        if worst_ic_regression[0] < -0.005:
+            summary_lines.append(
+                f"| **Worst Stereo Drop** | {worst_ic_regression[0]:+.4f} ({worst_ic_regression[1]}) |")
+
     if total_missing_mos > 0:
         summary_lines.append(
             f"\n⚠️ **Warning**: {total_missing_mos} MOS scores were missing/failed (treated as ❌).")
@@ -531,15 +569,17 @@ def main():
     if not summary_only:
         # Scenario Performance Table
         report.append("\n### Scenario Performance")
-        report.append("| Scenario | Avg MOS Δ | Throughput Δ | Bitrate Acc |")
-        report.append("| :--- | :---: | :---: | :---: |")
+        report.append("| Scenario | Avg MOS Δ | Stereo Δ | Throughput Δ | Bitrate Acc |")
+        report.append("| :--- | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0})
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0})
         for suite_data in all_suite_data.values():
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
                 global_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
                 global_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
+                global_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
+                global_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
                 global_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
                 global_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
                 global_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
@@ -548,9 +588,10 @@ def main():
         for sc_name in sorted(global_scenario_stats.keys()):
             gs = global_scenario_stats[sc_name]
             sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
+            sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
             sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
             sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
-            report.append(f"| {sc_name} | {sc_mos_delta} | {sc_tp_delta} | {sc_acc} |")
+            report.append(f"| {sc_name} | {sc_mos_delta} | {sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
 
         # 1. Collapsible Details: Regressions
         if total_regressions > 0:
