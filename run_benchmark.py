@@ -77,7 +77,7 @@ def main():
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
     phase3_script = os.path.join(script_dir, "phase3_stereo.py")
-    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or external_data_dir
+    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
 
     # Logic for A/B or Sweep
     runs = []
