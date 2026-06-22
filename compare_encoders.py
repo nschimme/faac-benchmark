@@ -53,6 +53,16 @@ class FDKAACEncoder(Encoder):
         # Note: fdkaac expects bitrate in bps or with 'k' suffix
         return [self.binary_path, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
 
+def get_audio_info(path):
+    try:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate", "-of", "json", path]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        s = data["streams"][0]
+        return int(s["channels"]), int(s["sample_rate"])
+    except:
+        return None, None
+
 def detect_encoders(args):
     encoders = []
 
@@ -60,6 +70,8 @@ def detect_encoders(args):
     faac_path = args.faac_bin or shutil.which("faac")
     if faac_path:
         encoders.append(FAACEncoder("FAAC", faac_path, "faac"))
+        if args.faac_lib:
+            encoders[-1].size += get_binary_size(args.faac_lib)
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
@@ -116,6 +128,11 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             actual_bitrate = (file_size * 8) / (audio_duration * 1000)
 
         valid, decode_err = decode_validate(output_path)
+        out_channels, out_rate = get_audio_info(output_path)
+        exp_channels = 1 if cfg["mode"] == "speech" else 2
+        if valid and out_channels is not None and out_channels != exp_channels:
+            valid = False
+            decode_err = f"Channels mismatch: {out_channels} vs {exp_channels}"
 
         return {
             "encoder": encoder.name,
@@ -137,6 +154,7 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
     parser.add_argument("--faac-bin", help="Path to faac binary")
+    parser.add_argument("--faac-lib", help="Path to libfaac.so")
     parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
@@ -208,9 +226,6 @@ def main():
     # MOS Phase
     if not args.skip_mos:
         print("\n>>> Phase 2: Perceptual Quality (MOS)")
-        # We need to bridge this with phase2_mos.py or implement it here.
-        # Let's try to reuse phase2_mos.py by creating a temporary results.json in its format.
-
         bridge_data = {"matrix": {}}
         for i, res in enumerate(all_results):
             key = f"res_{i}"
@@ -219,10 +234,7 @@ def main():
                 "filename": res["filename"],
                 "mos": None
             }
-            # Copy file to output_dir so phase2_mos can find it via get_aac_path
             shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
-            # Add a temporary property for phase2_mos to find the file
-            # Actually, phase2_mos.py:get_aac_path searches aac_dir.
 
         bridge_json = "bridge_results.json"
         with open(bridge_json, "w") as f:
@@ -241,7 +253,6 @@ def main():
         with open(bridge_json, "r") as f:
             updated_bridge = json.load(f)
 
-        # Map MOS back
         for i, res in enumerate(all_results):
             key = f"res_{i}"
             res["mos"] = updated_bridge["matrix"][key].get("mos")
@@ -249,7 +260,6 @@ def main():
     # Stereo Phase
     if not args.skip_stereo:
         print("\n>>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
-        # Re-use bridge_json for Phase 3
         bridge_data = {"matrix": {}}
         for i, res in enumerate(all_results):
             key = f"res_{i}"
@@ -258,6 +268,8 @@ def main():
                 "filename": res["filename"],
                 "ic_err": None
             }
+            if not os.path.exists(os.path.join(output_dir, f"{key}.aac")):
+                shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
 
         bridge_json = "bridge_results_stereo.json"
         with open(bridge_json, "w") as f:
@@ -275,7 +287,6 @@ def main():
         with open(bridge_json, "r") as f:
             updated_bridge = json.load(f)
 
-        # Map Stereo Error back
         for i, res in enumerate(all_results):
             key = f"res_{i}"
             res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
@@ -291,12 +302,12 @@ def main():
 
 def generate_leaderboard(encoders, results, output_path, scenario_list):
     # Stats aggregation
-    # encoder -> scenario -> metrics
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "ic_sum": 0, "ic_count": 0,
         "speed_sum": 0, "speed_count": 0,
-        "br_err_sum": 0, "br_err_count": 0
+        "br_err_sum": 0, "br_err_count": 0,
+        "valid_count": 0, "total_count": 0
     }))
 
     encoder_info = {e.name: e for e in encoders}
@@ -324,6 +335,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             stats[e][s]["br_err_sum"] += err
             stats[e][s]["br_err_count"] += 1
 
+        stats[e][s]["total_count"] += 1
+        if res.get("decode_valid"):
+            stats[e][s]["valid_count"] += 1
+
     # Overall rankings
     overall = {}
     for e_name in encoder_info:
@@ -332,10 +347,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         e_br_err = []
         e_ic = []
         e_mos_min = 6.0
+        e_total = 0
+        e_valid = 0
 
         has_data = False
-        for s_name in SCENARIOS.keys():
+        for s_name in scenario_list:
             s_stats = stats[e_name][s_name]
+            e_total += s_stats["total_count"]
+            e_valid += s_stats["valid_count"]
             if s_stats["mos_count"] > 0:
                 e_mos.append(s_stats["mos_sum"] / s_stats["mos_count"])
                 e_mos_min = min(e_mos_min, s_stats["mos_min"])
@@ -357,7 +376,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
                 "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
                 "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
-                "size_mb": encoder_info[e_name].size / (1024*1024)
+                "size_mb": encoder_info[e_name].size / (1024*1024),
+                "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
             }
 
     # Sort by Avg MOS if available, else by name
@@ -370,17 +390,24 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Avg MOS | Worst MOS | Stereo Δ | Speed (xRT) | Bitrate Error | Footprint |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Error | Speed (xRT) | Bitrate Error | Footprint |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
-        # For stereo error, lower is better. Filter out 0 (no data)
         valid_ic = [o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0]
         best_ic = min(valid_ic) if valid_ic else 0
+        valid_br = [o['avg_br_err'] for o in overall.values()]
+        best_br = min(valid_br) if valid_br else 0
 
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
+            rank_str = f"{i+1}"
+            if i == 0 and o['avg_mos'] > 0:
+                rank_str = f"🏆 {rank_str}"
+
+            status_str = "✅ OK" if o['valid_rate'] == 100 else f"❌ {100-o['valid_rate']:.1f}% Err"
+
             m_str = f"{o['avg_mos']:.3f}"
             if o['avg_mos'] == best_mos and best_mos > 0:
                 m_str = f"**{m_str}**"
@@ -393,7 +420,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             if o['avg_speed'] == best_speed and best_speed > 0:
                 s_str = f"**{s_str}**"
 
-            f.write(f"| {i+1} | {e_name} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {o['avg_br_err']:.1f}% | {o['size_mb']:.1f} MB |\n")
+            br_str = f"{o['avg_br_err']:.1f}%"
+            if o['avg_br_err'] == best_br:
+                br_str = f"**{br_str}**"
+
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_mb']:.1f} MB |\n")
 
         f.write("\n## Per-Scenario Quality (MOS)\n\n")
         scenarios = sorted(scenario_list)

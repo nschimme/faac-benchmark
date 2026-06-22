@@ -136,9 +136,10 @@ Options:
 
 The leaderboard evaluates the **Golden Triangle**:
 1. **Quality**: Average and Worst MOS across scenarios.
-2. **Efficiency**: Average encoding speed (xRT).
-3. **Footprint**: Executable/Library size.
-4. **Accuracy**: Average bitrate error %.
+2. **Fidelity**: Stereo image fidelity (inter-channel coherence error).
+3. **Efficiency**: Average encoding speed (xRT).
+4. **Footprint**: Executable/Library size (use `--faac-lib` to include the shared library).
+5. **Accuracy**: Average bitrate error %.
 
 ## Diagnostic tools
 
