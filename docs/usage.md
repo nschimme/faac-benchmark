@@ -135,11 +135,13 @@ Options:
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
 
 The leaderboard evaluates the **Golden Triangle**:
-1. **Quality**: Average and Worst MOS across scenarios.
-2. **Fidelity**: Stereo image fidelity (inter-channel coherence error).
-3. **Efficiency**: Average encoding speed (xRT).
-4. **Footprint**: Executable/Library size (use `--faac-lib` to include the shared library).
-5. **Accuracy**: Average bitrate error %.
+1. **Quality**: Average and Worst MOS across scenarios (higher is better).
+2. **Fidelity**: Stereo image fidelity via inter-channel coherence error (lower is better).
+3. **Efficiency**: Average encoding speed as a multiple of real-time (higher is better).
+4. **Footprint**: Combined executable and library size (lower is better).
+5. **Accuracy**: Average bitrate error % relative to target (lower is better).
+
+**Winner Highlighting**: The best-performing encoder in each category is **bolded** in the leaderboard tables.
 
 ## Diagnostic tools
 
