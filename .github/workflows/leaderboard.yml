@@ -31,11 +31,17 @@ jobs:
         run: |
           python3 setup_datasets.py
 
-      - name: Run Leaderboard (Gated)
+      - name: Run Leaderboard
         run: |
-          # Use --gate for CI efficiency.
+          # Use --gate for PRs and push to save time/resources.
+          # Run full benchmark for manual triggers.
+          GATE_FLAG=""
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            GATE_FLAG="--gate"
+          fi
+
           # visqol-python is installed via requirements.txt and bundles its own models.
-          python3 compare_encoders.py --gate --output leaderboard_ci.md
+          python3 compare_encoders.py $GATE_FLAG --output leaderboard_ci.md
 
       - name: Upload Leaderboard
         uses: actions/upload-artifact@v4
