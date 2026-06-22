@@ -9,14 +9,14 @@ positive is better. Per-clip status: `🌟` significant win, `⚠️`/`❌`/`�
 increasing regression severity, where `💀` means the candidate fell below the
 scenario's pass threshold.
 
-## Stereo Image Fidelity (Inter-channel Coherence)
+## Stereo Image Fidelity (Inter-channel Coherence Error)
 
 From phase 3 (`phase3_stereo.py`). MOS is monaural and cannot see stereo-image
-damage; this metric tracks inter-channel coherence error (`ic_err`, lower is
-truer).
+damage; this metric tracks inter-channel coherence error (`ic_err`).
 
-- **Leaderboard**: Reports the raw coherence error value (lower is truer).
-- **A/B Report**: Reports the signed delta where **positive = candidate has the truer stereo image**.
+- **Coherence Error**: A value representing the deviation from the reference stereo image. 0.0 means the stereo image is perfectly preserved.
+- **Leaderboard**: Reports the raw coherence error value (**lower is truer**).
+- **A/B Report**: Reports the signed delta where **positive = candidate reduced the error (truer stereo image)**.
 
 ## Throughput Δ
 

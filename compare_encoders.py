@@ -19,7 +19,7 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import safe_run, get_binary_size, decode_validate, wav_conv, get_ffmpeg_path, ffmpeg_probe
+from utils import get_binary_size, decode_validate, get_ffmpeg_path, ffmpeg_probe
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -223,7 +223,7 @@ def main():
     with open(args.results_json, "w") as f:
         json.dump(all_results, f, indent=2)
 
-    # MOS Phase
+    # Perceptual Quality (MOS)
     if not args.skip_mos:
         print("\n>>> Phase 2: Perceptual Quality (MOS)")
         bridge_data = {"matrix": {}}
@@ -257,7 +257,7 @@ def main():
             key = f"res_{i}"
             res["mos"] = updated_bridge["matrix"][key].get("mos")
 
-    # Stereo Phase
+    # Stereo Coherence Phase
     if not args.skip_stereo:
         print("\n>>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
         bridge_data = {"matrix": {}}
@@ -268,31 +268,32 @@ def main():
                 "filename": res["filename"],
                 "ic_err": None
             }
+            # Ensure files exist in output_dir
             if not os.path.exists(os.path.join(output_dir, f"{key}.aac")):
                 shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
 
-        bridge_json = "bridge_results_stereo.json"
-        with open(bridge_json, "w") as f:
+        bridge_json_stereo = "bridge_results_stereo.json"
+        with open(bridge_json_stereo, "w") as f:
             json.dump(bridge_data, f, indent=2)
 
         phase3_script = os.path.join(script_dir, "phase3_stereo.py")
         cmd_phase3 = [
             sys.executable, phase3_script,
-            bridge_json,
+            bridge_json_stereo,
             output_dir,
             external_data_dir
         ]
         subprocess.run(cmd_phase3, check=True)
 
-        with open(bridge_json, "r") as f:
+        with open(bridge_json_stereo, "r") as f:
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
             key = f"res_{i}"
             res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
-        if os.path.exists(bridge_json):
-            os.remove(bridge_json)
+        if os.path.exists(bridge_json_stereo):
+            os.remove(bridge_json_stereo)
 
     if os.path.exists("bridge_results.json"):
         os.remove("bridge_results.json")
@@ -301,7 +302,7 @@ def main():
     generate_leaderboard(encoders, all_results, args.output, scenario_list)
 
 def generate_leaderboard(encoders, results, output_path, scenario_list):
-    # Stats aggregation
+    # Aggregation
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "ic_sum": 0, "ic_count": 0,
@@ -309,8 +310,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         "br_err_sum": 0, "br_err_count": 0,
         "valid_count": 0, "total_count": 0
     }))
-
-    encoder_info = {e.name: e for e in encoders}
 
     for res in results:
         e = res["encoder"]
@@ -340,15 +339,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             stats[e][s]["valid_count"] += 1
 
     # Overall rankings
+    encoder_info = {e.name: e for e in encoders}
     overall = {}
     for e_name in encoder_info:
-        e_mos = []
-        e_speed = []
-        e_br_err = []
-        e_ic = []
+        e_mos, e_speed, e_br_err, e_ic = [], [], [], []
         e_mos_min = 6.0
-        e_total = 0
-        e_valid = 0
+        e_total = e_valid = 0
 
         has_data = False
         for s_name in scenario_list:
@@ -380,160 +376,102 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
             }
 
-    # Sort by Avg MOS if available, else by name
+    # Rank by Avg MOS if available
     has_mos = any(o["avg_mos"] > 0 for o in overall.values())
-    if has_mos:
-        sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["avg_mos"], reverse=True)
-    else:
-        sorted_encoders = sorted(overall.keys())
+    sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["avg_mos"], reverse=True) if has_mos else sorted(overall.keys())
 
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Error | Speed (xRT) | Bitrate Error | Footprint |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Coh. Error | Speed (xRT) | Bitrate Error | Footprint |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
-        valid_ic = [o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0]
-        best_ic = min(valid_ic) if valid_ic else 0
+
+        has_ic = any(o['avg_ic'] > 0 for o in overall.values())
+        best_ic = min(o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
+
         valid_br = [o['avg_br_err'] for o in overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
-            rank_str = f"{i+1}"
-            if i == 0 and o['avg_mos'] > 0:
-                rank_str = f"🏆 {rank_str}"
-
+            rank_str = f"🏆 {i+1}" if i == 0 and o['avg_mos'] > 0 else f"{i+1}"
             status_str = "✅ OK" if o['valid_rate'] == 100 else f"❌ {100-o['valid_rate']:.1f}% Err"
 
-            m_str = f"{o['avg_mos']:.3f}"
-            if o['avg_mos'] == best_mos and best_mos > 0:
-                m_str = f"**{m_str}**"
+            m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
 
-            ic_str = f"{o['avg_ic']:.4f}" if o['avg_ic'] > 0 else "N/A"
-            if o['avg_ic'] == best_ic and best_ic > 0:
-                ic_str = f"**{ic_str}**"
+            ic_val = o['avg_ic']
+            if ic_val > 0:
+                ic_str = f"**{ic_val:.4f}**" if ic_val == best_ic else f"{ic_val:.4f}"
+            else:
+                ic_str = "N/A"
 
-            s_str = f"{o['avg_speed']:.1f}x"
-            if o['avg_speed'] == best_speed and best_speed > 0:
-                s_str = f"**{s_str}**"
-
-            br_str = f"{o['avg_br_err']:.1f}%"
-            if o['avg_br_err'] == best_br:
-                br_str = f"**{br_str}**"
+            s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
+            br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
 
             f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_mb']:.1f} MB |\n")
 
-        f.write("\n## Per-Scenario Quality (MOS)\n\n")
+        # Per-Scenario Tables
         scenarios = sorted(scenario_list)
+
+        # 1. Quality
+        f.write("\n## Per-Scenario Quality (MOS)\n\n")
         f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
-
-        best_per_scen_mos = {}
         for s in scenarios:
-            best_mos_val = 0
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                if s_stats["mos_count"] > 0:
-                    best_mos_val = max(best_mos_val, s_stats["mos_sum"] / s_stats["mos_count"])
-            best_per_scen_mos[s] = best_mos_val
-
-        for s in scenarios:
+            best_val = max(stats[e][s]["mos_sum"]/stats[e][s]["mos_count"] for e in sorted_encoders if stats[e][s]["mos_count"] > 0) if any(stats[e][s]["mos_count"] > 0 for e in sorted_encoders) else 0
             line = f"| {s} |"
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                mos_val = s_stats["mos_sum"] / s_stats["mos_count"] if s_stats["mos_count"] > 0 else None
-                if mos_val is not None:
-                    m_str = f"{mos_val:.3f}"
-                    if mos_val == best_per_scen_mos[s] and best_per_scen_mos[s] > 0:
-                        m_str = f"**{m_str}**"
-                    line += f" {m_str} |"
-                else:
-                    line += " N/A |"
+            for e in sorted_encoders:
+                val = stats[e][s]["mos_sum"]/stats[e][s]["mos_count"] if stats[e][s]["mos_count"] > 0 else None
+                line += f" **{val:.3f}** |" if val == best_val and best_val > 0 else (f" {val:.3f} |" if val is not None else " N/A |")
             f.write(line + "\n")
 
+        # 2. Stereo
         f.write("\n## Per-Scenario Stereo Image Fidelity (Coherence Error)\n\n")
+        f.write("> **Note**: Measured as |Coherence(Ref) - Coherence(Deg)|. **Lower is truer** (closer to reference stereo image).\n\n")
         f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
-
-        best_per_scen_ic = {}
         for s in scenarios:
-            best_ic_val = float('inf')
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                if s_stats["ic_count"] > 0:
-                    best_ic_val = min(best_ic_val, s_stats["ic_sum"] / s_stats["ic_count"])
-            best_per_scen_ic[s] = best_ic_val if best_ic_val != float('inf') else 0
-
-        for s in scenarios:
+            best_val = min(stats[e][s]["ic_sum"]/stats[e][s]["ic_count"] for e in sorted_encoders if stats[e][s]["ic_count"] > 0) if any(stats[e][s]["ic_count"] > 0 for e in sorted_encoders) else float('inf')
             line = f"| {s} |"
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                ic_val = s_stats["ic_sum"] / s_stats["ic_count"] if s_stats["ic_count"] > 0 else None
-                if ic_val is not None:
-                    ic_str = f"{ic_val:.4f}"
-                    if ic_val == best_per_scen_ic[s] and best_per_scen_ic[s] > 0:
-                        ic_str = f"**{ic_str}**"
-                    line += f" {ic_str} |"
-                else:
-                    line += " N/A |"
+            for e in sorted_encoders:
+                val = stats[e][s]["ic_sum"]/stats[e][s]["ic_count"] if stats[e][s]["ic_count"] > 0 else None
+                line += f" **{val:.4f}** |" if val == best_val and best_val != float('inf') else (f" {val:.4f} |" if val is not None else " N/A |")
             f.write(line + "\n")
 
+        # 3. Bitrate Error
         f.write("\n## Per-Scenario Bitrate Accuracy (Error %)\n\n")
         f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
-
-        best_per_scen_err = {}
         for s in scenarios:
-            best_err_val = float('inf')
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                if s_stats["br_err_count"] > 0:
-                    best_err_val = min(best_err_val, s_stats["br_err_sum"] / s_stats["br_err_count"])
-            best_per_scen_err[s] = best_err_val
-
-        for s in scenarios:
+            best_val = min(stats[e][s]["br_err_sum"]/stats[e][s]["br_err_count"] for e in sorted_encoders if stats[e][s]["br_err_count"] > 0) if any(stats[e][s]["br_err_count"] > 0 for e in sorted_encoders) else float('inf')
             line = f"| {s} |"
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                err_val = s_stats["br_err_sum"] / s_stats["br_err_count"] if s_stats["br_err_count"] > 0 else None
-                if err_val is not None:
-                    e_str = f"{err_val:.1f}%"
-                    if err_val == best_per_scen_err[s]:
-                        e_str = f"**{e_str}**"
-                    line += f" {e_str} |"
-                else:
-                    line += " N/A |"
+            for e in sorted_encoders:
+                val = stats[e][s]["br_err_sum"]/stats[e][s]["br_err_count"] if stats[e][s]["br_err_count"] > 0 else None
+                line += f" **{val:.1f}%** |" if val == best_val and best_val != float('inf') else (f" {val:.1f}% |" if val is not None else " N/A |")
             f.write(line + "\n")
 
+        # 4. Efficiency
         f.write("\n## Per-Scenario Efficiency (Speed xRT)\n\n")
         f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
-
-        best_per_scen_speed = {}
         for s in scenarios:
-            best_speed_val = 0
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                if s_stats["speed_count"] > 0:
-                    best_speed_val = max(best_speed_val, s_stats["speed_sum"] / s_stats["speed_count"])
-            best_per_scen_speed[s] = best_speed_val
-
-        for s in scenarios:
+            best_val = max(stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] for e in sorted_encoders if stats[e][s]["speed_count"] > 0) if any(stats[e][s]["speed_count"] > 0 for e in sorted_encoders) else 0
             line = f"| {s} |"
-            for e_name in sorted_encoders:
-                s_stats = stats[e_name][s]
-                speed_val = s_stats["speed_sum"] / s_stats["speed_count"] if s_stats["speed_count"] > 0 else None
-                if speed_val is not None:
-                    s_str = f"{speed_val:.1f}x"
-                    if speed_val == best_per_scen_speed[s] and best_per_scen_speed[s] > 0:
-                        s_str = f"**{s_str}**"
-                    line += f" {s_str} |"
-                else:
-                    line += " N/A |"
+            for e in sorted_encoders:
+                val = stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] if stats[e][s]["speed_count"] > 0 else None
+                line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
             f.write(line + "\n")
+
+        f.write("\n---\n")
+        f.write("**Metric Legend**:\n")
+        f.write("- **Avg MOS**: Perceptual quality (1-5, **Higher is Better**)\n")
+        f.write("- **Stereo Coh. Error**: deviation from reference stereo image (**Lower is Better**)\n")
+        f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
+        f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
+        f.write("- **Footprint**: Combined binary and library size (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
