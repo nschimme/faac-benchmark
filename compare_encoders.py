@@ -50,7 +50,8 @@ class FFmpegEncoder(Encoder):
 class FDKAACEncoder(Encoder):
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         # fdkaac -b <bitrate> -o <out> <in>
-        return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
+        # Note: fdkaac expects bitrate in bps or with 'k' suffix
+        return [self.binary_path, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
 
 def detect_encoders(args):
     encoders = []

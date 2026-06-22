@@ -1,0 +1,48 @@
+name: Multi-Encoder Leaderboard
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  leaderboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Encoders
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faac fdkaac ffmpeg
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Setup Datasets
+        run: |
+          python3 setup_datasets.py
+
+      - name: Run Leaderboard (Gated)
+        run: |
+          # Use --gate for CI efficiency, --skip-mos if ViSQOL is not set up
+          # Note: ViSQOL requires more setup or the Docker backend.
+          # For this CI job, we'll try to run with --gate and --skip-mos to ensure it works.
+          python3 compare_encoders.py --gate --skip-mos --output leaderboard_ci.md
+
+      - name: Upload Leaderboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: encoder-leaderboard
+          path: leaderboard_ci.md
+
+      - name: Display Leaderboard in Summary
+        run: cat leaderboard_ci.md >> $GITHUB_STEP_SUMMARY

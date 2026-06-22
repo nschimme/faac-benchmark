@@ -120,6 +120,26 @@ Bitrate is **not** sweepable — it defines a scenario's identity (`music_low` i
 64 kbps), so sweeping `-b` would mislabel results. To study a bitrate range, add
 a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 
+## Cross-Encoder Comparison (`compare_encoders.py`)
+
+Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard.
+
+```bash
+python3 compare_encoders.py [options]
+```
+
+Options:
+- `--gate`: Use the small fixed gate subset (recommended for quick checks).
+- `--skip-mos`: Skip perceptual quality (MOS) calculation.
+- `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`: Manual paths to encoder binaries.
+- `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
+
+The leaderboard evaluates the **Golden Triangle**:
+1. **Quality**: Average and Worst MOS across scenarios.
+2. **Efficiency**: Average encoding speed (xRT).
+3. **Footprint**: Executable/Library size.
+4. **Accuracy**: Average bitrate error %.
+
 ## Diagnostic tools
 
 ```bash
