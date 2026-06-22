@@ -141,6 +141,7 @@ def main():
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
+    parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
@@ -164,7 +165,15 @@ def main():
 
     num_cpus = os.cpu_count() or 1
 
-    for scenario_name, cfg in SCENARIOS.items():
+    scenario_list = SCENARIOS.keys()
+    if args.scenarios:
+        scenario_list = [s.strip() for s in args.scenarios.split(",")]
+
+    for scenario_name in scenario_list:
+        if scenario_name not in SCENARIOS:
+            print(f"Scenario {scenario_name} not found in config, skipping.")
+            continue
+        cfg = SCENARIOS[scenario_name]
         print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
         data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
         data_dir = os.path.join(external_data_dir, data_subdir)
@@ -207,9 +216,10 @@ def main():
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
-                "mos": None,
-                "aac_path": res["aac_path"] # phase2_mos.py uses get_aac_path which searches, but we can patch it or pass it.
+                "mos": None
             }
+            # Copy file to output_dir so phase2_mos can find it via get_aac_path
+            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
             # Add a temporary property for phase2_mos to find the file
             # Actually, phase2_mos.py:get_aac_path searches aac_dir.
 
@@ -238,9 +248,9 @@ def main():
         os.remove(bridge_json)
 
     # Final leaderboard generation
-    generate_leaderboard(encoders, all_results, args.output)
+    generate_leaderboard(encoders, all_results, args.output, scenario_list)
 
-def generate_leaderboard(encoders, results, output_path):
+def generate_leaderboard(encoders, results, output_path, scenario_list):
     # Stats aggregation
     # encoder -> scenario -> metrics
     stats = defaultdict(lambda: defaultdict(lambda: {
@@ -314,54 +324,101 @@ def generate_leaderboard(encoders, results, output_path):
         f.write("| Rank | Encoder | Avg MOS | Worst MOS | Speed (xRT) | Bitrate Error | Footprint |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: |\n")
 
+        best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
+        best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
+
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
-            f.write(f"| {i+1} | {e_name} | {o['avg_mos']:.3f} | {o['worst_mos']:.3f} | {o['avg_speed']:.1f}x | {o['avg_br_err']:.1f}% | {o['size_mb']:.1f} MB |\n")
+            m_str = f"{o['avg_mos']:.3f}"
+            if o['avg_mos'] == best_mos and best_mos > 0:
+                m_str = f"**{m_str}**"
+
+            s_str = f"{o['avg_speed']:.1f}x"
+            if o['avg_speed'] == best_speed and best_speed > 0:
+                s_str = f"**{s_str}**"
+
+            f.write(f"| {i+1} | {e_name} | {m_str} | {o['worst_mos']:.3f} | {s_str} | {o['avg_br_err']:.1f}% | {o['size_mb']:.1f} MB |\n")
 
         f.write("\n## Per-Scenario Quality (MOS)\n\n")
-        scenarios = sorted(SCENARIOS.keys())
+        scenarios = sorted(scenario_list)
         f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
+
+        best_per_scen_mos = {}
+        for s in scenarios:
+            best_mos_val = 0
+            for e_name in encoders:
+                s_stats = stats[e_name.name][s]
+                if s_stats["mos_count"] > 0:
+                    best_mos_val = max(best_mos_val, s_stats["mos_sum"] / s_stats["mos_count"])
+            best_per_scen_mos[s] = best_mos_val
 
         for e_name in sorted_encoders:
             line = f"| {e_name} |"
             for s in scenarios:
                 s_stats = stats[e_name][s]
-                mos = s_stats["mos_sum"] / s_stats["mos_count"] if s_stats["mos_count"] > 0 else "N/A"
-                if isinstance(mos, float):
-                    line += f" {mos:.3f} |"
+                mos_val = s_stats["mos_sum"] / s_stats["mos_count"] if s_stats["mos_count"] > 0 else None
+                if mos_val is not None:
+                    m_str = f"{mos_val:.3f}"
+                    if mos_val == best_per_scen_mos[s] and best_per_scen_mos[s] > 0:
+                        m_str = f"**{m_str}**"
+                    line += f" {m_str} |"
                 else:
-                    line += f" {mos} |"
+                    line += " N/A |"
             f.write(line + "\n")
 
         f.write("\n## Per-Scenario Bitrate Accuracy (Error %)\n\n")
         f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
 
+        best_per_scen_err = {}
+        for s in scenarios:
+            best_err_val = float('inf')
+            for e_name in encoders:
+                s_stats = stats[e_name.name][s]
+                if s_stats["br_err_count"] > 0:
+                    best_err_val = min(best_err_val, s_stats["br_err_sum"] / s_stats["br_err_count"])
+            best_per_scen_err[s] = best_err_val
+
         for e_name in sorted_encoders:
             line = f"| {e_name} |"
             for s in scenarios:
                 s_stats = stats[e_name][s]
-                err = s_stats["br_err_sum"] / s_stats["br_err_count"] if s_stats["br_err_count"] > 0 else "N/A"
-                if isinstance(err, float):
-                    line += f" {err:.1f}% |"
+                err_val = s_stats["br_err_sum"] / s_stats["br_err_count"] if s_stats["br_err_count"] > 0 else None
+                if err_val is not None:
+                    e_str = f"{err_val:.1f}%"
+                    if err_val == best_per_scen_err[s]:
+                        e_str = f"**{e_str}**"
+                    line += f" {e_str} |"
                 else:
-                    line += f" {err} |"
+                    line += " N/A |"
             f.write(line + "\n")
 
         f.write("\n## Per-Scenario Efficiency (Speed xRT)\n\n")
         f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
 
+        best_per_scen_speed = {}
+        for s in scenarios:
+            best_speed_val = 0
+            for e_name in encoders:
+                s_stats = stats[e_name.name][s]
+                if s_stats["speed_count"] > 0:
+                    best_speed_val = max(best_speed_val, s_stats["speed_sum"] / s_stats["speed_count"])
+            best_per_scen_speed[s] = best_speed_val
+
         for e_name in sorted_encoders:
             line = f"| {e_name} |"
             for s in scenarios:
                 s_stats = stats[e_name][s]
-                speed = s_stats["speed_sum"] / s_stats["speed_count"] if s_stats["speed_count"] > 0 else "N/A"
-                if isinstance(speed, float):
-                    line += f" {speed:.1f}x |"
+                speed_val = s_stats["speed_sum"] / s_stats["speed_count"] if s_stats["speed_count"] > 0 else None
+                if speed_val is not None:
+                    s_str = f"{speed_val:.1f}x"
+                    if speed_val == best_per_scen_speed[s] and best_per_scen_speed[s] > 0:
+                        s_str = f"**{s_str}**"
+                    line += f" {s_str} |"
                 else:
-                    line += f" {speed} |"
+                    line += " N/A |"
             f.write(line + "\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
