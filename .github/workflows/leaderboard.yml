@@ -33,10 +33,9 @@ jobs:
 
       - name: Run Leaderboard (Gated)
         run: |
-          # Use --gate for CI efficiency, --skip-mos if ViSQOL is not set up
-          # Note: ViSQOL requires more setup or the Docker backend.
-          # For this CI job, we'll try to run with --gate and --skip-mos to ensure it works.
-          python3 compare_encoders.py --gate --skip-mos --output leaderboard_ci.md
+          # Use --gate for CI efficiency.
+          # visqol-python is installed via requirements.txt and bundles its own models.
+          python3 compare_encoders.py --gate --output leaderboard_ci.md
 
       - name: Upload Leaderboard
         uses: actions/upload-artifact@v4
