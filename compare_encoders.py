@@ -1,0 +1,369 @@
+"""
+ * FAAC Benchmark Suite - Encoder Comparison & Leaderboard
+ * Copyright (C) 2026 Nils Schimmelmann
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+"""
+
+import os
+import sys
+import json
+import time
+import argparse
+import subprocess
+import shutil
+import concurrent.futures
+import multiprocessing
+from collections import defaultdict
+
+from utils import safe_run, get_binary_size, decode_validate, wav_conv, get_ffmpeg_path, ffmpeg_probe
+from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+
+# Ensure the current directory is in the path for config import
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+class Encoder:
+    def __init__(self, name, binary_path, encoder_type):
+        self.name = name
+        self.binary_path = binary_path
+        self.encoder_type = encoder_type
+        self.size = get_binary_size(binary_path) if binary_path else 0
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        raise NotImplementedError
+
+class FAACEncoder(Encoder):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
+
+class FFmpegEncoder(Encoder):
+    def __init__(self, name, binary_path, codec_name):
+        super().__init__(name, binary_path, "ffmpeg")
+        self.codec_name = codec_name
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        return [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name, "-b:a", f"{bitrate_kbps}k", output_path]
+
+class FDKAACEncoder(Encoder):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        # fdkaac -b <bitrate> -o <out> <in>
+        return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
+
+def detect_encoders(args):
+    encoders = []
+
+    # 1. FAAC
+    faac_path = args.faac_bin or shutil.which("faac")
+    if faac_path:
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac"))
+
+    # 2. FFmpeg Internal AAC
+    ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
+    if ffmpeg_path:
+        encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac"))
+
+        # Check for libfdk_aac in ffmpeg
+        try:
+            res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
+            if "libfdk_aac" in res.stdout:
+                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac"))
+            if "vo_aacenc" in res.stdout:
+                encoders.append(FFmpegEncoder("VO-AAC (FFmpeg)", ffmpeg_path, "vo_aacenc"))
+        except:
+            pass
+
+    # 3. Standalone FDKAAC
+    fdkaac_path = args.fdkaac_bin or shutil.which("fdkaac")
+    if fdkaac_path:
+        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac"))
+
+    return encoders
+
+def gate_filter(name, filtered_samples):
+    available = set(filtered_samples)
+    picked = [c for c in GATE_CLIPS.get(name, []) if c in available]
+    if picked:
+        return picked
+    n = min(GATE_FALLBACK_N, len(filtered_samples))
+    if n <= 0:
+        return []
+    step = len(filtered_samples) / n
+    return [filtered_samples[int(i * step)] for i in range(n)]
+
+def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
+    input_path = os.path.join(data_dir, sample)
+    output_filename = f"{encoder.name}_{scenario_name}_{sample}.aac".replace(" ", "_")
+    output_path = os.path.join(output_dir, output_filename)
+
+    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"])
+
+    try:
+        t_start = time.perf_counter()
+        subprocess.run(cmd, capture_output=True, check=True)
+        t_end = time.perf_counter()
+        duration = t_end - t_start
+
+        file_size = os.path.getsize(output_path)
+
+        # Calculate actual bitrate
+        actual_bitrate = None
+        audio_duration = ffmpeg_probe(input_path)
+        if audio_duration:
+            actual_bitrate = (file_size * 8) / (audio_duration * 1000)
+
+        valid, decode_err = decode_validate(output_path)
+
+        return {
+            "encoder": encoder.name,
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": duration,
+            "audio_duration": audio_duration,
+            "size": file_size,
+            "actual_bitrate": actual_bitrate,
+            "target_bitrate": cfg["bitrate"],
+            "decode_valid": valid,
+            "decode_error": decode_err,
+            "aac_path": output_path
+        }
+    except Exception as e:
+        print(f"Error encoding {sample} with {encoder.name}: {e}")
+        return None
+
+def main():
+    parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
+    parser.add_argument("--faac-bin", help="Path to faac binary")
+    parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
+    parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
+    parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
+    parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
+    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset")
+    parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
+    parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
+    parser.add_argument("--backend", default="auto", help="ViSQOL backend")
+
+    args = parser.parse_args()
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
+    output_dir = os.path.join(script_dir, "output", "comparison")
+    os.makedirs(output_dir, exist_ok=True)
+
+    encoders = detect_encoders(args)
+    if not encoders:
+        print("No encoders detected!")
+        sys.exit(1)
+
+    print(f"Detected encoders: {', '.join([e.name for e in encoders])}")
+
+    all_results = []
+
+    num_cpus = os.cpu_count() or 1
+
+    for scenario_name, cfg in SCENARIOS.items():
+        print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
+        data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
+        data_dir = os.path.join(external_data_dir, data_subdir)
+        if not os.path.exists(data_dir):
+            print(f"Data directory {data_dir} not found, skipping.")
+            continue
+
+        all_samples = sorted([f for f in os.listdir(data_dir) if f.endswith(".wav")])
+        if args.gate:
+            samples = gate_filter(scenario_name, all_samples)
+        else:
+            num_to_run = max(1, int(len(all_samples) * args.coverage / 100.0))
+            step = len(all_samples) / num_to_run if num_to_run > 0 else 1
+            samples = [all_samples[int(i * step)] for i in range(num_to_run)]
+
+        print(f"Processing {len(samples)} samples...")
+
+        for encoder in encoders:
+            print(f"  Encoding with {encoder.name}...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                futures = [executor.submit(process_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
+                for future in concurrent.futures.as_completed(futures):
+                    res = future.result()
+                    if res:
+                        all_results.append(res)
+
+    # Save intermediate results
+    with open(args.results_json, "w") as f:
+        json.dump(all_results, f, indent=2)
+
+    # MOS Phase
+    if not args.skip_mos:
+        print("\n>>> Phase 2: Perceptual Quality (MOS)")
+        # We need to bridge this with phase2_mos.py or implement it here.
+        # Let's try to reuse phase2_mos.py by creating a temporary results.json in its format.
+
+        bridge_data = {"matrix": {}}
+        for i, res in enumerate(all_results):
+            key = f"res_{i}"
+            bridge_data["matrix"][key] = {
+                "scenario": res["scenario"],
+                "filename": res["filename"],
+                "mos": None,
+                "aac_path": res["aac_path"] # phase2_mos.py uses get_aac_path which searches, but we can patch it or pass it.
+            }
+            # Add a temporary property for phase2_mos to find the file
+            # Actually, phase2_mos.py:get_aac_path searches aac_dir.
+
+        bridge_json = "bridge_results.json"
+        with open(bridge_json, "w") as f:
+            json.dump(bridge_data, f, indent=2)
+
+        phase2_script = os.path.join(script_dir, "phase2_mos.py")
+        cmd_phase2 = [
+            sys.executable, phase2_script,
+            bridge_json,
+            output_dir,
+            external_data_dir,
+            "--backend", args.backend
+        ]
+        subprocess.run(cmd_phase2, check=True)
+
+        with open(bridge_json, "r") as f:
+            updated_bridge = json.load(f)
+
+        # Map MOS back
+        for i, res in enumerate(all_results):
+            key = f"res_{i}"
+            res["mos"] = updated_bridge["matrix"][key].get("mos")
+
+        os.remove(bridge_json)
+
+    # Final leaderboard generation
+    generate_leaderboard(encoders, all_results, args.output)
+
+def generate_leaderboard(encoders, results, output_path):
+    # Stats aggregation
+    # encoder -> scenario -> metrics
+    stats = defaultdict(lambda: defaultdict(lambda: {
+        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "speed_sum": 0, "speed_count": 0,
+        "br_err_sum": 0, "br_err_count": 0
+    }))
+
+    encoder_info = {e.name: e for e in encoders}
+
+    for res in results:
+        e = res["encoder"]
+        s = res["scenario"]
+
+        if res.get("mos") is not None:
+            stats[e][s]["mos_sum"] += res["mos"]
+            stats[e][s]["mos_count"] += 1
+            stats[e][s]["mos_min"] = min(stats[e][s]["mos_min"], res["mos"])
+
+        if res["duration"] > 0 and res["audio_duration"]:
+            speed = res["audio_duration"] / res["duration"]
+            stats[e][s]["speed_sum"] += speed
+            stats[e][s]["speed_count"] += 1
+
+        if res["actual_bitrate"] and res["target_bitrate"]:
+            err = abs(res["actual_bitrate"] - res["target_bitrate"]) / res["target_bitrate"] * 100
+            stats[e][s]["br_err_sum"] += err
+            stats[e][s]["br_err_count"] += 1
+
+    # Overall rankings
+    overall = {}
+    for e_name in encoder_info:
+        e_mos = []
+        e_speed = []
+        e_br_err = []
+        e_mos_min = 6.0
+
+        has_data = False
+        for s_name in SCENARIOS.keys():
+            s_stats = stats[e_name][s_name]
+            if s_stats["mos_count"] > 0:
+                e_mos.append(s_stats["mos_sum"] / s_stats["mos_count"])
+                e_mos_min = min(e_mos_min, s_stats["mos_min"])
+                has_data = True
+            if s_stats["speed_count"] > 0:
+                e_speed.append(s_stats["speed_sum"] / s_stats["speed_count"])
+                has_data = True
+            if s_stats["br_err_count"] > 0:
+                e_br_err.append(s_stats["br_err_sum"] / s_stats["br_err_count"])
+                has_data = True
+
+        if has_data:
+            overall[e_name] = {
+                "avg_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
+                "worst_mos": e_mos_min if e_mos else 0,
+                "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
+                "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
+                "size_mb": encoder_info[e_name].size / (1024*1024)
+            }
+
+    # Sort by Avg MOS if available, else by name
+    has_mos = any(o["avg_mos"] > 0 for o in overall.values())
+    if has_mos:
+        sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["avg_mos"], reverse=True)
+    else:
+        sorted_encoders = sorted(overall.keys())
+
+    with open(output_path, "w") as f:
+        f.write("# AAC Encoder Leaderboard\n\n")
+        f.write("## Overall Rankings\n\n")
+        f.write("| Rank | Encoder | Avg MOS | Worst MOS | Speed (xRT) | Bitrate Error | Footprint |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: |\n")
+
+        for i, e_name in enumerate(sorted_encoders):
+            o = overall[e_name]
+            f.write(f"| {i+1} | {e_name} | {o['avg_mos']:.3f} | {o['worst_mos']:.3f} | {o['avg_speed']:.1f}x | {o['avg_br_err']:.1f}% | {o['size_mb']:.1f} MB |\n")
+
+        f.write("\n## Per-Scenario Quality (MOS)\n\n")
+        scenarios = sorted(SCENARIOS.keys())
+        f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
+
+        for e_name in sorted_encoders:
+            line = f"| {e_name} |"
+            for s in scenarios:
+                s_stats = stats[e_name][s]
+                mos = s_stats["mos_sum"] / s_stats["mos_count"] if s_stats["mos_count"] > 0 else "N/A"
+                if isinstance(mos, float):
+                    line += f" {mos:.3f} |"
+                else:
+                    line += f" {mos} |"
+            f.write(line + "\n")
+
+        f.write("\n## Per-Scenario Bitrate Accuracy (Error %)\n\n")
+        f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
+
+        for e_name in sorted_encoders:
+            line = f"| {e_name} |"
+            for s in scenarios:
+                s_stats = stats[e_name][s]
+                err = s_stats["br_err_sum"] / s_stats["br_err_count"] if s_stats["br_err_count"] > 0 else "N/A"
+                if isinstance(err, float):
+                    line += f" {err:.1f}% |"
+                else:
+                    line += f" {err} |"
+            f.write(line + "\n")
+
+        f.write("\n## Per-Scenario Efficiency (Speed xRT)\n\n")
+        f.write("| Encoder | " + " | ".join(scenarios) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(scenarios)) + " |\n")
+
+        for e_name in sorted_encoders:
+            line = f"| {e_name} |"
+            for s in scenarios:
+                s_stats = stats[e_name][s]
+                speed = s_stats["speed_sum"] / s_stats["speed_count"] if s_stats["speed_count"] > 0 else "N/A"
+                if isinstance(speed, float):
+                    line += f" {speed:.1f}x |"
+                else:
+                    line += f" {speed} |"
+            f.write(line + "\n")
+
+    print(f"\nLeaderboard generated at: {output_path}")
+
+if __name__ == "__main__":
+    main()
