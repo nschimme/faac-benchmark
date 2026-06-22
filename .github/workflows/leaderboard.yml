@@ -1,0 +1,53 @@
+name: Multi-Encoder Leaderboard
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  leaderboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install Encoders
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faac fdkaac ffmpeg
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Setup Datasets
+        run: |
+          python3 setup_datasets.py
+
+      - name: Run Leaderboard
+        run: |
+          # Use --gate for PRs and push to save time/resources.
+          # Run full benchmark for manual triggers.
+          GATE_FLAG=""
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            GATE_FLAG="--gate"
+          fi
+
+          # visqol-python is installed via requirements.txt and bundles its own models.
+          python3 compare_encoders.py $GATE_FLAG --output leaderboard_ci.md
+
+      - name: Upload Leaderboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: encoder-leaderboard
+          path: leaderboard_ci.md
+
+      - name: Display Leaderboard in Summary
+        run: cat leaderboard_ci.md >> $GITHUB_STEP_SUMMARY

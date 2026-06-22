@@ -12,6 +12,9 @@ results/
 output/
 data/external/
 report.md
+summary.md
+leaderboard*.md
+comparison_results.json
 test_results/
 test_report.md
 

@@ -150,6 +150,18 @@ validation. The report always shows a **Decode Errors** count.
   decoder check has been validated as clean across the LC corpus (it has, as of
   this change: 0 decode errors over 448 LC clips spanning all scenarios).
 
+## Multi-Encoder Leaderboard (`leaderboard.yml`)
+
+The repository includes an automated workflow to compare `faac` against other
+stable AAC encoders (FDK-AAC, FFmpeg internal).
+
+- **Triggers**: On every push or pull request to `master`.
+- **Output**: Generates a competitive leaderboard in the **GitHub Action Summary** and as a downloadable `leaderboard_ci.md` artifact.
+- **Metrics**: Reports Quality (MOS), Stereo Fidelity, Encoding Speed, and Bitrate Accuracy across all scenarios.
+
+To trigger manually:
+Go to **Actions** -> **Multi-Encoder Leaderboard** -> **Run workflow**.
+
 ## Provenance
 
 Pass `--faac-git-sha` and `--faac-precision` to `run_benchmark.py` to stamp the
