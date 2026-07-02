@@ -12,7 +12,7 @@ import os
 import json
 import sys
 import argparse
-from utils import load_results, get_aac_path
+from utils import load_results, get_aac_path, get_scenario_sort_key
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
@@ -94,7 +94,8 @@ def compare(file_a, file_b, bands=False, bands_top=3):
         print("No matching clips found between the two result sets.")
         return
 
-    for s, rows in sorted(scen.items()):
+    for s in sorted(scen.keys(), key=get_scenario_sort_key):
+        rows = scen[s]
         ds = [r[0] for r in rows]
         wins = sum(1 for d in ds if d > 0.02)
         losses = sum(1 for d in ds if d < -0.02)

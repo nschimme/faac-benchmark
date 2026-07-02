@@ -19,7 +19,7 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, decode_validate, get_ffmpeg_path, ffmpeg_probe
+from utils import get_binary_size, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -443,7 +443,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_kb']:.1f} KB |\n")
 
         # Per-Scenario Tables
-        scenarios = sorted(scenario_list)
+        scenarios = sorted(scenario_list, key=get_scenario_sort_key)
 
         # 1. Quality
         f.write("\n## Per-Scenario Quality (MOS)\n\n")
