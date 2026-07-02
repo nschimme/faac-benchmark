@@ -22,6 +22,7 @@ import sys
 import os
 import argparse
 from collections import defaultdict
+from utils import get_scenario_sort_key
 
 
 # Set from main()'s --strict-decode. When False (default), a candidate that
@@ -99,7 +100,15 @@ def analyze_pair(base_file, cand_file):
 
     if cand_m:
         suite_results["total_cases"] = len(cand_m)
-        for k in sorted(cand_m.keys()):
+        # Sort by dataset/bitrate, then filename. Precompute keys for performance.
+        decorated = []
+        for k, o in cand_m.items():
+            scen_key = get_scenario_sort_key(o.get("scenario", ""))
+            filename = o.get("filename", k)
+            decorated.append(((scen_key, filename), k))
+
+        decorated.sort()
+        for _, k in decorated:
             o = cand_m[k]
             b = base_m.get(k, {})
 
@@ -618,7 +627,7 @@ def main():
                 global_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
                 global_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
 
-        for sc_name in sorted(global_scenario_stats.keys()):
+        for sc_name in sorted(global_scenario_stats.keys(), key=get_scenario_sort_key):
             gs = global_scenario_stats[sc_name]
             sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
             sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"

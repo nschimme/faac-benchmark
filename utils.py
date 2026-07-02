@@ -13,6 +13,8 @@ import subprocess
 import hashlib
 import json
 import sys
+import re
+from functools import lru_cache
 
 def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
     """Safe wrapper for subprocess.run."""
@@ -161,6 +163,64 @@ def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path, env=
     hasher.update(get_file_hash(input_path, "sha256").encode())
 
     return hasher.hexdigest()[:16]
+
+@lru_cache(maxsize=128)
+def get_scenario_sort_key(name):
+    """Returns a sortable key for a scenario: (dataset_rank, bitrate, rate, name).
+    Dataset rank: 0 for mono/speech, 1 for stereo/audio, 2 for others.
+    Bitrate and rate are numeric.
+    """
+    try:
+        from config import SCENARIOS
+    except ImportError:
+        SCENARIOS = {}
+
+    dataset_rank = 2
+    bitrate = 0
+    rate = 0
+
+    if name in SCENARIOS:
+        cfg = SCENARIOS[name]
+        mode = cfg.get("mode", "")
+        if mode == "speech":
+            dataset_rank = 0
+        elif mode == "audio":
+            dataset_rank = 1
+
+        bitrate = cfg.get("bitrate", 0)
+        rate = cfg.get("rate", 0)
+    else:
+        # Attempt to parse from name: e.g. "48k_stereo_128k"
+        # Try full pattern
+        m = re.match(r"^(\d+)k_(mono|stereo|speech|audio)_(\d+)k$", name)
+        if m:
+            rate = int(m.group(1)) * 1000
+            mode_str = m.group(2)
+            bitrate = int(m.group(3))
+            if mode_str in ["mono", "speech"]:
+                dataset_rank = 0
+            elif mode_str in ["stereo", "audio"]:
+                dataset_rank = 1
+        else:
+            # Heuristics
+            if "mono" in name or "speech" in name:
+                dataset_rank = 0
+            elif "stereo" in name or "audio" in name:
+                dataset_rank = 1
+
+            # Extract bitrate (usually the last number before a 'k').
+            # Use findall and take the last match to honor the "last number" heuristic.
+            m_br_list = re.findall(r"(\d+)k(?:$|_)", name)
+            if m_br_list:
+                bitrate = int(m_br_list[-1])
+
+            # Extract rate (usually the first number)
+            m_rate = re.search(r"^(\d+)k", name)
+            if m_rate:
+                rate = int(m_rate.group(1)) * 1000
+
+    return (dataset_rank, bitrate, rate, name)
+
 
 def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
     # Preferred: the matrix entry records the exact .aac file phase1 produced for
