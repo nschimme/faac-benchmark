@@ -100,12 +100,15 @@ def analyze_pair(base_file, cand_file):
 
     if cand_m:
         suite_results["total_cases"] = len(cand_m)
-        # Sort by dataset/bitrate, then filename
-        sorted_keys = sorted(cand_m.keys(), key=lambda x: (
-            get_scenario_sort_key(cand_m[x].get("scenario", "")),
-            cand_m[x].get("filename", x)
-        ))
-        for k in sorted_keys:
+        # Sort by dataset/bitrate, then filename. Precompute keys for performance.
+        decorated = []
+        for k, o in cand_m.items():
+            scen_key = get_scenario_sort_key(o.get("scenario", ""))
+            filename = o.get("filename", k)
+            decorated.append(((scen_key, filename), k))
+
+        decorated.sort()
+        for _, k in decorated:
             o = cand_m[k]
             b = base_m.get(k, {})
 

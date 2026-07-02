@@ -94,7 +94,8 @@ def compare(file_a, file_b, bands=False, bands_top=3):
         print("No matching clips found between the two result sets.")
         return
 
-    for s in sorted(scen.keys(), key=get_scenario_sort_key):
+    # Sort scenarios deterministically: by rank/bitrate, then by name
+    for s in sorted(scen.keys(), key=lambda s: (get_scenario_sort_key(s), s)):
         rows = scen[s]
         ds = [r[0] for r in rows]
         wins = sum(1 for d in ds if d > 0.02)
