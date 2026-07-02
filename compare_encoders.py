@@ -25,29 +25,56 @@ from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+def find_linked_lib(binary_path, name_substr):
+    """Resolve the on-disk path of a shared library linked into binary_path via ldd."""
+    try:
+        res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
+        for line in res.stdout.splitlines():
+            if name_substr in line and "=>" in line:
+                lib_path = line.split("=>")[1].strip().split(" ")[0]
+                if lib_path and os.path.exists(lib_path):
+                    return lib_path
+    except Exception:
+        pass
+    return None
+
 class Encoder:
-    def __init__(self, name, binary_path, encoder_type):
+    def __init__(self, name, binary_path, encoder_type, lib_name_substr=None):
         self.name = name
         self.binary_path = binary_path
         self.encoder_type = encoder_type
-        self.size = get_binary_size(binary_path) if binary_path else 0
+        # Footprint is the codec *library* size, not the CLI/host binary size.
+        # If the codec is linked dynamically, measure the shared library on disk;
+        # otherwise (static linking) fall back to the binary itself.
+        lib_path = find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None
+        self.size = get_binary_size(lib_path) if lib_path else (get_binary_size(binary_path) if binary_path else 0)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         raise NotImplementedError
 
 class FAACEncoder(Encoder):
+    def __init__(self, name, binary_path, encoder_type):
+        super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
+
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name):
-        super().__init__(name, binary_path, "ffmpeg")
+        lib_name_substr = {
+            "libfdk_aac": "libfdk-aac",
+            "vo_aacenc": "vo-aacenc",
+        }.get(codec_name)
+        super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         return [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name, "-b:a", f"{bitrate_kbps}k", output_path]
 
 class FDKAACEncoder(Encoder):
+    def __init__(self, name, binary_path, encoder_type):
+        super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
+
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         # fdkaac -b <bitrate> -o <out> <in>
         # Note: fdkaac expects bitrate in bps or with 'k' suffix
@@ -71,7 +98,7 @@ def detect_encoders(args):
     if faac_path:
         encoders.append(FAACEncoder("FAAC", faac_path, "faac"))
         if args.faac_lib:
-            encoders[-1].size += get_binary_size(args.faac_lib)
+            encoders[-1].size = get_binary_size(args.faac_lib)
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
@@ -372,7 +399,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
                 "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
                 "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
-                "size_mb": encoder_info[e_name].size / (1024*1024),
+                "size_kb": encoder_info[e_name].size / 1024,
                 "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
             }
 
@@ -413,7 +440,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
 
-            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_mb']:.1f} MB |\n")
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_kb']:.1f} KB |\n")
 
         # Per-Scenario Tables
         scenarios = sorted(scenario_list)
@@ -477,7 +504,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **Footprint**: Combined binary and library size (**Lower is Better**)\n")
+        f.write("- **Footprint**: Codec shared-library size (falls back to the host binary if statically linked) (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
