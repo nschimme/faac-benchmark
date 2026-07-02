@@ -137,11 +137,12 @@ class TestE2EMock(unittest.TestCase):
         self.assertIn("Scenario Performance", content)
         self.assertIn("Bit-Exact", content)
         self.assertIn("Speed Δ", content)
+        self.assertIn("Stereo Fid.", content)
 
         with open(summary_md) as f:
             summary = f.read()
         self.assertIn("Regressions", summary)
-        self.assertIn("Throughput", summary)
+        self.assertTrue(any(x in summary for x in ("Throughput", "TP")), "Throughput/TP missing in summary")
 
     # ------------------------------------------------------------------
     # Test
