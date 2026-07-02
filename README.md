@@ -6,7 +6,7 @@ FAAC is the high-efficiency encoder for the resource-constrained world. This rep
 
 1.  **Install**: `pip install -r requirements.txt`
 2.  **Setup**: `python3 setup_datasets.py`
-3.  **Run**: `python3 run_benchmark.py <faac> <libfaac.so> <name> <output.json>`
+3.  **Run**: `python3 run_benchmark.py <faac> <libfaac.so> <name> <output.json> --gate`
 
 ## Documentation
 

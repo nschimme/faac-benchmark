@@ -108,7 +108,7 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
 | `visqol-image` | Docker image for ViSQOL (else internal discovery). | No | `""` |
 | `sha` | Commit SHA to associate with these results. | No | `${{ github.sha }}` |
-| `scenarios` | Comma-separated scenarios (e.g. `voip,vss`). | No | |
+| `scenarios` | Comma-separated scenarios (e.g. `16k_16k_mono,48k_128k_stereo`). | No | |
 | `include-tests` | Comma-separated include globs (e.g. `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated exclude globs. | No | |
 | `backend` | `auto`, `docker`, `visqol`, `visqol-py`, `visqol-python`. | No | `visqol-python` |

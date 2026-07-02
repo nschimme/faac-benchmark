@@ -18,47 +18,79 @@
 """
 
 SCENARIOS = {
-    "voip": {
+    "16k_16k_mono": {
         "mode": "speech",
         "rate": 16000,
         "visqol_rate": 16000,
         "bitrate": 16,
         "thresh": 2.5},
-    "vss": {
+    "16k_40k_mono": {
         "mode": "speech",
         "rate": 16000,
         "visqol_rate": 16000,
         "bitrate": 40,
         "thresh": 3.0},
-    # Low-bitrate music points (24 and 20 kbps/ch stereo). Named by rate, not
-    # codec: while HE-AAC is dormant these run as pure LC (valid low-rate LC
-    # tests); once HE auto-engages in faac they become the HE-vs-LC comparison
-    # at the bitrates where HE-AAC v1 is designed to win.
-    "music_48": {
+    "48k_24k_stereo": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
-        "bitrate": 48,
-        "thresh": 3.0},
-    "music_40": {
+        "bitrate": 24,
+        "thresh": 2.0},
+    "48k_32k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 32,
+        "thresh": 2.4},
+    "48k_40k_stereo": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 40,
         "thresh": 2.8},
-    "music_low": {
+    "48k_48k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 48,
+        "thresh": 3.0},
+    "48k_56k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 56,
+        "thresh": 3.2},
+    "48k_64k_stereo": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 64,
         "thresh": 3.5},
-    "music_std": {
+    "48k_96k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 96,
+        "thresh": 3.8},
+    "48k_128k_stereo": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 128,
         "thresh": 4.0},
-    "music_high": {
+    "48k_160k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 160,
+        "thresh": 4.2},
+    "48k_192k_stereo": {
+        "mode": "audio",
+        "rate": 48000,
+        "visqol_rate": 48000,
+        "bitrate": 192,
+        "thresh": 4.25},
+    "48k_256k_stereo": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
@@ -83,12 +115,18 @@ _SPEECH_GATE = [
     "C_18_NOISE_ML.wav",
 ]
 GATE_CLIPS = {
-    "voip": _SPEECH_GATE,
-    "vss": _SPEECH_GATE,
-    "music_40": _MUSIC_GATE,
-    "music_48": _MUSIC_GATE,
-    "music_low": _MUSIC_GATE,
-    "music_std": _MUSIC_GATE,
-    "music_high": _MUSIC_GATE,
+    "16k_16k_mono": _SPEECH_GATE,
+    "16k_40k_mono": _SPEECH_GATE,
+    "48k_24k_stereo": _MUSIC_GATE,
+    "48k_32k_stereo": _MUSIC_GATE,
+    "48k_40k_stereo": _MUSIC_GATE,
+    "48k_48k_stereo": _MUSIC_GATE,
+    "48k_56k_stereo": _MUSIC_GATE,
+    "48k_64k_stereo": _MUSIC_GATE,
+    "48k_96k_stereo": _MUSIC_GATE,
+    "48k_128k_stereo": _MUSIC_GATE,
+    "48k_160k_stereo": _MUSIC_GATE,
+    "48k_192k_stereo": _MUSIC_GATE,
+    "48k_256k_stereo": _MUSIC_GATE,
 }
 GATE_FALLBACK_N = 4

@@ -36,7 +36,7 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
-| `--scenarios voip,music_low` | Restrict to specific scenarios (default: all) |
+| `--scenarios 16k_16k_mono,48k_64k_stereo` | Restrict to specific scenarios (default: all) |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
@@ -78,7 +78,7 @@ Override with `--visqol-image <image>`.
 ### Filtering tests and scenarios
 
 ```bash
-python3 run_benchmark.py ... --scenarios music_low,music_std
+python3 run_benchmark.py ... --scenarios 48k_64k_stereo,48k_128k_stereo
 python3 run_benchmark.py ... --include-tests "TCD_*"
 python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 ```
@@ -116,7 +116,7 @@ python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "--pns=0,2,4"
 python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
 ```
 
-Bitrate is **not** sweepable — it defines a scenario's identity (`music_low` is
+Bitrate is **not** sweepable — it defines a scenario's identity (`48k_64k_stereo` is
 64 kbps), so sweeping `-b` would mislabel results. To study a bitrate range, add
 a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 
@@ -136,7 +136,7 @@ Options:
 
 The leaderboard evaluates the **Golden Triangle**:
 1. **Quality**: Average and Worst MOS across scenarios (higher is better).
-2. **Fidelity**: Stereo image fidelity via inter-channel coherence error (lower is better).
+2. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
 3. **Efficiency**: Average encoding speed as a multiple of real-time (higher is better).
 4. **Footprint**: Combined executable and library size (lower is better).
 5. **Accuracy**: Average bitrate error % relative to target (lower is better).

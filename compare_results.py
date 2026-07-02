@@ -143,7 +143,7 @@ def analyze_pair(base_file, cand_file):
 
             # Stereo image fidelity (Phase 3). ic_err = inter-channel coherence
             # error, lower = truer stereo image. Sign matches MOS: a positive
-            # delta means the candidate reduced the error (better stereo).
+            # delta means the candidate improved fidelity (reduced the error).
             o_ic = o.get("ic_err")
             b_ic = b.get("ic_err")
             if o_ic is not None and b_ic is not None:
@@ -567,14 +567,14 @@ def main():
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
         summary_lines.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
 
-    # Stereo Image Δ (inter-channel coherence; positive = candidate truer stereo).
+    # Stereo Fidelity Δ (inter-channel coherence; positive = candidate truer stereo).
     # MOS is monaural and cannot see this — see phase3_stereo.py.
     if total_ic_count > 0:
         avg_ic_delta = total_ic_delta / total_ic_count
         if abs(avg_ic_delta) > 0.0005:
             ic_icon = "🎧" if avg_ic_delta > 0.002 else "📉" if avg_ic_delta < -0.002 else ""
             summary_lines.append(
-                f"| **Stereo Image Δ** | {avg_ic_delta:+.4f} (coherence) {ic_icon} |")
+                f"| **Stereo Fidelity Δ** | {avg_ic_delta:+.4f} {ic_icon} |")
         if worst_ic_regression[0] < -0.005:
             summary_lines.append(
                 f"| **Worst Stereo Drop** | {worst_ic_regression[0]:+.4f} ({worst_ic_regression[1]}) |")
@@ -602,7 +602,7 @@ def main():
     if not summary_only:
         # Scenario Performance Table
         report.append("\n### Scenario Performance")
-        report.append("| Scenario | Avg MOS Δ | Stereo Δ | Throughput Δ | Bitrate Acc |")
+        report.append("| Scenario | Avg MOS Δ | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
         report.append("| :--- | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios

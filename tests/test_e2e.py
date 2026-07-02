@@ -83,24 +83,24 @@ class TestE2EMock(unittest.TestCase):
         r = self._run([
             sys.executable, "run_benchmark.py",
             self.faac_bin, self.lib_path, "test", base_json,
-            "--scenarios", "voip", "--sha", "base_123", "--skip-mos",
+            "--scenarios", "16k_16k_mono", "--sha", "base_123", "--skip-mos",
         ], check=True)
         with open(base_json) as f:
             return json.load(f), base_json
 
     def _assert_base_results(self, data: dict):
         self.assertEqual(data["sha"], "base_123")
-        self.assertTrue(any(k.startswith("voip_") for k in data["matrix"]),
-                        "expected voip keys in base results")
-        self.assertFalse(any(k.startswith("vss_") for k in data["matrix"]),
-                         "vss should not appear in base results")
+        self.assertTrue(any(k.startswith("16k_16k_mono_") for k in data["matrix"]),
+                        "expected 16k_16k_mono keys in base results")
+        self.assertFalse(any(k.startswith("16k_40k_mono_") for k in data["matrix"]),
+                         "16k_40k_mono should not appear in base results")
 
     def _run_cand_benchmark(self) -> dict:
         cand_json = os.path.join(self.results_dir, "test_cand.json")
         self._run([
             sys.executable, "run_benchmark.py",
             self.faac_bin, self.lib_path, "test", cand_json,
-            "--scenarios", "voip,vss,music_std",
+            "--scenarios", "16k_16k_mono,16k_40k_mono,48k_128k_stereo",
             "--include-tests", "sample_0.wav,sample_1.wav",
             "--sha", "cand_456", "--skip-mos",
         ], check=True)
@@ -112,10 +112,10 @@ class TestE2EMock(unittest.TestCase):
         keys = list(data["matrix"])
         self.assertTrue(all("sample_0.wav" in k or "sample_1.wav" in k for k in keys),
                         "only sample_0 and sample_1 should appear (filter active)")
-        self.assertTrue(any("voip_" in k for k in keys), "voip scenario missing")
-        self.assertTrue(any("vss_" in k for k in keys), "vss scenario missing")
-        self.assertTrue(any("music_std_" in k for k in keys), "music_std scenario missing")
-        for mk in (k for k in keys if "music_std_" in k):
+        self.assertTrue(any("16k_16k_mono_" in k for k in keys), "16k_16k_mono scenario missing")
+        self.assertTrue(any("16k_40k_mono_" in k for k in keys), "16k_40k_mono scenario missing")
+        self.assertTrue(any("48k_128k_stereo_" in k for k in keys), "48k_128k_stereo scenario missing")
+        for mk in (k for k in keys if "48k_128k_stereo_" in k):
             self.assertIn("ic_err", data["matrix"][mk],
                           f"Phase 3 ic_err missing for stereo key {mk}")
 

@@ -36,7 +36,7 @@
  It is a regression *guard*, not a perceptual ground truth — the gold standard
  for stereo coding remains a subjective MUSHRA/ABX listening test. Use this to
  ensure stereo changes do not silently degrade the image, and to detect when a
- change trades real stereo fidelity for a higher (monaural) MOS.
+ change trades real stereo fidelity (higher is better) for a higher (monaural) MOS.
 """
 
 import os
@@ -132,6 +132,7 @@ def coherence_vectorized(L, R, frame_size):
 
 def coherence_error(ref_path, deg_path):
     """Mean per-frame |coherence(ref) - coherence(deg)|, time-aligned.
+    Note: Lower error is better. Reporting layers invert this to Fidelity (1.0 - error).
 
     Returns None if the reference is mono (no stereo image to measure)."""
     rL, rR = read_stereo(ref_path)
