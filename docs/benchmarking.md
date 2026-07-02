@@ -9,15 +9,21 @@ means adding a scenario, not overriding `-b`.
 
 | Scenario | Mode | Bitrate | Per-channel | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| `voip` | speech | 16k | 16k mono | telephony |
-| `vss` | speech | 40k | 40k mono | wideband speech |
-| `music_40` | audio | 40k | 20k/ch | low-rate music |
-| `music_48` | audio | 48k | 24k/ch | low-rate music |
-| `music_low` | audio | 64k | 32k/ch | |
-| `music_std` | audio | 128k | 64k/ch | |
-| `music_high` | audio | 256k | 128k/ch | transparency |
+| `16k_mono_16k` | speech | 16k | 16k mono | telephony |
+| `16k_mono_40k` | speech | 40k | 40k mono | wideband speech |
+| `48k_stereo_24k` | audio | 24k | 12k/ch | HE-AAC Floor |
+| `48k_stereo_32k` | audio | 32k | 16k/ch | |
+| `48k_stereo_40k` | audio | 40k | 20k/ch | low-rate music |
+| `48k_stereo_48k` | audio | 48k | 24k/ch | low-rate music |
+| `48k_stereo_56k` | audio | 56k | 28k/ch | HE-AAC Ceiling |
+| `48k_stereo_64k` | audio | 64k | 32k/ch | LC-AAC Low |
+| `48k_stereo_96k` | audio | 96k | 48k/ch | |
+| `48k_stereo_128k` | audio | 128k | 64k/ch | LC-AAC Common |
+| `48k_stereo_160k` | audio | 160k | 80k/ch | |
+| `48k_stereo_192k` | audio | 192k | 96k/ch | |
+| `48k_stereo_256k` | audio | 256k | 128k/ch | transparency |
 
-`music_40` / `music_48` are named **by rate, not codec**. While HE-AAC is not
+`48k_stereo_40k` / `48k_stereo_48k` are named **by rate, not codec**. While HE-AAC is not
 auto-engaged in faac they run as pure LC (valid low-rate LC tests); once faac's
 auto-mode picks HE at those per-channel rates, the same scenario becomes the
 HE-vs-LC comparison at the bitrates where HE-AAC v1 is designed to win — no

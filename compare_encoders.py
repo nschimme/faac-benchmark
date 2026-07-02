@@ -383,14 +383,15 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Coh. Error | Speed (xRT) | Bitrate Error | Footprint |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | Footprint |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
 
         has_ic = any(o['avg_ic'] > 0 for o in overall.values())
-        best_ic = min(o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
+        # Stereo Fidelity = 1.0 - error. Higher is better.
+        best_ic = max(1.0 - o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
 
         valid_br = [o['avg_br_err'] for o in overall.values()]
         best_br = min(valid_br) if valid_br else 0
@@ -404,7 +405,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
             ic_val = o['avg_ic']
             if ic_val > 0:
-                ic_str = f"**{ic_val:.4f}**" if ic_val == best_ic else f"{ic_val:.4f}"
+                fid = 1.0 - ic_val
+                ic_str = f"**{fid:.4f}**" if fid == best_ic else f"{fid:.4f}"
             else:
                 ic_str = "N/A"
 
@@ -429,16 +431,20 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             f.write(line + "\n")
 
         # 2. Stereo
-        f.write("\n## Per-Scenario Stereo Image Fidelity (Coherence Error)\n\n")
-        f.write("> **Note**: Measured as |Coherence(Ref) - Coherence(Deg)|. **Lower is truer** (closer to reference stereo image).\n\n")
+        f.write("\n## Per-Scenario Stereo Fidelity\n\n")
+        f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
         f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
         for s in scenarios:
-            best_val = min(stats[e][s]["ic_sum"]/stats[e][s]["ic_count"] for e in sorted_encoders if stats[e][s]["ic_count"] > 0) if any(stats[e][s]["ic_count"] > 0 for e in sorted_encoders) else float('inf')
+            best_val = max(1.0 - (stats[e][s]["ic_sum"]/stats[e][s]["ic_count"]) for e in sorted_encoders if stats[e][s]["ic_count"] > 0) if any(stats[e][s]["ic_count"] > 0 for e in sorted_encoders) else -1.0
             line = f"| {s} |"
             for e in sorted_encoders:
                 val = stats[e][s]["ic_sum"]/stats[e][s]["ic_count"] if stats[e][s]["ic_count"] > 0 else None
-                line += f" **{val:.4f}** |" if val == best_val and best_val != float('inf') else (f" {val:.4f} |" if val is not None else " N/A |")
+                if val is not None:
+                    fid = 1.0 - val
+                    line += f" **{fid:.4f}** |" if fid == best_val and best_val != -1.0 else f" {fid:.4f} |"
+                else:
+                    line += " N/A |"
             f.write(line + "\n")
 
         # 3. Bitrate Error
@@ -468,7 +474,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
         f.write("- **Avg MOS**: Perceptual quality (1-5, **Higher is Better**)\n")
-        f.write("- **Stereo Coh. Error**: deviation from reference stereo image (**Lower is Better**)\n")
+        f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
         f.write("- **Footprint**: Combined binary and library size (**Lower is Better**)\n")
