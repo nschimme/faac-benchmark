@@ -218,7 +218,7 @@ def main():
     # Pre-resolve AAC paths in the main process so workers don't touch the filesystem.
     resolved = {}
     for k, v in pending.items():
-        p = get_aac_path(k, args.aac_dir, args.results_json, aac_files=aac_files)
+        p = get_aac_path(k, args.aac_dir, args.results_json, aac_files=aac_files, entry=v)
         if p:
             resolved[k] = (v, p)
 

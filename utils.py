@@ -162,7 +162,20 @@ def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path, env=
 
     return hasher.hexdigest()[:16]
 
-def get_aac_path(key, aac_dir, results_path, aac_files=None):
+def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
+    # Preferred: the matrix entry records the exact .aac file phase1 produced for
+    # this run/tag (phase1 writes "{key}_{precision}.aac", precision == the run
+    # tag). This is unambiguous and is essential for --compare/--sweep, where
+    # every tag shares aac_dir: a bare key-prefix match below would return the
+    # first matching file regardless of tag, silently scoring another variant's
+    # bitstream (e.g. an HE run getting the LC encode's MOS).
+    if entry:
+        recorded = entry.get("aac")
+        if recorded:
+            cand = os.path.join(aac_dir, recorded)
+            if os.path.exists(cand):
+                return cand
+
     results_filename = os.path.basename(results_path)
     precision_suffix = ""
     if "_base.json" in results_filename:
@@ -176,14 +189,15 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None):
     if os.path.exists(aac_path):
         return aac_path
 
-    # Fallback to prefix matching
+    # Fallback to prefix matching (legacy results lacking a recorded "aac").
+    # Sort for determinism so repeated runs at least resolve identically.
     if aac_files is None:
         try:
             aac_files = [f for f in os.listdir(aac_dir) if f.endswith(".aac")]
         except FileNotFoundError:
             return None
 
-    matching = [f for f in aac_files if f.startswith(key)]
+    matching = sorted(f for f in aac_files if f.startswith(key))
     if not matching:
         return None
     return os.path.join(aac_dir, matching[0])

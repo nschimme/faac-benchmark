@@ -184,7 +184,7 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
     data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
     ref_input_path = os.path.join(external_data_dir, data_subdir, filename)
 
-    aac_path = get_aac_path(key, aac_dir, results_path, aac_files=aac_files)
+    aac_path = get_aac_path(key, aac_dir, results_path, aac_files=aac_files, entry=entry)
 
     return {
         "cfg": cfg,

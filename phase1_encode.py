@@ -116,6 +116,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             "thresh": cfg["thresh"],
             "scenario": name,
             "filename": sample,
+            "aac": os.path.basename(output_path),
             "decode_error": decode_err if not valid else None,
             "prov_hash": prov_hash
         }
