@@ -36,7 +36,7 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
-| `--scenarios 16k_16k_mono,48k_64k_stereo` | Restrict to specific scenarios (default: all) |
+| `--scenarios 16k_mono_16k,48k_stereo_64k` | Restrict to specific scenarios (default: all) |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
@@ -78,7 +78,7 @@ Override with `--visqol-image <image>`.
 ### Filtering tests and scenarios
 
 ```bash
-python3 run_benchmark.py ... --scenarios 48k_64k_stereo,48k_128k_stereo
+python3 run_benchmark.py ... --scenarios 48k_stereo_64k,48k_stereo_128k
 python3 run_benchmark.py ... --include-tests "TCD_*"
 python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 ```
@@ -116,7 +116,7 @@ python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "--pns=0,2,4"
 python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
 ```
 
-Bitrate is **not** sweepable — it defines a scenario's identity (`48k_64k_stereo` is
+Bitrate is **not** sweepable — it defines a scenario's identity (`48k_stereo_64k` is
 64 kbps), so sweeping `-b` would mislabel results. To study a bitrate range, add
 a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 

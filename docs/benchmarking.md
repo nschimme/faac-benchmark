@@ -9,21 +9,21 @@ means adding a scenario, not overriding `-b`.
 
 | Scenario | Mode | Bitrate | Per-channel | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| `16k_16k_mono` | speech | 16k | 16k mono | telephony |
-| `16k_40k_mono` | speech | 40k | 40k mono | wideband speech |
-| `48k_24k_stereo` | audio | 24k | 12k/ch | HE-AAC Floor |
-| `48k_32k_stereo` | audio | 32k | 16k/ch | |
-| `48k_40k_stereo` | audio | 40k | 20k/ch | low-rate music |
-| `48k_48k_stereo` | audio | 48k | 24k/ch | low-rate music |
-| `48k_56k_stereo` | audio | 56k | 28k/ch | HE-AAC Ceiling |
-| `48k_64k_stereo` | audio | 64k | 32k/ch | LC-AAC Low |
-| `48k_96k_stereo` | audio | 96k | 48k/ch | |
-| `48k_128k_stereo` | audio | 128k | 64k/ch | LC-AAC Common |
-| `48k_160k_stereo` | audio | 160k | 80k/ch | |
-| `48k_192k_stereo` | audio | 192k | 96k/ch | |
-| `48k_256k_stereo` | audio | 256k | 128k/ch | transparency |
+| `16k_mono_16k` | speech | 16k | 16k mono | telephony |
+| `16k_mono_40k` | speech | 40k | 40k mono | wideband speech |
+| `48k_stereo_24k` | audio | 24k | 12k/ch | HE-AAC Floor |
+| `48k_stereo_32k` | audio | 32k | 16k/ch | |
+| `48k_stereo_40k` | audio | 40k | 20k/ch | low-rate music |
+| `48k_stereo_48k` | audio | 48k | 24k/ch | low-rate music |
+| `48k_stereo_56k` | audio | 56k | 28k/ch | HE-AAC Ceiling |
+| `48k_stereo_64k` | audio | 64k | 32k/ch | LC-AAC Low |
+| `48k_stereo_96k` | audio | 96k | 48k/ch | |
+| `48k_stereo_128k` | audio | 128k | 64k/ch | LC-AAC Common |
+| `48k_stereo_160k` | audio | 160k | 80k/ch | |
+| `48k_stereo_192k` | audio | 192k | 96k/ch | |
+| `48k_stereo_256k` | audio | 256k | 128k/ch | transparency |
 
-`48k_40k_stereo` / `48k_48k_stereo` are named **by rate, not codec**. While HE-AAC is not
+`48k_stereo_40k` / `48k_stereo_48k` are named **by rate, not codec**. While HE-AAC is not
 auto-engaged in faac they run as pure LC (valid low-rate LC tests); once faac's
 auto-mode picks HE at those per-channel rates, the same scenario becomes the
 HE-vs-LC comparison at the bitrates where HE-AAC v1 is designed to win — no

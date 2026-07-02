@@ -71,7 +71,7 @@ class TestGateFilter(unittest.TestCase):
         self.music = ["sandman.16b48k.wav", "velvet.16b48k.wav", "x.wav", "y.wav", "z.wav"]
 
     def test_known_scenario_includes_fixtures(self):
-        picked = self.gate_filter("48k_64k_stereo", self.music)
+        picked = self.gate_filter("48k_stereo_64k", self.music)
         self.assertIn("sandman.16b48k.wav", picked)
         self.assertIn("velvet.16b48k.wav", picked)
 
@@ -80,7 +80,7 @@ class TestGateFilter(unittest.TestCase):
         self.assertTrue(0 < len(fb) <= len(self.music))
 
     def test_empty_input_returns_empty(self):
-        self.assertEqual([], self.gate_filter("48k_64k_stereo", []))
+        self.assertEqual([], self.gate_filter("48k_stereo_64k", []))
 
 
 class TestSweepRejectsBitrate(unittest.TestCase):
@@ -99,21 +99,21 @@ class TestCompareClipsRanking(unittest.TestCase):
             a = os.path.join(td, "a.json")
             b = os.path.join(td, "b.json")
             save_results(a, {"matrix": {
-                "r_c1.wav": {"mos": 3.5, "scenario": "48k_64k_stereo", "filename": "c1.wav",
+                "r_c1.wav": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav",
                              "bitrate": 64, "time": 1.0},
-                "r_c2.wav": {"mos": 3.0, "scenario": "48k_64k_stereo", "filename": "c2.wav",
+                "r_c2.wav": {"mos": 3.0, "scenario": "48k_stereo_64k", "filename": "c2.wav",
                              "bitrate": 64, "time": 1.0},
             }})
             save_results(b, {"matrix": {
-                "r_c1.wav": {"mos": 2.5, "scenario": "48k_64k_stereo", "filename": "c1.wav",
+                "r_c1.wav": {"mos": 2.5, "scenario": "48k_stereo_64k", "filename": "c1.wav",
                              "bitrate": 64, "time": 1.0},
-                "r_c2.wav": {"mos": 3.6, "scenario": "48k_64k_stereo", "filename": "c2.wav",
+                "r_c2.wav": {"mos": 3.6, "scenario": "48k_stereo_64k", "filename": "c2.wav",
                              "bitrate": 64, "time": 1.0},
             }})
             r = subprocess.run([sys.executable, "compare_clips.py", a, b],
                                cwd=REPO, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("48k_64k_stereo", r.stdout)
+            self.assertIn("48k_stereo_64k", r.stdout)
             self.assertIn("worst", r.stdout)
 
 

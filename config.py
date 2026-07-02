@@ -18,79 +18,79 @@
 """
 
 SCENARIOS = {
-    "16k_16k_mono": {
+    "16k_mono_16k": {
         "mode": "speech",
         "rate": 16000,
         "visqol_rate": 16000,
         "bitrate": 16,
         "thresh": 2.5},
-    "16k_40k_mono": {
+    "16k_mono_40k": {
         "mode": "speech",
         "rate": 16000,
         "visqol_rate": 16000,
         "bitrate": 40,
         "thresh": 3.0},
-    "48k_24k_stereo": {
+    "48k_stereo_24k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 24,
         "thresh": 2.0},
-    "48k_32k_stereo": {
+    "48k_stereo_32k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 32,
         "thresh": 2.4},
-    "48k_40k_stereo": {
+    "48k_stereo_40k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 40,
         "thresh": 2.8},
-    "48k_48k_stereo": {
+    "48k_stereo_48k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 48,
         "thresh": 3.0},
-    "48k_56k_stereo": {
+    "48k_stereo_56k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 56,
         "thresh": 3.2},
-    "48k_64k_stereo": {
+    "48k_stereo_64k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 64,
         "thresh": 3.5},
-    "48k_96k_stereo": {
+    "48k_stereo_96k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 96,
         "thresh": 3.8},
-    "48k_128k_stereo": {
+    "48k_stereo_128k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 128,
         "thresh": 4.0},
-    "48k_160k_stereo": {
+    "48k_stereo_160k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 160,
         "thresh": 4.2},
-    "48k_192k_stereo": {
+    "48k_stereo_192k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
         "bitrate": 192,
         "thresh": 4.25},
-    "48k_256k_stereo": {
+    "48k_stereo_256k": {
         "mode": "audio",
         "rate": 48000,
         "visqol_rate": 48000,
@@ -115,18 +115,18 @@ _SPEECH_GATE = [
     "C_18_NOISE_ML.wav",
 ]
 GATE_CLIPS = {
-    "16k_16k_mono": _SPEECH_GATE,
-    "16k_40k_mono": _SPEECH_GATE,
-    "48k_24k_stereo": _MUSIC_GATE,
-    "48k_32k_stereo": _MUSIC_GATE,
-    "48k_40k_stereo": _MUSIC_GATE,
-    "48k_48k_stereo": _MUSIC_GATE,
-    "48k_56k_stereo": _MUSIC_GATE,
-    "48k_64k_stereo": _MUSIC_GATE,
-    "48k_96k_stereo": _MUSIC_GATE,
-    "48k_128k_stereo": _MUSIC_GATE,
-    "48k_160k_stereo": _MUSIC_GATE,
-    "48k_192k_stereo": _MUSIC_GATE,
-    "48k_256k_stereo": _MUSIC_GATE,
+    "16k_mono_16k": _SPEECH_GATE,
+    "16k_mono_40k": _SPEECH_GATE,
+    "48k_stereo_24k": _MUSIC_GATE,
+    "48k_stereo_32k": _MUSIC_GATE,
+    "48k_stereo_40k": _MUSIC_GATE,
+    "48k_stereo_48k": _MUSIC_GATE,
+    "48k_stereo_56k": _MUSIC_GATE,
+    "48k_stereo_64k": _MUSIC_GATE,
+    "48k_stereo_96k": _MUSIC_GATE,
+    "48k_stereo_128k": _MUSIC_GATE,
+    "48k_stereo_160k": _MUSIC_GATE,
+    "48k_stereo_192k": _MUSIC_GATE,
+    "48k_stereo_256k": _MUSIC_GATE,
 }
 GATE_FALLBACK_N = 4
