@@ -26,17 +26,40 @@ from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def find_linked_lib(binary_path, name_substr):
-    """Resolve the on-disk path of a shared library linked into binary_path via ldd."""
+    """Resolve the on-disk path of a shared library linked into binary_path."""
     try:
-        res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
-        for line in res.stdout.splitlines():
-            if name_substr in line and "=>" in line:
-                lib_path = line.split("=>")[1].strip().split(" ")[0]
-                if lib_path and os.path.exists(lib_path):
-                    return lib_path
+        if sys.platform == "darwin":
+            # macOS: use otool -L
+            res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if name_substr in line:
+                    # otool output: "\t/path/to/lib (compatibility...)"
+                    lib_path = line.split(" ")[0]
+                    if os.path.exists(lib_path):
+                        return lib_path
+        else:
+            # Linux: use ldd
+            res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                if name_substr in line and "=>" in line:
+                    lib_path = line.split("=>")[1].strip().split(" ")[0]
+                    if lib_path and os.path.exists(lib_path):
+                        return lib_path
     except Exception:
         pass
     return None
+
+def is_system_library(path):
+    """Checks if a library path belongs to a system directory."""
+    if not path:
+        return False
+    if sys.platform == "darwin":
+        # macOS system paths
+        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
+        return any(path.startswith(prefix) for prefix in system_prefixes)
+    # On Linux, we generally want to measure library size even if in /usr/lib
+    return False
 
 class Encoder:
     def __init__(self, name, binary_path, encoder_type, lib_name_substr=None):
@@ -47,7 +70,17 @@ class Encoder:
         # If the codec is linked dynamically, measure the shared library on disk;
         # otherwise (static linking) fall back to the binary itself.
         lib_path = find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None
-        self.size = get_binary_size(lib_path) if lib_path else (get_binary_size(binary_path) if binary_path else 0)
+
+        if lib_path and is_system_library(lib_path):
+            self.size = 0  # System library, don't count towards footprint
+        elif lib_path:
+            self.size = get_binary_size(lib_path)
+        else:
+            # Fallback to binary size if no library found, but ignore system binaries
+            if is_system_library(binary_path):
+                self.size = 0
+            else:
+                self.size = get_binary_size(binary_path) if binary_path else 0
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
         raise NotImplementedError
@@ -69,16 +102,38 @@ class FFmpegEncoder(Encoder):
         self.codec_name = codec_name
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        return [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name, "-b:a", f"{bitrate_kbps}k", output_path]
+        cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
+        # For libfdk_aac, use HE-AAC for bitrates <= 56kbps to match FAAC "optimal" strategy
+        if self.codec_name == "libfdk_aac" and bitrate_kbps <= 56:
+            cmd.extend(["-profile:a", "aac_he"])
+        cmd.extend(["-b:a", f"{bitrate_kbps}k", output_path])
+        return cmd
 
 class FDKAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        # fdkaac -b <bitrate> -o <out> <in>
-        # Note: fdkaac expects bitrate in bps or with 'k' suffix
-        return [self.binary_path, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
+        # Optimal strategy: use HE-AAC for low bitrates
+        profile = "2" # LC
+        if bitrate_kbps <= 56:
+            profile = "5" # HE-AAC
+        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
+
+class AFConvertEncoder(Encoder):
+    def __init__(self, name, binary_path):
+        # AudioToolbox is the framework providing the AAC codec on macOS
+        super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        # Optimal strategy: use HE-AAC for low bitrates
+        codec = "aac "
+        if bitrate_kbps <= 56:
+            codec = "aach"
+
+        # Use ADTS format to get a standard .aac file (compatible with the rest of the suite)
+        # Use maximum quality setting (-q 127)
+        return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", input_path, output_path]
 
 def get_audio_info(path):
     try:
@@ -119,6 +174,11 @@ def detect_encoders(args):
     fdkaac_path = args.fdkaac_bin or shutil.which("fdkaac")
     if fdkaac_path:
         encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac"))
+
+    # 4. AFConvert (macOS)
+    afconvert_path = getattr(args, 'afconvert_bin', None) or shutil.which("afconvert")
+    if afconvert_path:
+        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path))
 
     return encoders
 
@@ -184,6 +244,7 @@ def main():
     parser.add_argument("--faac-lib", help="Path to libfaac.so")
     parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
+    parser.add_argument("--afconvert-bin", help="Path to afconvert binary")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
