@@ -85,14 +85,15 @@ class Encoder:
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
 
-def use_he_aac(bitrate_kbps, channels):
+def use_he_aac(bitrate_kbps, channels, sample_rate):
     """
     Centralized heuristic for selecting HE-AAC vs LC-AAC.
     HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
+    It also generally requires a minimum sample rate (typically 32kHz+).
     Typical range for HE-AAC: 10kbps to 32kbps per channel.
-    Below 10kbps/ch, LC-AAC often fails less or is comparable;
-    Above 32kbps/ch (64kbps stereo), LC-AAC is superior.
     """
+    if sample_rate < 32000:
+        return False
     bitrate_per_ch = bitrate_kbps / channels
     return 10 <= bitrate_per_ch < 32
 
@@ -100,7 +101,7 @@ class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         # faac handles LC/HE selection internally, but we can nudge it if needed.
         # However, it doesn't have an explicit 'aot' flag for HE-AAC in the CLI.
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
@@ -114,27 +115,29 @@ class FFmpegEncoder(Encoder):
         super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
-        if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels):
+        if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels, sample_rate):
             cmd.extend(["-profile:a", "aac_he"])
-        cmd.extend(["-b:a", f"{bitrate_kbps}k", output_path])
+        cmd.extend(["-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path])
         return cmd
 
 class FDKAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
-        profile = "5" if use_he_aac(bitrate_kbps, channels) else "2"
-        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        profile = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
+        # fdkaac might be picky about 'k' suffix vs bps depending on version
+        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels), "-o", output_path, input_path]
 
 class AACEncEncoder(Encoder):
     def __init__(self, name, binary_path):
         super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
-        aot = "5" if use_he_aac(bitrate_kbps, channels) else "2"
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        aot = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
+        # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
 class AFConvertEncoder(Encoder):
@@ -142,10 +145,11 @@ class AFConvertEncoder(Encoder):
         # AudioToolbox is the framework providing the AAC codec on macOS
         super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
-        codec = "aach" if use_he_aac(bitrate_kbps, channels) else "aac "
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        codec = "aach" if use_he_aac(bitrate_kbps, channels, sample_rate) else "aac "
         # Use ADTS format to get a standard .aac file
-        return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", input_path, output_path]
+        # Add -c to force channel count if needed
+        return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
 def get_audio_info(path):
     try:
@@ -216,7 +220,8 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     output_path = os.path.join(output_dir, output_filename)
 
     channels = 1 if cfg["mode"] == "speech" else 2
-    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels)
+    sample_rate = cfg.get("rate", 48000)
+    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
 
     try:
         t_start = time.perf_counter()
@@ -356,7 +361,11 @@ def main():
     if not args.skip_mos:
         print("\n>>> Phase 2: Perceptual Quality (MOS)")
         bridge_data = {"matrix": {}}
+        valid_count = 0
         for i, res in enumerate(all_results):
+            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
+                continue
+
             key = f"res_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
@@ -364,6 +373,11 @@ def main():
                 "mos": None
             }
             shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
+            valid_count += 1
+
+        if valid_count == 0:
+            print("No valid AAC files to score for MOS.")
+            return
 
         bridge_json = "bridge_results.json"
         with open(bridge_json, "w") as f:
@@ -390,7 +404,11 @@ def main():
     if not args.skip_stereo:
         print("\n>>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
         bridge_data = {"matrix": {}}
+        valid_count = 0
         for i, res in enumerate(all_results):
+            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
+                continue
+
             key = f"res_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
@@ -398,8 +416,14 @@ def main():
                 "ic_err": None
             }
             # Ensure files exist in output_dir
-            if not os.path.exists(os.path.join(output_dir, f"{key}.aac")):
-                shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
+            target_path = os.path.join(output_dir, f"{key}.aac")
+            if not os.path.exists(target_path):
+                shutil.copy(res["aac_path"], target_path)
+            valid_count += 1
+
+        if valid_count == 0:
+            print("No valid AAC files to analyze for stereo fidelity.")
+            return
 
         bridge_json_stereo = "bridge_results_stereo.json"
         with open(bridge_json_stereo, "w") as f:
