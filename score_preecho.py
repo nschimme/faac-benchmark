@@ -59,9 +59,11 @@ def encode_aac(faac_bin, wav_path, aac_path, bitrate, extra_args=None, env_extra
     result = subprocess.run(cmd, capture_output=True, env=env)
     if result.returncode != 0:
         raise RuntimeError(f'faac encode failed:\n{result.stderr.decode(errors="replace")}')
+    return result.stderr.decode(errors='replace')
 
 
-def encode_any(encoder, enc_bin, wav_path, out_path, bitrate, tns, force_long):
+def encode_any(encoder, enc_bin, wav_path, out_path, bitrate, tns, force_long,
+               env_extra=None):
     """Encode with faac or ffmpeg-native-AAC, TNS on/off, optionally forcing long blocks.
 
     force_long requires an encoder built with the debug knob:
@@ -77,13 +79,19 @@ def encode_any(encoder, enc_bin, wav_path, out_path, bitrate, tns, force_long):
         if result.returncode != 0:
             raise RuntimeError(f'ffmpeg downmix failed:\n{result.stderr.decode(errors="replace")}')
         extra = [] if tns else ['--no-tns']
-        env = {'FAAC_FORCE_LONG': '1'} if force_long else None
-        encode_aac(enc_bin, mono_wav, out_path, bitrate, extra_args=extra, env_extra=env)
+        env = {'FAAC_FORCE_LONG': '1'} if force_long else {}
+        if env_extra:
+            env.update(env_extra)
+        stderr = encode_aac(enc_bin, mono_wav, out_path, bitrate,
+                            extra_args=extra, env_extra=env or None)
         os.unlink(mono_wav)
+        return stderr
     else:  # ffmpeg
         env = dict(os.environ)
         if force_long:
             env['FF_FORCE_LONG'] = '1'
+        if env_extra:
+            env.update(env_extra)
         cmd = [enc_bin, '-y', '-i', wav_path, '-c:a', 'aac',
                '-aac_tns', '1' if tns else '0',
                '-b:a', f'{bitrate}k', '-ac', '1', '-ar', '48000', out_path]
@@ -489,6 +497,143 @@ def cmd_tns_ab(enc_bin, ref_wavs, bitrates, encoder='faac', force_long=False,
             print(f'  {br}k:  {ln}' if i == 0 else f'        {ln}')
 
 
+# ── paired env-var A/B (threshold/tuning sweeps at fixed TNS state) ───────────
+
+def parse_env_spec(spec):
+    """'K=V,K=V' → dict. Empty/None → {}."""
+    out = {}
+    if spec:
+        for item in spec.split(','):
+            k, _, v = item.partition('=')
+            if not k or not v:
+                raise ValueError(f'bad env spec item: {item!r}')
+            out[k.strip()] = v.strip()
+    return out
+
+
+def last_bs_stats(stderr_text):
+    """Parse the last 'BS_STATS frames=N short=M pct=X.X' line → (short%, frames) or None."""
+    stats = None
+    for line in (stderr_text or '').splitlines():
+        if line.startswith('BS_STATS'):
+            fields = dict(f.split('=') for f in line.split()[1:])
+            stats = (float(fields['pct']), int(fields['frames']))
+    return stats
+
+
+def env_ab_one(enc_bin, ref_wav, bitrates, tmp, env_a, env_b, metric='both'):
+    """A/B one clip with faac, TNS on in both arms, differing only in env vars.
+
+    Returns {bitrate: {'nper': [Δ per onset], 'zim': Δ, 'bytes': Δ,
+                       'short_a': pct|None, 'short_b': pct|None}}, Δ = A − B.
+    """
+    ref, sr = load_mono(ref_wav)
+    onsets = detect_onsets(ref, sr)
+    stats_env = {'FAAC_BS_STATS': '1'}
+    result = {}
+    for br in bitrates:
+        entry = {'nper': [], 'zim': None, 'bytes': None,
+                 'short_a': None, 'short_b': None}
+        try:
+            a_enc = os.path.join(tmp, f'a_{br}.aac'); a_wav = os.path.join(tmp, f'a_{br}.wav')
+            b_enc = os.path.join(tmp, f'b_{br}.aac'); b_wav = os.path.join(tmp, f'b_{br}.wav')
+            err_a = encode_any('faac', enc_bin, ref_wav, a_enc, br, tns=True,
+                               force_long=False, env_extra={**stats_env, **env_a})
+            err_b = encode_any('faac', enc_bin, ref_wav, b_enc, br, tns=True,
+                               force_long=False, env_extra={**stats_env, **env_b})
+            decode_aac(a_enc, a_wav, sr=sr, channels=1)
+            decode_aac(b_enc, b_wav, sr=sr, channels=1)
+        except RuntimeError as e:
+            print(f'  {br}k: FAILED — {e}')
+            result[br] = entry
+            continue
+        entry['bytes'] = os.path.getsize(a_enc) - os.path.getsize(b_enc)
+        sa, sb = last_bs_stats(err_a), last_bs_stats(err_b)
+        entry['short_a'] = sa[0] if sa else None
+        entry['short_b'] = sb[0] if sb else None
+        a_dec, _ = load_mono(a_wav)
+        b_dec, _ = load_mono(b_wav)
+        if metric in ('nper', 'both'):
+            nper_a = nper_at_onsets(ref, a_dec, sr, onsets)
+            nper_b = nper_at_onsets(ref, b_dec, sr, onsets)
+            entry['nper'] = [nper_a[o] - nper_b[o] for o in nper_a if o in nper_b]
+        if metric in ('zimtohrli', 'both'):
+            zs = []
+            for dec in (a_dec, b_dec):
+                lag = find_lag(ref, dec, sr)
+                ra, da = align_signals(ref, dec, lag)
+                zs.append(zimtohrli_mos(ra, da))
+            entry['zim'] = zs[0] - zs[1]
+        result[br] = entry
+    return result
+
+
+def cmd_env_ab(enc_bin, ref_wavs, bitrates, env_a_spec, env_b_spec, metric='both'):
+    env_a, env_b = parse_env_spec(env_a_spec), parse_env_spec(env_b_spec)
+    print(f'=== env A/B (faac, TNS on both arms) ===')
+    print(f'    A: {env_a or "(baseline)"}   B: {env_b or "(baseline)"}')
+    print('    Δ = A − B.  ΔNPER negative ⇒ A has less pre-echo;'
+          ' Δzim positive ⇒ A better quality.\n')
+    agg_nper = {br: [] for br in bitrates}
+    agg_zim = {br: [] for br in bitrates}
+    agg_bytes = {br: [] for br in bitrates}
+    agg_short = {br: [] for br in bitrates}
+    with tempfile.TemporaryDirectory() as tmp:
+        for ref_wav in ref_wavs:
+            per_br = env_ab_one(enc_bin, ref_wav, bitrates, tmp, env_a, env_b,
+                                metric=metric)
+            print(f'{os.path.basename(ref_wav)}:')
+            for br in bitrates:
+                entry = per_br.get(br)
+                if entry is None:
+                    continue
+                parts = []
+                d = entry['nper']
+                if d:
+                    agg_nper[br].extend(d)
+                    arr = np.array(d)
+                    parts.append(f'ΔNPER = {arr.mean():+.2f} dB (n={len(arr)})')
+                if entry['zim'] is not None:
+                    agg_zim[br].append(entry['zim'])
+                    parts.append(f'Δzim = {entry["zim"]:+.4f}')
+                if entry['bytes'] is not None:
+                    agg_bytes[br].append(entry['bytes'])
+                    parts.append(f'Δbytes = {entry["bytes"]:+d}')
+                if entry['short_a'] is not None and entry['short_b'] is not None:
+                    agg_short[br].append((entry['short_a'], entry['short_b']))
+                    parts.append(f'short% A={entry["short_a"]:.1f} B={entry["short_b"]:.1f}')
+                print(f'  {br}k:  ' + ('  '.join(parts) if parts else 'no data'))
+    print('\n── aggregate across all clips (Δ = A − B) ──')
+    for br in bitrates:
+        lines = []
+        arr = np.array(agg_nper[br])
+        if len(arr):
+            lo, hi = bootstrap_ci(arr)
+            p, neg, nz = sign_test_p(arr)
+            verdict = ('A REDUCES pre-echo' if hi < 0 else
+                       'A INCREASES pre-echo' if lo > 0 else 'inconclusive (CI spans 0)')
+            lines.append(f'ΔNPER = {arr.mean():+.2f} dB  95%CI[{lo:+.2f},{hi:+.2f}]  '
+                         f'sign-test p={p:.3g} ({neg}/{nz} onsets improved)  → {verdict}')
+        zarr = np.array(agg_zim[br])
+        if len(zarr):
+            lo, hi = bootstrap_ci(zarr)
+            pos = int((zarr > 1e-4).sum())
+            verdict = ('A IMPROVES quality' if lo > 0 else
+                       'A DEGRADES quality' if hi < 0 else 'inconclusive (CI spans 0)')
+            lines.append(f'Δzim  = {zarr.mean():+.4f}  95%CI[{lo:+.4f},{hi:+.4f}]  '
+                         f'({pos}/{len(zarr)} clips improved)  → {verdict}')
+        if agg_bytes[br]:
+            lines.append(f'Δbytes = {np.mean(agg_bytes[br]):+.0f} avg/clip')
+        if agg_short[br]:
+            sa = np.mean([s[0] for s in agg_short[br]])
+            sb = np.mean([s[1] for s in agg_short[br]])
+            lines.append(f'short% A={sa:.1f} B={sb:.1f}')
+        if not lines:
+            print(f'  {br}k:  no data')
+        for i, ln in enumerate(lines):
+            print(f'  {br}k:  {ln}' if i == 0 else f'        {ln}')
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -510,6 +655,14 @@ def main():
                         help='Encode REF.wav at multiple bitrates and score')
     parser.add_argument('--tns-ab', metavar='ENC_BIN', dest='tns_ab',
                         help='Paired TNS-on vs TNS-off proof over REF.wav [REF2.wav ...]')
+    parser.add_argument('--env-ab', metavar='ENC_BIN', dest='env_ab',
+                        help='Paired A/B over env-var configs (faac, TNS on both '
+                             'arms) over REF.wav [REF2.wav ...]')
+    parser.add_argument('--env-a', default='', dest='env_a',
+                        help='Env vars for arm A, e.g. "FAAC_TD_THRESH=1.5" '
+                             '(comma-separated K=V)')
+    parser.add_argument('--env-b', default='', dest='env_b',
+                        help='Env vars for arm B (default: baseline, none)')
     parser.add_argument('--encoder', choices=['faac', 'ffmpeg'], default='faac',
                         help='Encoder driven by --tns-ab (default: faac)')
     parser.add_argument('--force-long', action='store_true', dest='force_long',
@@ -528,6 +681,12 @@ def main():
 
     if args.validate:
         cmd_validate(args.validate, bitrates)
+
+    elif args.env_ab:
+        if not args.positional:
+            parser.error('--env-ab requires at least one REF.wav argument')
+        cmd_env_ab(args.env_ab, args.positional, bitrates,
+                   args.env_a, args.env_b, metric=args.metric)
 
     elif args.tns_ab:
         if not args.positional:
