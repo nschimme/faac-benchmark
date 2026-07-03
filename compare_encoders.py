@@ -264,7 +264,19 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
         }
     except Exception as e:
         print(f"Error encoding {sample} with {encoder.name}: {e}")
-        return None
+        return {
+            "encoder": encoder.name,
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": 0,
+            "audio_duration": None,
+            "size": 0,
+            "actual_bitrate": None,
+            "target_bitrate": cfg["bitrate"],
+            "decode_valid": False,
+            "decode_error": f"Encoding failed: {str(e)}",
+            "aac_path": None
+        }
 
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
@@ -428,9 +440,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         "valid_count": 0, "total_count": 0
     }))
 
+    # Track top errors for troubleshooting
+    error_counts = defaultdict(int)
+
     for res in results:
         e = res["encoder"]
         s = res["scenario"]
+
+        if not res.get("decode_valid"):
+            err_msg = res.get("decode_error") or "Unknown error"
+            # Normalize error message for aggregation (take first line or short version)
+            short_err = err_msg.split("\n")[0].split(":")[0].strip()
+            error_counts[f"{e}: {short_err}"] += 1
 
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
@@ -516,7 +537,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
             rank_str = f"🏆 {i+1}" if i == 0 and o['avg_mos'] > 0 else f"{i+1}"
-            status_str = "✅ OK" if o['valid_rate'] == 100 else f"❌ {100-o['valid_rate']:.1f}% Err"
+
+            if o['valid_rate'] == 100:
+                status_str = "OK"
+            else:
+                # Find most common error for this encoder
+                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name}: ")}
+                top_err = max(relevant_errors, key=relevant_errors.get) if relevant_errors else "Err"
+                status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
             m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
 
@@ -587,6 +615,13 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 val = stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] if stats[e][s]["speed_count"] > 0 else None
                 line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
             f.write(line + "\n")
+
+        if error_counts:
+            f.write("\n## Failure Analysis\n\n")
+            f.write("| Encoder: Error Type | Occurrences |\n")
+            f.write("| :--- | :---: |\n")
+            for err_key in sorted(error_counts.keys(), key=lambda x: error_counts[x], reverse=True):
+                f.write(f"| {err_key} | {error_counts[err_key]} |\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
