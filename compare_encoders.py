@@ -82,14 +82,27 @@ class Encoder:
             else:
                 self.size = get_binary_size(binary_path) if binary_path else 0
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
+
+def use_he_aac(bitrate_kbps, channels):
+    """
+    Centralized heuristic for selecting HE-AAC vs LC-AAC.
+    HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
+    Typical range for HE-AAC: 10kbps to 32kbps per channel.
+    Below 10kbps/ch, LC-AAC often fails less or is comparable;
+    Above 32kbps/ch (64kbps stereo), LC-AAC is superior.
+    """
+    bitrate_per_ch = bitrate_kbps / channels
+    return 10 <= bitrate_per_ch < 32
 
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+        # faac handles LC/HE selection internally, but we can nudge it if needed.
+        # However, it doesn't have an explicit 'aot' flag for HE-AAC in the CLI.
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
@@ -101,10 +114,9 @@ class FFmpegEncoder(Encoder):
         super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
-        # For libfdk_aac, use HE-AAC for bitrates <= 56kbps to match FAAC "optimal" strategy
-        if self.codec_name == "libfdk_aac" and bitrate_kbps <= 56:
+        if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels):
             cmd.extend(["-profile:a", "aac_he"])
         cmd.extend(["-b:a", f"{bitrate_kbps}k", output_path])
         return cmd
@@ -113,24 +125,16 @@ class FDKAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        # Optimal strategy: use HE-AAC for low bitrates
-        profile = "2" # LC
-        if bitrate_kbps <= 56:
-            profile = "5" # HE-AAC
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+        profile = "5" if use_he_aac(bitrate_kbps, channels) else "2"
         return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
 
 class AACEncEncoder(Encoder):
     def __init__(self, name, binary_path):
         super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        # Optimal strategy: use HE-AAC for low bitrates
-        aot = "2" # LC
-        if bitrate_kbps <= 56:
-            aot = "5" # HE-AAC
-
-        # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+        aot = "5" if use_he_aac(bitrate_kbps, channels) else "2"
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
 class AFConvertEncoder(Encoder):
@@ -138,14 +142,9 @@ class AFConvertEncoder(Encoder):
         # AudioToolbox is the framework providing the AAC codec on macOS
         super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        # Optimal strategy: use HE-AAC for low bitrates
-        codec = "aac "
-        if bitrate_kbps <= 56:
-            codec = "aach"
-
-        # Use ADTS format to get a standard .aac file (compatible with the rest of the suite)
-        # Use maximum quality setting (-q 127)
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+        codec = "aach" if use_he_aac(bitrate_kbps, channels) else "aac "
+        # Use ADTS format to get a standard .aac file
         return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", input_path, output_path]
 
 def get_audio_info(path):
@@ -216,11 +215,22 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     output_filename = f"{encoder.name}_{scenario_name}_{sample}.aac".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
-    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"])
+    channels = 1 if cfg["mode"] == "speech" else 2
+    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels)
 
     try:
         t_start = time.perf_counter()
-        subprocess.run(cmd, capture_output=True, check=True)
+        res = subprocess.run(cmd, capture_output=True, check=False)
+
+        # Fallback for afconvert: if aach failed, try aac LC
+        if res.returncode != 0 and isinstance(encoder, AFConvertEncoder) and "aach" in cmd:
+            print(f"  [Fallback] aach failed for {sample}, trying aac LC...")
+            cmd = [c if c != "aach" else "aac " for c in cmd]
+            res = subprocess.run(cmd, capture_output=True, check=False)
+
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+
         t_end = time.perf_counter()
         duration = t_end - t_start
 
