@@ -120,6 +120,19 @@ class FDKAACEncoder(Encoder):
             profile = "5" # HE-AAC
         return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
 
+class AACEncEncoder(Encoder):
+    def __init__(self, name, binary_path):
+        super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        # Optimal strategy: use HE-AAC for low bitrates
+        aot = "2" # LC
+        if bitrate_kbps <= 56:
+            aot = "5" # HE-AAC
+
+        # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
+        return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
+
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path):
         # AudioToolbox is the framework providing the AAC codec on macOS
@@ -174,6 +187,11 @@ def detect_encoders(args):
     fdkaac_path = args.fdkaac_bin or shutil.which("fdkaac")
     if fdkaac_path:
         encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac"))
+
+    # 3b. AAC-ENC (alternative FDK-AAC wrapper)
+    aacenc_path = getattr(args, 'aac_enc_bin', None) or shutil.which("aac-enc")
+    if aacenc_path:
+        encoders.append(AACEncEncoder("aac-enc", aacenc_path))
 
     # 4. AFConvert (macOS)
     afconvert_path = getattr(args, 'afconvert_bin', None) or shutil.which("afconvert")
@@ -243,6 +261,7 @@ def main():
     parser.add_argument("--faac-bin", help="Path to faac binary")
     parser.add_argument("--faac-lib", help="Path to libfaac.so")
     parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
+    parser.add_argument("--aac-enc-bin", help="Path to aac-enc binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--afconvert-bin", help="Path to afconvert binary")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
