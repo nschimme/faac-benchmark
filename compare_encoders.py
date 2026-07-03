@@ -26,17 +26,40 @@ from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def find_linked_lib(binary_path, name_substr):
-    """Resolve the on-disk path of a shared library linked into binary_path via ldd."""
+    """Resolve the on-disk path of a shared library linked into binary_path."""
     try:
-        res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
-        for line in res.stdout.splitlines():
-            if name_substr in line and "=>" in line:
-                lib_path = line.split("=>")[1].strip().split(" ")[0]
-                if lib_path and os.path.exists(lib_path):
-                    return lib_path
+        if sys.platform == "darwin":
+            # macOS: use otool -L
+            res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if name_substr in line:
+                    # otool output: "\t/path/to/lib (compatibility...)"
+                    lib_path = line.split(" ")[0]
+                    if os.path.exists(lib_path):
+                        return lib_path
+        else:
+            # Linux: use ldd
+            res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                if name_substr in line and "=>" in line:
+                    lib_path = line.split("=>")[1].strip().split(" ")[0]
+                    if lib_path and os.path.exists(lib_path):
+                        return lib_path
     except Exception:
         pass
     return None
+
+def is_system_library(path):
+    """Checks if a library path belongs to a system directory."""
+    if not path:
+        return False
+    if sys.platform == "darwin":
+        # macOS system paths
+        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
+        return any(path.startswith(prefix) for prefix in system_prefixes)
+    # On Linux, we generally want to measure library size even if in /usr/lib
+    return False
 
 class Encoder:
     def __init__(self, name, binary_path, encoder_type, lib_name_substr=None):
@@ -47,16 +70,40 @@ class Encoder:
         # If the codec is linked dynamically, measure the shared library on disk;
         # otherwise (static linking) fall back to the binary itself.
         lib_path = find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None
-        self.size = get_binary_size(lib_path) if lib_path else (get_binary_size(binary_path) if binary_path else 0)
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+        if lib_path and is_system_library(lib_path):
+            self.size = 0  # System library, don't count towards footprint
+        elif lib_path:
+            self.size = get_binary_size(lib_path)
+        else:
+            # Fallback to binary size if no library found, but ignore system binaries
+            if is_system_library(binary_path):
+                self.size = 0
+            else:
+                self.size = get_binary_size(binary_path) if binary_path else 0
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
+
+def use_he_aac(bitrate_kbps, channels, sample_rate):
+    """
+    Centralized heuristic for selecting HE-AAC vs LC-AAC.
+    HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
+    It also generally requires a minimum sample rate (typically 32kHz+).
+    Typical range for HE-AAC: 10kbps to 32kbps per channel.
+    """
+    if sample_rate < 32000:
+        return False
+    bitrate_per_ch = bitrate_kbps / channels
+    return 10 <= bitrate_per_ch < 32
 
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        # faac handles LC/HE selection internally, but we can nudge it if needed.
+        # However, it doesn't have an explicit 'aot' flag for HE-AAC in the CLI.
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
@@ -68,17 +115,41 @@ class FFmpegEncoder(Encoder):
         super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        return [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name, "-b:a", f"{bitrate_kbps}k", output_path]
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
+        if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels, sample_rate):
+            cmd.extend(["-profile:a", "aac_he"])
+        cmd.extend(["-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path])
+        return cmd
 
 class FDKAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps):
-        # fdkaac -b <bitrate> -o <out> <in>
-        # Note: fdkaac expects bitrate in bps or with 'k' suffix
-        return [self.binary_path, "-b", f"{bitrate_kbps}k", "-o", output_path, input_path]
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        profile = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
+        # fdkaac might be picky about 'k' suffix vs bps depending on version
+        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels), "-o", output_path, input_path]
+
+class AACEncEncoder(Encoder):
+    def __init__(self, name, binary_path):
+        super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        aot = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
+        # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
+        return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
+
+class AFConvertEncoder(Encoder):
+    def __init__(self, name, binary_path):
+        # AudioToolbox is the framework providing the AAC codec on macOS
+        super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        codec = "aach" if use_he_aac(bitrate_kbps, channels, sample_rate) else "aac "
+        # Use ADTS format to get a standard .aac file
+        # Add -c to force channel count if needed
+        return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
 def get_audio_info(path):
     try:
@@ -120,6 +191,16 @@ def detect_encoders(args):
     if fdkaac_path:
         encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac"))
 
+    # 3b. AAC-ENC (alternative FDK-AAC wrapper)
+    aacenc_path = getattr(args, 'aac_enc_bin', None) or shutil.which("aac-enc")
+    if aacenc_path:
+        encoders.append(AACEncEncoder("aac-enc", aacenc_path))
+
+    # 4. AFConvert (macOS)
+    afconvert_path = getattr(args, 'afconvert_bin', None) or shutil.which("afconvert")
+    if afconvert_path:
+        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path))
+
     return encoders
 
 def gate_filter(name, filtered_samples):
@@ -138,11 +219,23 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     output_filename = f"{encoder.name}_{scenario_name}_{sample}.aac".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
-    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"])
+    channels = 1 if cfg["mode"] == "speech" else 2
+    sample_rate = cfg.get("rate", 48000)
+    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
 
     try:
         t_start = time.perf_counter()
-        subprocess.run(cmd, capture_output=True, check=True)
+        res = subprocess.run(cmd, capture_output=True, check=False)
+
+        # Fallback for afconvert: if aach failed, try aac LC
+        if res.returncode != 0 and isinstance(encoder, AFConvertEncoder) and "aach" in cmd:
+            print(f"  [Fallback] aach failed for {sample}, trying aac LC...")
+            cmd = [c if c != "aach" else "aac " for c in cmd]
+            res = subprocess.run(cmd, capture_output=True, check=False)
+
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+
         t_end = time.perf_counter()
         duration = t_end - t_start
 
@@ -176,14 +269,28 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
         }
     except Exception as e:
         print(f"Error encoding {sample} with {encoder.name}: {e}")
-        return None
+        return {
+            "encoder": encoder.name,
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": 0,
+            "audio_duration": None,
+            "size": 0,
+            "actual_bitrate": None,
+            "target_bitrate": cfg["bitrate"],
+            "decode_valid": False,
+            "decode_error": f"Encoding failed: {str(e)}",
+            "aac_path": None
+        }
 
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
     parser.add_argument("--faac-bin", help="Path to faac binary")
     parser.add_argument("--faac-lib", help="Path to libfaac.so")
     parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
+    parser.add_argument("--aac-enc-bin", help="Path to aac-enc binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
+    parser.add_argument("--afconvert-bin", help="Path to afconvert binary")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -254,7 +361,11 @@ def main():
     if not args.skip_mos:
         print("\n>>> Phase 2: Perceptual Quality (MOS)")
         bridge_data = {"matrix": {}}
+        valid_count = 0
         for i, res in enumerate(all_results):
+            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
+                continue
+
             key = f"res_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
@@ -262,6 +373,11 @@ def main():
                 "mos": None
             }
             shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
+            valid_count += 1
+
+        if valid_count == 0:
+            print("No valid AAC files to score for MOS.")
+            return
 
         bridge_json = "bridge_results.json"
         with open(bridge_json, "w") as f:
@@ -288,7 +404,11 @@ def main():
     if not args.skip_stereo:
         print("\n>>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
         bridge_data = {"matrix": {}}
+        valid_count = 0
         for i, res in enumerate(all_results):
+            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
+                continue
+
             key = f"res_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
@@ -296,8 +416,14 @@ def main():
                 "ic_err": None
             }
             # Ensure files exist in output_dir
-            if not os.path.exists(os.path.join(output_dir, f"{key}.aac")):
-                shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
+            target_path = os.path.join(output_dir, f"{key}.aac")
+            if not os.path.exists(target_path):
+                shutil.copy(res["aac_path"], target_path)
+            valid_count += 1
+
+        if valid_count == 0:
+            print("No valid AAC files to analyze for stereo fidelity.")
+            return
 
         bridge_json_stereo = "bridge_results_stereo.json"
         with open(bridge_json_stereo, "w") as f:
@@ -338,9 +464,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         "valid_count": 0, "total_count": 0
     }))
 
+    # Track top errors for troubleshooting
+    error_counts = defaultdict(int)
+
     for res in results:
         e = res["encoder"]
         s = res["scenario"]
+
+        if not res.get("decode_valid"):
+            err_msg = res.get("decode_error") or "Unknown error"
+            # Normalize error message for aggregation (take first line or short version)
+            short_err = err_msg.split("\n")[0].split(":")[0].strip()
+            error_counts[f"{e}: {short_err}"] += 1
 
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
@@ -426,7 +561,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
             rank_str = f"🏆 {i+1}" if i == 0 and o['avg_mos'] > 0 else f"{i+1}"
-            status_str = "✅ OK" if o['valid_rate'] == 100 else f"❌ {100-o['valid_rate']:.1f}% Err"
+
+            if o['valid_rate'] == 100:
+                status_str = "OK"
+            else:
+                # Find most common error for this encoder
+                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name}: ")}
+                top_err = max(relevant_errors, key=relevant_errors.get) if relevant_errors else "Err"
+                status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
             m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
 
@@ -497,6 +639,13 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 val = stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] if stats[e][s]["speed_count"] > 0 else None
                 line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
             f.write(line + "\n")
+
+        if error_counts:
+            f.write("\n## Failure Analysis\n\n")
+            f.write("| Encoder: Error Type | Occurrences |\n")
+            f.write("| :--- | :---: |\n")
+            for err_key in sorted(error_counts.keys(), key=lambda x: error_counts[x], reverse=True):
+                f.write(f"| {err_key} | {error_counts[err_key]} |\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
