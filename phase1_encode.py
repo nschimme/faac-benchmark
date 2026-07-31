@@ -28,7 +28,7 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
-from utils import decode_validate, calculate_provenance_hash, get_binary_size, get_file_hash
+from utils import decode_validate, calculate_provenance_hash, get_binary_size, get_file_hash, get_elf_section_sizes
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -140,6 +140,11 @@ def run_benchmark(
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    sec_sizes = get_elf_section_sizes(lib_path)
+    exact_rom_size = sec_sizes.get("text", 0) + sec_sizes.get("rodata", 0) + sec_sizes.get("data", 0)
+    if exact_rom_size == 0:
+        exact_rom_size = get_binary_size(lib_path)
+
     results = {
         "sha": sha,
         "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
@@ -147,7 +152,11 @@ def run_benchmark(
         "faac_args": " ".join(extra_args) if extra_args else "",
         "matrix": {},
         "throughput": {},
-        "lib_size": get_binary_size(lib_path)
+        "lib_size": exact_rom_size,
+        "lib_text_size": sec_sizes.get("text", 0),
+        "lib_rodata_size": sec_sizes.get("rodata", 0),
+        "lib_bss_size": sec_sizes.get("bss", 0),
+        "lib_data_size": sec_sizes.get("data", 0)
     }
 
     if run_perceptual:

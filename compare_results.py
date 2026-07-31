@@ -61,6 +61,9 @@ def analyze_pair(base_file, cand_file):
         "worst_ic_regression": (0, "N/A"),
         "tp_reduction": 0,
         "lib_size_chg": 0,
+        "lib_text_chg": 0,
+        "lib_rodata_chg": 0,
+        "lib_bss_chg": 0,
         "bitrate_chg_sum": 0,
         "bitrate_count": 0,
         "bitrate_acc_sum": 0,
@@ -311,6 +314,28 @@ def analyze_pair(base_file, cand_file):
     else:
         suite_results["missing_data"] = True
 
+    # Granular Section Sizes (.text, .rodata, .bss)
+    base_text = base.get("lib_text_size", 0)
+    cand_text = cand.get("lib_text_size", 0)
+    if cand_text > 0 and base_text > 0:
+        suite_results["lib_text_chg"] = ((cand_text / base_text) - 1) * 100
+    else:
+        suite_results["lib_text_chg"] = 0.0
+
+    base_rodata = base.get("lib_rodata_size", 0)
+    cand_rodata = cand.get("lib_rodata_size", 0)
+    if cand_rodata > 0 and base_rodata > 0:
+        suite_results["lib_rodata_chg"] = ((cand_rodata / base_rodata) - 1) * 100
+    else:
+        suite_results["lib_rodata_chg"] = 0.0
+
+    base_bss = base.get("lib_bss_size", 0)
+    cand_bss = cand.get("lib_bss_size", 0)
+    if cand_bss > 0 and base_bss > 0:
+        suite_results["lib_bss_chg"] = ((cand_bss / base_bss) - 1) * 100
+    else:
+        suite_results["lib_bss_chg"] = 0.0
+
     return suite_results
 
 
@@ -372,6 +397,9 @@ def main():
     worst_ic_regression = (0, "N/A")
     total_tp_reduction = 0
     total_lib_chg = 0
+    total_lib_text_chg = 0
+    total_lib_rodata_chg = 0
+    total_lib_bss_chg = 0
     total_bitrate_chg = 0
     total_bitrate_count = 0
     total_bitrate_acc_sum = 0
@@ -414,6 +442,9 @@ def main():
                 worst_ic_regression = data["worst_ic_regression"]
             total_tp_reduction += data["tp_reduction"]
             total_lib_chg += data["lib_size_chg"]
+            total_lib_text_chg += data.get("lib_text_chg", 0)
+            total_lib_rodata_chg += data.get("lib_rodata_chg", 0)
+            total_lib_bss_chg += data.get("lib_bss_chg", 0)
             total_bitrate_chg += data["bitrate_chg_sum"]
             total_bitrate_count += data["bitrate_count"]
             total_bitrate_acc_sum += data["bitrate_acc_sum"]
@@ -451,6 +482,9 @@ def main():
     avg_tp_reduction = total_tp_reduction / \
         len(all_suite_data) if all_suite_data else 0
     avg_lib_chg = total_lib_chg / len(all_suite_data) if all_suite_data else 0
+    avg_lib_text_chg = total_lib_text_chg / len(all_suite_data) if all_suite_data else 0
+    avg_lib_rodata_chg = total_lib_rodata_chg / len(all_suite_data) if all_suite_data else 0
+    avg_lib_bss_chg = total_lib_bss_chg / len(all_suite_data) if all_suite_data else 0
     avg_bitrate_chg = total_bitrate_chg / \
         total_bitrate_count if total_bitrate_count > 0 else 0
     avg_bitrate_acc = total_bitrate_acc_sum / \
@@ -548,10 +582,22 @@ def main():
             f"| **Worst-case TP Δ** | {worst_tp_delta:.1f}% ({worst_tp_scen}) ⚠️ |")
 
     # Binary Size
-    if abs(avg_lib_chg) > 0.01:
+    if abs(avg_lib_chg) > 0.001:  # Lower threshold slightly to capture minor exact changes
         size_icon = "📉" if avg_lib_chg < -0.1 else "📈" if avg_lib_chg > 0.1 else ""
         summary_lines.append(
             f"| **Library Size** | {avg_lib_chg:+.2f}% {size_icon} |")
+
+        # Section changes breakdown
+        sec_details = []
+        if abs(avg_lib_text_chg) > 0.001:
+            sec_details.append(f".text: {avg_lib_text_chg:+.2f}%")
+        if abs(avg_lib_rodata_chg) > 0.001:
+            sec_details.append(f".rodata: {avg_lib_rodata_chg:+.2f}%")
+        if abs(avg_lib_bss_chg) > 0.001:
+            sec_details.append(f".bss: {avg_lib_bss_chg:+.2f}%")
+        if sec_details:
+            summary_lines.append(
+                f"| **Footprint Breakdown** | {', '.join(sec_details)} |")
 
 
     # Bitrate Δ
