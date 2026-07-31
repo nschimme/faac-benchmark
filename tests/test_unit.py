@@ -117,5 +117,56 @@ class TestCompareClipsRanking(unittest.TestCase):
             self.assertIn("worst", r.stdout)
 
 
+from unittest.mock import patch, MagicMock
+
+class TestElfSectionSizes(unittest.TestCase):
+    def test_nonexistent_file(self):
+        from utils import get_elf_section_sizes
+        res = get_elf_section_sizes("/does/not/exist")
+        self.assertEqual(res, {"text": 0, "rodata": 0, "bss": 0, "data": 0})
+
+    @patch("utils.sys.platform", "linux")
+    @patch("subprocess.run")
+    def test_size_a_parsing(self, mock_run):
+        from utils import get_elf_section_sizes
+        # Mock size -A output
+        mock_res = MagicMock()
+        mock_res.stdout = """/path/to/binary  :
+section               size    addr
+.text                 12345   1000
+.rodata                5678   2000
+.data                   999   3000
+.bss                    111   4000
+Total                 19133
+"""
+        mock_res.returncode = 0
+        mock_run.return_value = mock_res
+
+        with tempfile.NamedTemporaryFile() as tmp:
+            res = get_elf_section_sizes(tmp.name)
+            self.assertEqual(res, {"text": 12345, "rodata": 5678, "bss": 111, "data": 999})
+
+    @patch("utils.sys.platform", "linux")
+    @patch("subprocess.run")
+    def test_berkeley_fallback(self, mock_run):
+        from utils import get_elf_section_sizes
+        # First call to size -A fails or returns empty, second call to size succeeds
+        mock_res_a = MagicMock()
+        mock_res_a.stdout = ""
+        mock_res_a.returncode = 0
+
+        mock_res_berkeley = MagicMock()
+        mock_res_berkeley.stdout = """   text	   data	    bss	    dec	    hex	filename
+  20000	   1500	    300	  21800	   5528	/path/to/binary
+"""
+        mock_res_berkeley.returncode = 0
+
+        mock_run.side_effect = [mock_res_a, mock_res_berkeley]
+
+        with tempfile.NamedTemporaryFile() as tmp:
+            res = get_elf_section_sizes(tmp.name)
+            self.assertEqual(res, {"text": 20000, "rodata": 0, "bss": 300, "data": 1500})
+
+
 if __name__ == "__main__":
     unittest.main()
