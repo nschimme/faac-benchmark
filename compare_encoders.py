@@ -412,7 +412,8 @@ def main():
 
         for i, res in enumerate(all_results):
             key = f"res_{i}"
-            res["mos"] = updated_bridge["matrix"][key].get("mos")
+            if key in updated_bridge["matrix"]:
+                res["mos"] = updated_bridge["matrix"][key].get("mos")
 
     # Stereo Coherence Phase
     if not args.skip_stereo:
@@ -457,7 +458,8 @@ def main():
 
         for i, res in enumerate(all_results):
             key = f"res_{i}"
-            res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
+            if key in updated_bridge["matrix"]:
+                res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
         if os.path.exists(bridge_json_stereo):
             os.remove(bridge_json_stereo)
@@ -570,8 +572,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (.text) | ROM (.rodata) | RAM (.bss) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | Footprint (ROM/RAM) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
@@ -607,7 +609,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
 
-            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {format_size(o['text_size'])} | {format_size(o['rodata_size'])} | {format_size(o['bss_size'])} |\n")
+            footprint_str = f"ROM: {format_size(o['text_size'] + o['rodata_size'])}<br>RAM: {format_size(o['bss_size'])}"
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {footprint_str} |\n")
 
         # Per-Scenario Tables
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
