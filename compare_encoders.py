@@ -19,7 +19,7 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key
+from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -71,16 +71,25 @@ class Encoder:
         # otherwise (static linking) fall back to the binary itself.
         lib_path = find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None
 
+        measured_path = None
         if lib_path and is_system_library(lib_path):
             self.size = 0  # System library, don't count towards footprint
         elif lib_path:
             self.size = get_binary_size(lib_path)
+            measured_path = lib_path
         else:
             # Fallback to binary size if no library found, but ignore system binaries
             if is_system_library(binary_path):
                 self.size = 0
             else:
                 self.size = get_binary_size(binary_path) if binary_path else 0
+                measured_path = binary_path if binary_path and not is_system_library(binary_path) else None
+
+        sec_sizes = get_elf_section_sizes(measured_path) if measured_path else {"text": 0, "rodata": 0, "bss": 0, "data": 0}
+        self.text_size = sec_sizes.get("text", 0)
+        self.rodata_size = sec_sizes.get("rodata", 0)
+        self.bss_size = sec_sizes.get("bss", 0)
+        self.data_size = sec_sizes.get("data", 0)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
@@ -170,6 +179,11 @@ def detect_encoders(args):
         encoders.append(FAACEncoder("FAAC", faac_path, "faac"))
         if args.faac_lib:
             encoders[-1].size = get_binary_size(args.faac_lib)
+            sec_sizes = get_elf_section_sizes(args.faac_lib)
+            encoders[-1].text_size = sec_sizes.get("text", 0)
+            encoders[-1].rodata_size = sec_sizes.get("rodata", 0)
+            encoders[-1].bss_size = sec_sizes.get("bss", 0)
+            encoders[-1].data_size = sec_sizes.get("data", 0)
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
@@ -398,7 +412,8 @@ def main():
 
         for i, res in enumerate(all_results):
             key = f"res_{i}"
-            res["mos"] = updated_bridge["matrix"][key].get("mos")
+            if key in updated_bridge["matrix"]:
+                res["mos"] = updated_bridge["matrix"][key].get("mos")
 
     # Stereo Coherence Phase
     if not args.skip_stereo:
@@ -443,7 +458,8 @@ def main():
 
         for i, res in enumerate(all_results):
             key = f"res_{i}"
-            res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
+            if key in updated_bridge["matrix"]:
+                res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
         if os.path.exists(bridge_json_stereo):
             os.remove(bridge_json_stereo)
@@ -453,6 +469,13 @@ def main():
 
     # Final leaderboard generation
     generate_leaderboard(encoders, all_results, args.output, scenario_list)
+
+def format_size(bytes_val):
+    if bytes_val is None or bytes_val == 0:
+        return "0 B"
+    if bytes_val < 1024:
+        return f"{bytes_val} B"
+    return f"{bytes_val / 1024:.1f} KB"
 
 def generate_leaderboard(encoders, results, output_path, scenario_list):
     # Aggregation
@@ -535,6 +558,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
                 "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
                 "size_kb": encoder_info[e_name].size / 1024,
+                "text_size": encoder_info[e_name].text_size,
+                "rodata_size": encoder_info[e_name].rodata_size,
+                "bss_size": encoder_info[e_name].bss_size,
+                "data_size": encoder_info[e_name].data_size,
                 "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
             }
 
@@ -545,7 +572,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | Footprint |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
@@ -582,7 +609,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
 
-            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {o['size_kb']:.1f} KB |\n")
+            rom_str = format_size(o['text_size'] + o['rodata_size'])
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
 
         # Per-Scenario Tables
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
@@ -653,7 +681,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **Footprint**: Codec shared-library size (falls back to the host binary if statically linked) (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Exact compiled executable code and read-only data size (.text + .rodata) inside the codec library/binary (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 

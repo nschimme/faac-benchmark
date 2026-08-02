@@ -58,6 +58,60 @@ def get_binary_size(path):
         return os.path.getsize(path)
     return 0
 
+def get_elf_section_sizes(path):
+    """
+    Get the exact sizes of the .text, .rodata, .bss, and .data sections
+    using 'size -A' command on Linux. Returns a dict with keys:
+    'text', 'rodata', 'bss', 'data'.
+    """
+    sizes = {"text": 0, "rodata": 0, "bss": 0, "data": 0}
+    if not path or not os.path.exists(path):
+        return sizes
+
+    if sys.platform != "darwin":  # Linux / other systems (excluding macOS)
+        try:
+            # size is a standard tool on Linux
+            res = subprocess.run(["size", "-A", path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    section_name = parts[0]
+                    try:
+                        size_val = int(parts[1])
+                    except ValueError:
+                        continue
+                    if section_name == ".text":
+                        sizes["text"] = size_val
+                    elif section_name == ".rodata":
+                        sizes["rodata"] = size_val
+                    elif section_name == ".bss":
+                        sizes["bss"] = size_val
+                    elif section_name == ".data":
+                        sizes["data"] = size_val
+
+            # If size -A succeeded but returned all zeros or we got nothing, fallback to Berkeley size
+            if sum(sizes.values()) == 0:
+                res = subprocess.run(["size", path], capture_output=True, text=True, check=True)
+                lines = res.stdout.splitlines()
+                if len(lines) >= 2:
+                    parts = lines[1].strip().split()
+                    if len(parts) >= 3:
+                        try:
+                            sizes["text"] = int(parts[0])
+                            sizes["data"] = int(parts[1])
+                            sizes["bss"] = int(parts[2])
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+
+    # If everything is still zero (e.g. macOS or tool missing or non-ELF binary),
+    # fallback to using overall binary file size as 'text' size
+    if sum(sizes.values()) == 0:
+        sizes["text"] = get_binary_size(path)
+
+    return sizes
+
 def load_results(path):
     if os.path.exists(path):
         with open(path, "r") as f:
