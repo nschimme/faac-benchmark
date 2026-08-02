@@ -63,7 +63,6 @@ def analyze_pair(base_file, cand_file):
         "lib_size_chg": 0,
         "lib_text_chg": 0,
         "lib_rodata_chg": 0,
-        "lib_bss_chg": 0,
         "bitrate_chg_sum": 0,
         "bitrate_count": 0,
         "bitrate_acc_sum": 0,
@@ -314,7 +313,7 @@ def analyze_pair(base_file, cand_file):
     else:
         suite_results["missing_data"] = True
 
-    # Granular Section Sizes (.text, .rodata, .bss)
+    # Granular Section Sizes (.text, .rodata)
     base_text = base.get("lib_text_size", 0)
     cand_text = cand.get("lib_text_size", 0)
     if cand_text > 0 and base_text > 0:
@@ -328,13 +327,6 @@ def analyze_pair(base_file, cand_file):
         suite_results["lib_rodata_chg"] = ((cand_rodata / base_rodata) - 1) * 100
     else:
         suite_results["lib_rodata_chg"] = 0.0
-
-    base_bss = base.get("lib_bss_size", 0)
-    cand_bss = cand.get("lib_bss_size", 0)
-    if cand_bss > 0 and base_bss > 0:
-        suite_results["lib_bss_chg"] = ((cand_bss / base_bss) - 1) * 100
-    else:
-        suite_results["lib_bss_chg"] = 0.0
 
     return suite_results
 
@@ -399,7 +391,6 @@ def main():
     total_lib_chg = 0
     total_lib_text_chg = 0
     total_lib_rodata_chg = 0
-    total_lib_bss_chg = 0
     total_bitrate_chg = 0
     total_bitrate_count = 0
     total_bitrate_acc_sum = 0
@@ -444,7 +435,6 @@ def main():
             total_lib_chg += data["lib_size_chg"]
             total_lib_text_chg += data.get("lib_text_chg", 0)
             total_lib_rodata_chg += data.get("lib_rodata_chg", 0)
-            total_lib_bss_chg += data.get("lib_bss_chg", 0)
             total_bitrate_chg += data["bitrate_chg_sum"]
             total_bitrate_count += data["bitrate_count"]
             total_bitrate_acc_sum += data["bitrate_acc_sum"]
@@ -484,7 +474,6 @@ def main():
     avg_lib_chg = total_lib_chg / len(all_suite_data) if all_suite_data else 0
     avg_lib_text_chg = total_lib_text_chg / len(all_suite_data) if all_suite_data else 0
     avg_lib_rodata_chg = total_lib_rodata_chg / len(all_suite_data) if all_suite_data else 0
-    avg_lib_bss_chg = total_lib_bss_chg / len(all_suite_data) if all_suite_data else 0
     avg_bitrate_chg = total_bitrate_chg / \
         total_bitrate_count if total_bitrate_count > 0 else 0
     avg_bitrate_acc = total_bitrate_acc_sum / \
@@ -593,8 +582,6 @@ def main():
             sec_details.append(f".text: {avg_lib_text_chg:+.2f}%")
         if abs(avg_lib_rodata_chg) > 0.001:
             sec_details.append(f".rodata: {avg_lib_rodata_chg:+.2f}%")
-        if abs(avg_lib_bss_chg) > 0.001:
-            sec_details.append(f".bss: {avg_lib_bss_chg:+.2f}%")
         if sec_details:
             summary_lines.append(
                 f"| **Footprint Breakdown** | {', '.join(sec_details)} |")

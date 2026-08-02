@@ -572,7 +572,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | Footprint (ROM/RAM) |\n")
+        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
@@ -609,8 +609,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
 
-            footprint_str = f"ROM: {format_size(o['text_size'] + o['rodata_size'])}<br>RAM: {format_size(o['bss_size'])}"
-            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {footprint_str} |\n")
+            rom_str = format_size(o['text_size'] + o['rodata_size'])
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
 
         # Per-Scenario Tables
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
@@ -681,9 +681,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **ROM (.text)**: Executable code size inside the codec library/binary (**Lower is Better**)\n")
-        f.write("- **ROM (.rodata)**: Read-only constant data size inside the codec library/binary (**Lower is Better**)\n")
-        f.write("- **RAM (.bss)**: Uninitialized static/global variable size inside RAM (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Exact compiled executable code and read-only data size (.text + .rodata) inside the codec library/binary (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
