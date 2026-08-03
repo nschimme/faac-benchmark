@@ -62,6 +62,32 @@ def encode_aac(faac_bin, wav_path, aac_path, bitrate, extra_args=None, env_extra
     return result.stderr.decode(errors='replace')
 
 
+_TUNING_CHECKED = {}
+
+def require_tuning_build(faac_bin):
+    """Abort unless faac_bin was built with -Dtuning=true.
+
+    A release build silently ignores every FAAC_* knob, so a sweep against one
+    runs two identical arms and reports a confident "no difference". Probe once
+    per binary by encoding a fraction of a second and looking for the banner
+    libfaac prints from FaacTuningInit.
+    """
+    if faac_bin in _TUNING_CHECKED:
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = os.path.join(tmp, 'probe.wav')
+        subprocess.run(['ffmpeg', '-y', '-f', 'lavfi', '-i',
+                        'sine=frequency=1000:duration=0.2', '-ar', '48000',
+                        '-ac', '1', wav], capture_output=True, check=True)
+        out = subprocess.run([faac_bin, '-b', '64', '-o', os.path.join(tmp, 'probe.aac'), wav],
+                             capture_output=True)
+        banner = 'FAAC_TUNING build' in out.stderr.decode(errors='replace')
+    if not banner:
+        sys.exit(f'{faac_bin} is not a tuning build; FAAC_* knobs would be ignored.\n'
+                 f'Rebuild with:  meson setup build-tune -Dtuning=true && ninja -C build-tune')
+    _TUNING_CHECKED[faac_bin] = True
+
+
 def encode_any(encoder, enc_bin, wav_path, out_path, bitrate, tns, force_long,
                env_extra=None):
     """Encode with faac or ffmpeg-native-AAC, TNS on/off, optionally forcing long blocks.
@@ -78,7 +104,10 @@ def encode_any(encoder, enc_bin, wav_path, out_path, bitrate, tns, force_long,
                                  '-ar', '48000', mono_wav], capture_output=True)
         if result.returncode != 0:
             raise RuntimeError(f'ffmpeg downmix failed:\n{result.stderr.decode(errors="replace")}')
-        extra = [] if tns else ['--no-tns']
+        # Ask for TNS explicitly rather than relying on the library default,
+        # which is currently off: an implicit on-arm makes both arms identical
+        # and every A/B read exactly 0.00.
+        extra = ['--tns'] if tns else ['--no-tns']
         env = {'FAAC_FORCE_LONG': '1'} if force_long else {}
         if env_extra:
             env.update(env_extra)
@@ -325,7 +354,7 @@ def cmd_validate(faac_bin, bitrates, sr=48000):
 
 def cmd_sweep(faac_bin, ref_wav, bitrates, no_tns=False):
     print(f'=== NPER sweep: {os.path.basename(ref_wav)} ===')
-    extra = ['--no-tns'] if no_tns else []
+    extra = ['--no-tns'] if no_tns else ['--tns']
 
     ref, sr = load_mono(ref_wav)
     channels = 1  # We score on mono mix regardless of source
@@ -444,6 +473,8 @@ def tns_ab_one(encoder, enc_bin, ref_wav, bitrates, tmp, force_long=False,
 
 def cmd_tns_ab(enc_bin, ref_wavs, bitrates, encoder='faac', force_long=False,
                metric='nper'):
+    if encoder == 'faac' and force_long:
+        require_tuning_build(enc_bin)
     mode = f'encoder={encoder}, force_long={force_long}, metric={metric}'
     print(f'=== TNS A/B proof ({mode}) ===')
     if metric in ('nper', 'both'):
@@ -569,6 +600,7 @@ def env_ab_one(enc_bin, ref_wav, bitrates, tmp, env_a, env_b, metric='both'):
 
 
 def cmd_env_ab(enc_bin, ref_wavs, bitrates, env_a_spec, env_b_spec, metric='both'):
+    require_tuning_build(enc_bin)
     env_a, env_b = parse_env_spec(env_a_spec), parse_env_spec(env_b_spec)
     print(f'=== env A/B (faac, TNS on both arms) ===')
     print(f'    A: {env_a or "(baseline)"}   B: {env_b or "(baseline)"}')
