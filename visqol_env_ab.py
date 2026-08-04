@@ -10,8 +10,13 @@ Usage:
   .venv/bin/python visqol_env_ab.py --faac BIN --env-a "K=V[,K=V]" [--env-b "..."]
       --bitrates 12,16,24,32,48 [--reps 3] clip1.wav clip2.wav ...
 
-Delta = A - B (B defaults to baseline env). Bitrates are per-channel kbps
-(faac -b), i.e. CI scenario 48k_stereo_64k == 32 per channel.
+Delta = A - B (B defaults to baseline env). Bitrates go straight to faac -b,
+which is kbps *per channel* -- and so does phase1_encode.py, which passes
+cfg["bitrate"] unscaled. So CI's 48k_stereo_64k is -b 64 (128 kbps total)
+despite the name: pass the scenario number here verbatim, do not halve it.
+Halving lands under 40 kbps/ch, where SBR engages, the core frame count halves
+and PSY_TD_THRESH stops mattering at all -- a threshold sweep there returns a
+clean, wrong "no difference".
 """
 import argparse
 import os
