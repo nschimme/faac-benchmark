@@ -44,6 +44,8 @@ def main():
     parser.add_argument("output", help="Output JSON path")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    parser.add_argument("--throughput-only", action="store_true",
+                        help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
@@ -73,6 +75,11 @@ def main():
         extra_args_list.extend(args.extra_args)
     if unknown:
         extra_args_list.extend(unknown)
+
+    # A throughput refresh reuses the cached matrix, so scoring it again would
+    # spend the ViSQOL time the cache exists to avoid.
+    if args.throughput_only:
+        args.skip_mos = True
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
@@ -145,6 +152,11 @@ def main():
         # "cheap" footprint-only run still encodes the whole corpus.
         if args.skip_mos:
             cmd_phase1.append("--skip-mos")
+        # Refreshes a cached baseline's timings on the machine that is about to
+        # measure the candidate. Implies --skip-mos: the matrix is already on
+        # disk and re-encoding it would defeat the point of the cache.
+        if args.throughput_only:
+            cmd_phase1.append("--throughput-only")
         if args.build_dir:
             cmd_phase1.extend(["--build-dir", args.build_dir])
         if run["extra_args"]:

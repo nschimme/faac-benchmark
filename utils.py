@@ -163,17 +163,53 @@ def get_object_sizes(build_dir, target="libfaac"):
     return sizes
 
 
-def get_host_fp():
-    """Identity of the machine that produced the timings.
+def _boot_session():
+    """Something that changes when the machine or its boot changes.
 
-    Timing comparisons across different hardware are meaningless, and CI's
-    baseline cache can outlive a runner-image change.
+    Best effort: a degraded value costs a skipped gate, which is the safe
+    direction. Never let this raise -- it runs on every benchmark.
+
+    Linux and macOS get a real boot identifier. Anywhere else this degrades to
+    the hostname, which still separates two machines -- the case that actually
+    corrupted comparisons here -- but not two boots of one machine. Good enough
+    while CI is Linux; revisit if a Windows runner ever gates throughput.
+    """
+    import platform
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["sysctl", "-n", "kern.boottime"],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return f"{platform.node()}:{r.stdout.strip()}"
+    except Exception:
+        pass
+    return platform.node() or "unknown"
+
+
+def get_host_fp():
+    """Identity of the machine *instance* that produced the timings.
+
+    CPU model is not enough. A hosted CI fleet runs many identical VMs, and the
+    baseline JSON -- timing samples included -- is restored from cache, so a
+    candidate measured now can be compared against a baseline measured days ago
+    on a different physical machine that merely shared a model name. That
+    comparison produced 3% deltas on encodes verified bit-identical.
+
+    So the fingerprint carries a boot session, which is unique per machine boot.
+    Two runs that did not happen on the same booted host will not match, and the
+    throughput gate skips rather than reporting the difference between two
+    machines as a code change.
     """
     import platform
     fp = {
         "system": platform.system(),
         "machine": platform.machine(),
         "cpus": str(os.cpu_count() or 0),
+        "session": _boot_session(),
     }
     try:
         if platform.system() == "Darwin":
