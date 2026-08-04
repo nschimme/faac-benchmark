@@ -46,6 +46,11 @@ FOOTPRINT_WARN_BYTES = 512
 # Bytes of growth the author has explicitly accepted (--footprint-allow).
 FOOTPRINT_ALLOW = 0
 
+# Gate names allowed to fail the run (--gates). None means all of them. A
+# footprint-only job measures no MOS, and a run that cannot measure a gate must
+# not fail on it -- but the gate still appears in the report, as a skip.
+ENABLED_GATES = None
+
 
 def add_gate(suite_results, name, status, detail):
     """Record one gate decision. "fail" is the only thing that fails the run.
@@ -57,6 +62,10 @@ def add_gate(suite_results, name, status, detail):
     a silently skipped gate reads exactly like a passing one, which is how a
     +13.9% library regression survived nine commits.
     """
+    if ENABLED_GATES is not None and name not in ENABLED_GATES:
+        if status in ("fail", "warn"):
+            status = "skip"
+            detail = f"not selected by --gates; would have been: {detail}"
     suite_results["gates"].append(
         {"name": name, "status": status, "detail": detail})
     if status == "fail":
@@ -548,6 +557,10 @@ def main():
     parser.add_argument("--strict-decode", action="store_true",
                         help="Treat candidate decode-validation failures as hard regressions "
                              "(default: report only, do not fail the run)")
+    parser.add_argument("--gates", metavar="NAMES",
+                        help="Comma-separated gate names allowed to fail "
+                             "(mos, footprint, throughput). Default: all. "
+                             "Unselected gates are reported as skips.")
     parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
                         help="Accept up to BYTES of .text+.rodata growth without failing. "
                              "For changes whose size cost is intended and stated in the PR.")
@@ -558,6 +571,9 @@ def main():
     STRICT_DECODE = args.strict_decode
     global FOOTPRINT_ALLOW
     FOOTPRINT_ALLOW = args.footprint_allow
+    global ENABLED_GATES
+    if args.gates:
+        ENABLED_GATES = {g.strip() for g in args.gates.split(",") if g.strip()}
 
     results_dir = args.results_dir
     summary_only = args.summary_only
@@ -1006,7 +1022,10 @@ def main():
         except Exception as e:
             sys.stderr.write(f"Error: Could not write summary to {args.summary_output}: {e}\n")
 
-    if overall_regression or overall_missing:
+    # overall_missing means "a number we expected is absent". When --gates
+    # narrows the run, absence of the unselected numbers is the point, not a
+    # failure.
+    if overall_regression or (overall_missing and ENABLED_GATES is None):
         sys.exit(1)
 
 
