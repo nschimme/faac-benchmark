@@ -30,7 +30,7 @@ import fnmatch
 
 from utils import (decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
-                   get_object_sizes, get_toolchain_fp)
+                   get_object_sizes, get_toolchain_fp, get_host_fp)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +55,11 @@ def gate_filter(name, filtered_samples):
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXTERNAL_DATA_DIR = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
+
+# Timed repetitions per throughput signal. Five is the smallest N that gives the
+# minimum a fair chance of landing on an uncontended run and still leaves enough
+# samples to bootstrap a confidence interval.
+TP_REPS = 5
 
 
 def worker_init(cpu_id_queue):
@@ -155,6 +160,7 @@ def run_benchmark(
         "faac_args": " ".join(extra_args) if extra_args else "",
         "matrix": {},
         "throughput": {},
+        "throughput_samples": {},
         "lib_size": exact_rom_size,
         "lib_text_size": sec_sizes.get("text", 0),
         "lib_rodata_size": sec_sizes.get("rodata", 0),
@@ -167,6 +173,7 @@ def run_benchmark(
         "frontend_size": get_binary_size(faac_bin_path),
         "object_text": get_object_sizes(build_dir) if build_dir else {},
         "toolchain_fp": get_toolchain_fp(build_dir),
+        "host_fp": get_host_fp(),
     }
 
     if run_perceptual:
@@ -285,9 +292,12 @@ def run_benchmark(
                                    check=True,
                                    capture_output=True)
 
-                    # Multiple runs to average noise
+                    # Interference is one-sided: a run can be slowed by another
+                    # process but never sped up, so the minimum is the
+                    # low-variance estimator of the true cost and the mean just
+                    # imports whatever else the runner was doing.
                     durations = []
-                    for _ in range(3):
+                    for _ in range(TP_REPS):
                         start_time = time.perf_counter()
                         subprocess.run([faac_bin_path,
                                         "-o",
@@ -298,9 +308,12 @@ def run_benchmark(
                                        capture_output=True)
                         durations.append(time.perf_counter() - start_time)
 
-                    avg_dur = sum(durations) / len(durations)
-                    results["throughput"][sample] = avg_dur
-                    overall_durations.append(avg_dur)
+                    best = min(durations)
+                    results["throughput"][sample] = best
+                    # Keep every sample. Without them there is no dispersion to
+                    # test, and a gate cannot be built on a bare mean.
+                    results["throughput_samples"][sample] = durations
+                    overall_durations.append(best)
                 except BaseException as e:
                     print(f"    Throughput benchmark failed for {sample}: {e}")
                     pass

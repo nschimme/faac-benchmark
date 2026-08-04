@@ -120,12 +120,99 @@ def check_footprint(suite_results, base, cand):
     suite_results["object_movers"] = [m for m in movers if m[0]][:8]
 
 
-def get_toolchain_fp_key(results):
-    """Stable string identity of the toolchain that produced a results file."""
-    fp = results.get("toolchain_fp") or {}
+# Throughput gate. Requiring the whole confidence interval past the line, not
+# just the point estimate, is what stops a noisy runner failing a clean PR.
+TP_FAIL_RATIO = 1.05
+TP_WARN_RATIO = 1.02
+TP_BOOTSTRAP_N = 2000
+
+
+def _bootstrap_tp_ratio(base_s, cand_s, rng):
+    """95% CI for candidate/baseline encode time, pooled over signals.
+
+    Resamples within each signal to carry timing noise, takes the minimum --
+    the same estimator phase1 reports, since interference is one-sided -- and
+    averages log-ratios across signals so no single slow signal dominates.
+    """
+    import math
+
+    signals = [k for k in cand_s if k in base_s
+               and base_s[k] and cand_s[k]]
+    if not signals:
+        return None
+
+    draws = []
+    for _ in range(TP_BOOTSTRAP_N):
+        logs = []
+        for k in signals:
+            b = base_s[k]
+            c = cand_s[k]
+            bm = min(rng.choice(b) for _ in b)
+            cm = min(rng.choice(c) for _ in c)
+            if bm > 0 and cm > 0:
+                logs.append(math.log(cm / bm))
+        if logs:
+            draws.append(math.exp(sum(logs) / len(logs)))
+
+    if not draws:
+        return None
+    draws.sort()
+    lo = draws[int(0.025 * len(draws))]
+    hi = draws[min(int(0.975 * len(draws)), len(draws) - 1)]
+    point = draws[len(draws) // 2]
+    return point, lo, hi, len(signals)
+
+
+def check_throughput(suite_results, base, cand):
+    """Gate encode time on the lower bound of the cand/base ratio."""
+    import random
+
+    base_s = base.get("throughput_samples") or {}
+    cand_s = cand.get("throughput_samples") or {}
+    if not base_s or not cand_s:
+        add_gate(suite_results, "throughput", "skip",
+                 "no per-run timing samples (pre-dates the metric?)")
+        return
+
+    b_host = get_fp_key(base, "host_fp")
+    c_host = get_fp_key(cand, "host_fp")
+    if b_host != c_host:
+        add_gate(suite_results, "throughput", "skip",
+                 f"host differs: base {b_host or 'unknown'} vs cand {c_host or 'unknown'}")
+        return
+
+    res = _bootstrap_tp_ratio(base_s, cand_s, random.Random(0))
+    if res is None:
+        add_gate(suite_results, "throughput", "skip",
+                 "no signal measured on both sides")
+        return
+
+    point, lo, hi, n = res
+    detail = (f"encode time x{point:.3f} (95% CI {lo:.3f}-{hi:.3f}) "
+              f"over {n} signal(s)")
+    suite_results["tp_ratio"] = point
+
+    # The CI must clear the line entirely, so an ambiguous result warns rather
+    # than fails.
+    if lo > TP_FAIL_RATIO:
+        add_gate(suite_results, "throughput", "fail", detail)
+    elif lo > TP_WARN_RATIO:
+        add_gate(suite_results, "throughput", "warn", detail)
+    else:
+        add_gate(suite_results, "throughput", "pass", detail)
+
+
+def get_fp_key(results, field):
+    """Stable string identity from a fingerprint dict in a results file."""
+    fp = results.get(field) or {}
     if not fp:
         return ""
     return "|".join(f"{k}={fp[k]}" for k in sorted(fp))
+
+
+def get_toolchain_fp_key(results):
+    """Stable string identity of the toolchain that produced a results file."""
+    return get_fp_key(results, "toolchain_fp")
 
 
 def analyze_pair(base_file, cand_file):
@@ -442,6 +529,7 @@ def analyze_pair(base_file, cand_file):
         suite_results["lib_rodata_chg"] = 0.0
 
     check_footprint(suite_results, base, cand)
+    check_throughput(suite_results, base, cand)
 
     return suite_results
 

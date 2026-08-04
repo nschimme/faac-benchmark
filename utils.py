@@ -185,6 +185,35 @@ def get_object_sizes(build_dir, target="libfaac"):
     return sizes
 
 
+def get_host_fp():
+    """Identity of the machine that produced the timings.
+
+    Timing comparisons across different hardware are meaningless, and CI's
+    baseline cache can outlive a runner-image change.
+    """
+    import platform
+    fp = {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "cpus": str(os.cpu_count() or 0),
+    }
+    try:
+        if platform.system() == "Darwin":
+            r = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                fp["cpu"] = r.stdout.strip()
+        else:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        fp["cpu"] = line.split(":", 1)[1].strip()
+                        break
+    except Exception:
+        pass
+    return fp
+
+
 def get_toolchain_fp(build_dir=None):
     """Identity of the toolchain that produced the binaries.
 

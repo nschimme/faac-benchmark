@@ -166,6 +166,90 @@ Total                 19133
         with tempfile.NamedTemporaryFile() as tmp:
             res = get_elf_section_sizes(tmp.name)
             self.assertEqual(res, {"text": 20000, "rodata": 0, "bss": 300, "data": 1500})
+class TestFootprintGate(unittest.TestCase):
+    """The footprint gate exists because lib_size was never wired to the
+    verdict. These pin the verdict, not the byte counts."""
+
+    def _run(self, base_code, cand_code, allow=0, base_fp=None, cand_fp=None):
+        import compare_results as C
+        C.FOOTPRINT_ALLOW = allow
+        sr = {"gates": [], "has_regression": False}
+        fp = {"cc": "gcc"}
+        C.check_footprint(
+            sr,
+            {"lib_sections": {"text": base_code, "rodata": 0},
+             "toolchain_fp": base_fp or fp},
+            {"lib_sections": {"text": cand_code, "rodata": 0},
+             "toolchain_fp": cand_fp or fp})
+        C.FOOTPRINT_ALLOW = 0
+        return sr
+
+    def test_known_regression_fails(self):
+        # f94a81a8: .text+.rodata 76676 -> 80180.
+        sr = self._run(76676, 80180)
+        self.assertEqual(sr["gates"][0]["status"], "fail")
+        self.assertTrue(sr["has_regression"])
+
+    def test_routine_growth_passes(self):
+        # Largest routine commit in the 30-commit replay was +1556.
+        sr = self._run(76676, 76676 + 1556)
+        self.assertIn(sr["gates"][0]["status"], ("pass", "warn"))
+        self.assertFalse(sr["has_regression"])
+
+    def test_shrink_passes(self):
+        sr = self._run(80180, 76676)
+        self.assertEqual(sr["gates"][0]["status"], "pass")
+
+    def test_acknowledged_growth_does_not_fail(self):
+        sr = self._run(76676, 80180, allow=4000)
+        self.assertEqual(sr["gates"][0]["status"], "warn")
+        self.assertFalse(sr["has_regression"])
+
+    def test_toolchain_mismatch_skips_visibly(self):
+        sr = self._run(76676, 80180, base_fp={"cc": "gcc-13"},
+                       cand_fp={"cc": "gcc-14"})
+        self.assertEqual(sr["gates"][0]["status"], "skip")
+        self.assertFalse(sr["has_regression"])
+        self.assertIn("toolchain differs", sr["gates"][0]["detail"])
+
+
+class TestThroughputGate(unittest.TestCase):
+    def _run(self, base, cand, host_differs=False):
+        import compare_results as C
+        sr = {"gates": [], "has_regression": False}
+        C.check_throughput(
+            sr,
+            {"throughput_samples": {"s": base}, "host_fp": {"cpu": "a"}},
+            {"throughput_samples": {"s": cand},
+             "host_fp": {"cpu": "b" if host_differs else "a"}})
+        return sr["gates"][0]
+
+    BASE = [1.00, 1.01, 1.02, 1.00, 1.03]
+
+    def test_identical_passes(self):
+        self.assertEqual(self._run(self.BASE, self.BASE)["status"], "pass")
+
+    def test_large_slowdown_fails(self):
+        # Pre-gate TNS cost +20.9%.
+        slow = [x * 1.209 for x in self.BASE]
+        self.assertEqual(self._run(self.BASE, slow)["status"], "fail")
+
+    def test_deliberate_small_trade_warns(self):
+        # Post-gate TNS cost +5.5%: visible, but not blocking.
+        slow = [x * 1.055 for x in self.BASE]
+        self.assertEqual(self._run(self.BASE, slow)["status"], "warn")
+
+    def test_noisy_runner_does_not_fail_clean_change(self):
+        # Same true minimum, heavy one-sided interference in both arms.
+        noisy_b = [1.00, 1.5, 1.02, 2.0, 1.03]
+        noisy_c = [1.00, 1.9, 1.02, 1.7, 1.03]
+        self.assertEqual(self._run(noisy_b, noisy_c)["status"], "pass")
+
+    def test_host_mismatch_skips_visibly(self):
+        slow = [x * 1.5 for x in self.BASE]
+        g = self._run(self.BASE, slow, host_differs=True)
+        self.assertEqual(g["status"], "skip")
+        self.assertIn("host differs", g["detail"])
 
 
 if __name__ == "__main__":

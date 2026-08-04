@@ -263,6 +263,47 @@ def setup_throughput_signals():
                     f" FFmpeg error during signal generation: {
                         e.stderr.decode() if e.stderr else e}")
 
+    setup_realistic_throughput_signals(dest_dir)
+
+
+def setup_realistic_throughput_signals(dest_dir):
+    """Throughput signals built from real music, looped to ~10 minutes.
+
+    Sine, sweep, noise and silence are stable to time but they barely exercise
+    the parts of the encoder whose cost actually changes: block switching sees
+    no transients, TNS never fires, and stereo coding sees no realistic
+    correlation. A change can move real-content encode time by 20% and leave
+    all four synthetic signals flat.
+
+    Each source is one of the music gate clips, so throughput and quality are
+    measured on the same content.
+    """
+    from config import _MUSIC_GATE
+
+    src_dir = os.path.join(BASE_DATA_DIR, "audio")
+    if not os.path.isdir(src_dir):
+        return
+
+    # Two clips, chosen for opposite encoder behaviour: percussive content that
+    # drives short blocks, and tonal content that stays long.
+    for tag, clip in (("music_percussive", _MUSIC_GATE[0]),
+                      ("music_tonal", _MUSIC_GATE[1])):
+        src = os.path.join(src_dir, clip)
+        out = os.path.join(dest_dir, f"{tag}.wav")
+        if not os.path.exists(src) or os.path.exists(out):
+            continue
+        print(f"  Generating {tag}.wav from {clip}...")
+        try:
+            (
+                ffmpeg
+                .input(src, stream_loop=-1, t=600)
+                .output(out, ar=48000, ac=2, sample_fmt='s16')
+                .run(quiet=True, overwrite_output=True)
+            )
+        except ffmpeg.Error as e:
+            print(f" FFmpeg error building {tag}: "
+                  f"{e.stderr.decode() if e.stderr else e}")
+
 
 if __name__ == "__main__":
     if not os.path.exists(BASE_DATA_DIR):
