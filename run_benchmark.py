@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
     parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
+    parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
     parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
     parser.add_argument("--diff", nargs=2, help="Standalone diff of two result JSONs")
@@ -140,6 +141,12 @@ def main():
             cmd_phase1.extend(["--exclude-tests", args.exclude_tests])
         if args.gate:
             cmd_phase1.append("--gate")
+        # Phase 1 owns the encode matrix, so --skip-mos has to reach it or the
+        # "cheap" footprint-only run still encodes the whole corpus.
+        if args.skip_mos:
+            cmd_phase1.append("--skip-mos")
+        if args.build_dir:
+            cmd_phase1.extend(["--build-dir", args.build_dir])
         if run["extra_args"]:
             cmd_phase1.append(f"--extra-args={' '.join(run['extra_args'])}")
 

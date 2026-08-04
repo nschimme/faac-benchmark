@@ -42,6 +42,14 @@ inputs:
     description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
     required: false
     default: 'visqol-python'
+  gate:
+    description: 'Use the fast fixed gate subset (config.GATE_CLIPS) instead of the full corpus'
+    required: false
+    default: 'false'
+  build-dir:
+    description: 'Meson build directory, for per-object sizes and toolchain identity'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -104,6 +112,14 @@ runs:
 
         if [ -n "${{ inputs.exclude-tests }}" ]; then
           EXTRA_ARGS="$EXTRA_ARGS --exclude-tests ${{ inputs.exclude-tests }}"
+        fi
+
+        if [ "${{ inputs.gate }}" == "true" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --gate"
+        fi
+
+        if [ -n "${{ inputs.build-dir }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --build-dir ${{ inputs.build-dir }}"
         fi
 
         if [ -n "${{ inputs.backend }}" ]; then
