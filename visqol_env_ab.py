@@ -10,13 +10,21 @@ Usage:
   .venv/bin/python visqol_env_ab.py --faac BIN --env-a "K=V[,K=V]" [--env-b "..."]
       --bitrates 12,16,24,32,48 [--reps 3] clip1.wav clip2.wav ...
 
-Delta = A - B (B defaults to baseline env). Bitrates go straight to faac -b,
-which is kbps *per channel* -- and so does phase1_encode.py, which passes
-cfg["bitrate"] unscaled. So CI's 48k_stereo_64k is -b 64 (128 kbps total)
-despite the name: pass the scenario number here verbatim, do not halve it.
-Halving lands under 40 kbps/ch, where SBR engages, the core frame count halves
-and PSY_TD_THRESH stops mattering at all -- a threshold sweep there returns a
-clean, wrong "no difference".
+Delta = A - B (B defaults to baseline env). Bitrates go straight to faac -b, as
+they do in phase1_encode.py, so pass the CI scenario number verbatim:
+48k_stereo_64k is -b 64.
+
+Units, because they have been got wrong twice in both directions: -b is the
+TOTAL rate. The frontend divides it by the channel count before the library
+sees it (main.c), so -b 64 on stereo is 32 kbps/channel and measures ~67 kbps
+total end to end. Scenario names are therefore accurate, not nominal. Anything
+inside libfaac -- config->bitRate, ShortBlockTighten's anchors, CalcBandwidth --
+is per channel and is half the number you passed here.
+
+Do not halve the scenario number to "convert": that lands at -b 32, under the
+SBR crossover, where the core frame count halves and PSY_TD_THRESH stops
+mattering entirely -- a threshold sweep there returns byte-identical output at
+every value, a clean and completely false "no difference".
 """
 import argparse
 import os
