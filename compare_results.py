@@ -52,6 +52,35 @@ FOOTPRINT_ALLOW = 0
 ENABLED_GATES = None
 
 
+def bootstrap_mean_ci(values, n=2000, seed=0):
+    """Percentile bootstrap CI for a mean, and a sign count.
+
+    The block-switch retune (+0.0215) and the START/STOP tightening (+0.0124)
+    were both below the per-scenario MDE and were trusted because nearly every
+    clip moved the same way. That evidence has to be visible in the report, not
+    reconstructed by hand afterwards.
+    """
+    import random
+
+    vals = [v for v in values if v is not None]
+    if len(vals) < 3:
+        return None
+    rng = random.Random(seed)
+    n_v = len(vals)
+    draws = sorted(sum(rng.choice(vals) for _ in range(n_v)) / n_v
+                   for _ in range(n))
+    wins = sum(1 for v in vals if v > 0.005)
+    losses = sum(1 for v in vals if v < -0.005)
+    return {
+        "mean": sum(vals) / n_v,
+        "lo": draws[int(0.025 * n)],
+        "hi": draws[min(int(0.975 * n), n - 1)],
+        "n": n_v,
+        "wins": wins,
+        "losses": losses,
+    }
+
+
 def add_gate(suite_results, name, status, detail):
     """Record one gate decision. "fail" is the only thing that fails the run.
 
@@ -283,6 +312,7 @@ def analyze_pair(base_file, cand_file):
                 "ic_count": 0,
                 "bitrate_acc_sum": 0,
                 "bitrate_acc_count": 0,
+                "mos_deltas": [],
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
@@ -384,6 +414,11 @@ def analyze_pair(base_file, cand_file):
                     suite_results["mos_delta_sum"] += delta
                     suite_results["mos_count"] += 1
                     suite_results["scenario_stats"][scenario]["mos_delta_sum"] += delta
+                    # Retained so a scenario mean can carry a CI and a sign
+                    # count. A mean of +0.02 built from 49 consistent small
+                    # wins and one built from 3 large ones against 46 losses
+                    # print identically without this.
+                    suite_results["scenario_stats"][scenario]["mos_deltas"].append(delta)
                     suite_results["scenario_stats"][scenario]["mos_count"] += 1
 
                     if delta < suite_results["worst_mos_drop"][0]:
@@ -880,11 +915,11 @@ def main():
     if not summary_only:
         # Scenario Performance Table
         report.append("\n### Scenario Performance")
-        report.append("| Scenario | Avg MOS Δ | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
-        report.append("| :--- | :---: | :---: | :---: | :---: |")
+        report.append("| Scenario | Avg MOS Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+        report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0})
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": []})
         for suite_data in all_suite_data.values():
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
                 global_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
@@ -895,6 +930,7 @@ def main():
                 global_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
                 global_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
                 global_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
+                global_scenario_stats[sc_name]["mos_deltas"] += sc_stats.get("mos_deltas", [])
 
         for sc_name in sorted(global_scenario_stats.keys(), key=get_scenario_sort_key):
             gs = global_scenario_stats[sc_name]
@@ -902,7 +938,20 @@ def main():
             sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
             sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
             sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
-            report.append(f"| {sc_name} | {sc_mos_delta} | {sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+
+            # Report-only: a scenario mean is small by nature, so say whether
+            # it is a consistent shift or a couple of clips carrying the rest.
+            ci = bootstrap_mean_ci(gs["mos_deltas"])
+            if ci:
+                sig = "" if ci["lo"] <= 0 <= ci["hi"] else " ✳"
+                sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
+                sc_wl = f"{ci['wins']}/{ci['losses']}"
+            else:
+                sc_ci, sc_wl = "N/A", "N/A"
+
+            report.append(
+                f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
+                f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
 
         # 1. Collapsible Details: Regressions
         if total_regressions > 0:
