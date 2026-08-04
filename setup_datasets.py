@@ -282,6 +282,8 @@ def setup_realistic_throughput_signals(dest_dir):
 
     src_dir = os.path.join(BASE_DATA_DIR, "audio")
     if not os.path.isdir(src_dir):
+        print(f"  WARNING: {src_dir} missing; throughput will measure synthetic "
+              f"signals only, which cannot see block-switching changes.")
         return
 
     # Two clips, chosen for opposite encoder behaviour: percussive content that
@@ -290,7 +292,14 @@ def setup_realistic_throughput_signals(dest_dir):
                       ("music_tonal", _MUSIC_GATE[1])):
         src = os.path.join(src_dir, clip)
         out = os.path.join(dest_dir, f"{tag}.wav")
-        if not os.path.exists(src) or os.path.exists(out):
+        if os.path.exists(out):
+            continue
+        if not os.path.exists(src):
+            # Silence here is expensive: the signal is skipped, the dataset is
+            # cached without it, and every later run inherits the gap while the
+            # report still shows a throughput number.
+            print(f"  WARNING: {clip} not found in {src_dir}; skipping {tag}. "
+                  f"Throughput will not see real content.")
             continue
         print(f"  Generating {tag}.wav from {clip}...")
         try:

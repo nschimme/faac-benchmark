@@ -246,10 +246,16 @@ class TestThroughputGate(unittest.TestCase):
         self.assertEqual(self._run(noisy_b, noisy_c)["status"], "pass")
 
     def test_host_mismatch_skips_visibly(self):
+        # A 50% slower candidate would fail loudly on a matched host. Across a
+        # host boundary the comparison is meaningless, so it must skip -- and
+        # say why, since a silent skip reads like a pass.
         slow = [x * 1.5 for x in self.BASE]
         g = self._run(self.BASE, slow, host_differs=True)
         self.assertEqual(g["status"], "skip")
-        self.assertIn("host differs", g["detail"])
+        # Assert on the cause and the remedy, not the sentence: a flag name is
+        # a stable contract where prose is not.
+        self.assertIn("different machine", g["detail"])
+        self.assertIn("--throughput-only", g["detail"])
 
 
 if __name__ == "__main__":

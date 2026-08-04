@@ -212,11 +212,16 @@ def check_throughput(suite_results, base, cand):
                  "no per-run timing samples (pre-dates the metric?)")
         return
 
+    # Same machine, same boot, or the comparison is between two hosts rather
+    # than two builds. A cached baseline carries the timings of whatever runner
+    # produced it, which is why this is checked rather than assumed.
     b_host = get_fp_key(base, "host_fp")
     c_host = get_fp_key(cand, "host_fp")
     if b_host != c_host:
         add_gate(suite_results, "throughput", "skip",
-                 f"host differs: base {b_host or 'unknown'} vs cand {c_host or 'unknown'}")
+                 "baseline timings came from a different machine or boot "
+                 "(stale cache?); re-run the baseline with --throughput-only "
+                 "on this host to gate")
         return
 
     res = _bootstrap_tp_ratio(base_s, cand_s, random.Random(0))

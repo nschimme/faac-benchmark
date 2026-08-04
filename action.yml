@@ -42,6 +42,10 @@ inputs:
     description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
     required: false
     default: 'visqol-python'
+  throughput-only:
+    description: 'Re-measure only throughput and merge into an existing output JSON. Use to refresh a cached baseline on the machine that will measure the candidate.'
+    required: false
+    default: 'false'
   gate:
     description: 'Use the fast fixed gate subset (config.GATE_CLIPS) instead of the full corpus'
     required: false
@@ -116,6 +120,10 @@ runs:
 
         if [ "${{ inputs.gate }}" == "true" ]; then
           EXTRA_ARGS="$EXTRA_ARGS --gate"
+        fi
+
+        if [ "${{ inputs.throughput-only }}" == "true" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --throughput-only"
         fi
 
         if [ -n "${{ inputs.build-dir }}" ]; then

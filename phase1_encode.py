@@ -144,7 +144,8 @@ def run_benchmark(
         exclude_tests=None,
         extra_args=None,
         gate=False,
-        build_dir=None):
+        build_dir=None,
+        throughput_only=False):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -176,7 +177,7 @@ def run_benchmark(
         "host_fp": get_host_fp(),
     }
 
-    if run_perceptual:
+    if run_perceptual and not throughput_only:
         print(f"Starting Phase 1 (Encoding) for {precision}...")
         # Detect number of CPUs for parallelization
         num_cpus = os.cpu_count() or 1
@@ -331,7 +332,12 @@ if __name__ == "__main__":
     parser.add_argument("lib_path", help="Path to libfaac.so")
     parser.add_argument("precision", help="Precision name")
     parser.add_argument("output", help="Output JSON path")
-    parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    # Phase 1 does not compute MOS -- phase 2 does -- so what this actually
+    # controls is whether the corpus is encoded at all. --skip-encode says that;
+    # --skip-mos is kept as an alias because callers already pass it.
+    parser.add_argument("--skip-encode", "--skip-mos", dest="skip_encode",
+                        action="store_true",
+                        help="Skip the encode matrix (footprint- or throughput-only runs)")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--sha", help="Commit SHA")
     parser.add_argument("--scenarios", help="Comma-separated scenarios")
@@ -340,6 +346,10 @@ if __name__ == "__main__":
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
+    parser.add_argument("--throughput-only", action="store_true",
+                        help="Measure only throughput and merge it into an existing output JSON. "
+                             "For refreshing a cached baseline's timings on the machine that will "
+                             "measure the candidate, so the two are comparable.")
 
     args, unknown = parser.parse_known_args()
 
@@ -359,17 +369,34 @@ if __name__ == "__main__":
         args.lib_path,
         args.precision,
         coverage=args.coverage,
-        run_perceptual=not args.skip_mos,
+        run_perceptual=not args.skip_encode,
         sha=args.sha,
         scenarios=args.scenarios,
         include_tests=args.include_tests,
         exclude_tests=args.exclude_tests,
         extra_args=extra_args,
         gate=args.gate,
-        build_dir=args.build_dir)
+        build_dir=args.build_dir,
+        throughput_only=args.throughput_only)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)
     os.makedirs(os.path.dirname(output_json), exist_ok=True)
+
+    # Refreshing timings must not discard the MOS matrix the cached run paid
+    # for. Rather than list the keys to refresh -- a list that goes stale the
+    # moment a field is added, silently leaving it cached -- keep the matrix and
+    # let everything measured this run overwrite its cached counterpart.
+    # Falsy values do not overwrite, so a field this run did not produce (an
+    # unset --sha, say) keeps what the cached run recorded.
+    if args.throughput_only and os.path.exists(output_json):
+        with open(output_json) as f:
+            merged = json.load(f)
+        for key, value in data.items():
+            if key == "matrix" or not value:
+                continue
+            merged[key] = value
+        data = merged
+
     with open(output_json, "w") as f:
         json.dump(data, f, indent=2)
