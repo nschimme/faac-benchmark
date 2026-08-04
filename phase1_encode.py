@@ -332,7 +332,12 @@ if __name__ == "__main__":
     parser.add_argument("lib_path", help="Path to libfaac.so")
     parser.add_argument("precision", help="Precision name")
     parser.add_argument("output", help="Output JSON path")
-    parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    # Phase 1 does not compute MOS -- phase 2 does -- so what this actually
+    # controls is whether the corpus is encoded at all. --skip-encode says that;
+    # --skip-mos is kept as an alias because callers already pass it.
+    parser.add_argument("--skip-encode", "--skip-mos", dest="skip_encode",
+                        action="store_true",
+                        help="Skip the encode matrix (footprint- or throughput-only runs)")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--sha", help="Commit SHA")
     parser.add_argument("--scenarios", help="Comma-separated scenarios")
@@ -364,7 +369,7 @@ if __name__ == "__main__":
         args.lib_path,
         args.precision,
         coverage=args.coverage,
-        run_perceptual=not args.skip_mos,
+        run_perceptual=not args.skip_encode,
         sha=args.sha,
         scenarios=args.scenarios,
         include_tests=args.include_tests,

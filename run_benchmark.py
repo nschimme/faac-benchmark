@@ -44,6 +44,8 @@ def main():
     parser.add_argument("output", help="Output JSON path")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
+    parser.add_argument("--skip-encode", action="store_true",
+                        help="Skip the encode matrix entirely (footprint-only runs)")
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
@@ -80,6 +82,7 @@ def main():
     # spend the ViSQOL time the cache exists to avoid.
     if args.throughput_only:
         args.skip_mos = True
+        args.skip_encode = True
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
@@ -148,10 +151,12 @@ def main():
             cmd_phase1.extend(["--exclude-tests", args.exclude_tests])
         if args.gate:
             cmd_phase1.append("--gate")
-        # Phase 1 owns the encode matrix, so --skip-mos has to reach it or the
-        # "cheap" footprint-only run still encodes the whole corpus.
-        if args.skip_mos:
-            cmd_phase1.append("--skip-mos")
+        # --skip-mos means "do not score", not "do not encode": the e2e run and
+        # any bitstream-only check need a matrix without paying for ViSQOL. Only
+        # --skip-encode suppresses the corpus, which is what a footprint- or
+        # throughput-only run wants.
+        if args.skip_encode:
+            cmd_phase1.append("--skip-encode")
         # Refreshes a cached baseline's timings on the machine that is about to
         # measure the candidate. Implies --skip-mos: the matrix is already on
         # disk and re-encoding it would defeat the point of the cache.
@@ -294,8 +299,9 @@ def main():
                     print(f">>> ERROR: {container_tool} execution failed: {e}")
                     sys.exit(1)
 
-        # Phase 3: Stereo image fidelity
-        if not args.skip_stereo:
+        # Phase 3: Stereo image fidelity. Nothing to score without a matrix,
+        # and a throughput refresh deliberately has none.
+        if not args.skip_stereo and not args.skip_encode:
             print(">>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
             subprocess.run([
                 sys.executable, phase3_script,
