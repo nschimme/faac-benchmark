@@ -728,8 +728,13 @@ def main():
         summary_lines.append(f"## ❌ {what} Regression Detected")
     elif worst_tp_delta < -5.0:
         summary_lines.append("## ⚠️ Performance Regression Detected")
-    elif overall_missing:
+    elif overall_missing and ENABLED_GATES is None:
         summary_lines.append("## ❌ Incomplete/Missing Data Detected")
+    elif overall_missing:
+        # Narrowed run: the absent numbers are absent on purpose, and the job
+        # exits 0, so the headline must not read like a failure.
+        summary_lines.append(
+            f"## ✅ Gates Passed ({', '.join(sorted(ENABLED_GATES))})")
     elif bit_exact_percent == 100.0:
         summary_lines.append("## ✅ Refactor Verified (Bit-Identical)")
     elif total_new_wins > 0 or total_significant_wins > 0 or (total_mos_count > 0 and (total_mos_delta / total_mos_count) > 0.01) or avg_tp_reduction > 5:
