@@ -28,7 +28,9 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
-from utils import decode_validate, calculate_provenance_hash, get_binary_size, get_file_hash, get_elf_section_sizes
+from utils import (decode_validate, calculate_provenance_hash, get_binary_size,
+                   get_file_hash, get_elf_section_sizes, get_section_sizes,
+                   get_object_sizes, get_toolchain_fp)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -136,7 +138,8 @@ def run_benchmark(
         include_tests=None,
         exclude_tests=None,
         extra_args=None,
-        gate=False):
+        gate=False,
+        build_dir=None):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -156,7 +159,14 @@ def run_benchmark(
         "lib_text_size": sec_sizes.get("text", 0),
         "lib_rodata_size": sec_sizes.get("rodata", 0),
         "lib_bss_size": sec_sizes.get("bss", 0),
-        "lib_data_size": sec_sizes.get("data", 0)
+        "lib_data_size": sec_sizes.get("data", 0),
+        # Gate inputs. get_section_sizes is the portable reader: on macOS
+        # get_elf_section_sizes falls back to whole-file size as "text", which
+        # is the very number a section sum exists to avoid.
+        "lib_sections": get_section_sizes(lib_path),
+        "frontend_size": get_binary_size(faac_bin_path),
+        "object_text": get_object_sizes(build_dir) if build_dir else {},
+        "toolchain_fp": get_toolchain_fp(build_dir),
     }
 
     if run_perceptual:
@@ -316,6 +326,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
+    parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
 
     args, unknown = parser.parse_known_args()
 
@@ -341,7 +352,8 @@ if __name__ == "__main__":
         include_tests=args.include_tests,
         exclude_tests=args.exclude_tests,
         extra_args=extra_args,
-        gate=args.gate)
+        gate=args.gate,
+        build_dir=args.build_dir)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

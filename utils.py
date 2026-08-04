@@ -112,6 +112,108 @@ def get_elf_section_sizes(path):
 
     return sizes
 
+
+# Whole-file size moves for reasons unrelated to code: symbol tables, .eh_frame,
+# build IDs, section padding. Section sums do not, which is what makes them
+# gateable. .rodata is in the sum because the next footprint regression is as
+# likely to be a lookup table as a loop.
+_SECTION_ALIASES = {
+    "__text": "text", ".text": "text",
+    "__const": "rodata", ".rodata": "rodata", "__cstring": "rodata",
+    "__data": "data", ".data": "data",
+    "__bss": "bss", ".bss": "bss", "__common": "bss",
+}
+
+
+def get_section_sizes(path):
+    """Per-section byte counts, normalized across GNU and BSD size(1).
+
+    Returns {} when the sizes cannot be read -- a caller that gates on these
+    must treat an empty dict as "skip, loudly", never as "no change".
+    """
+    if not os.path.exists(path):
+        return {}
+
+    out = None
+    # GNU binutils (Linux CI). -A prints "section size addr" per line.
+    r = subprocess.run(["size", "-A", path], capture_output=True, text=True)
+    if r.returncode == 0:
+        out = [(f[0], f[1]) for f in
+               (ln.split() for ln in r.stdout.splitlines())
+               if len(f) >= 2 and f[1].isdigit()]
+    else:
+        # BSD size (macOS). -m prints "Section __text: 71800" for a linked
+        # image but "Section (__TEXT, __text): 8024" for a relocatable object.
+        r = subprocess.run(["size", "-m", path], capture_output=True, text=True)
+        if r.returncode != 0:
+            return {}
+        out = re.findall(r"Section\s+(?:\([^,]+,\s*)?(__\w+)\)?:\s+(\d+)",
+                         r.stdout)
+
+    sizes = {}
+    for name, size in out:
+        key = _SECTION_ALIASES.get(name)
+        if key:
+            sizes[key] = sizes.get(key, 0) + int(size)
+    return sizes
+
+
+def get_object_sizes(build_dir, target="libfaac"):
+    """Per-object .text, so "the library grew" becomes "frame.c.o grew".
+
+    Ungated context only. Finding the +13.9% regression of f94a81a8 took a
+    manual bisection over nine commits; this is the one number that would have
+    named the file directly.
+    """
+    if not build_dir or not os.path.isdir(build_dir):
+        return {}
+
+    sizes = {}
+    for root, _, files in os.walk(build_dir):
+        stem = os.path.basename(root)
+        if target not in stem:
+            continue
+        for f in files:
+            if not f.endswith(".o"):
+                continue
+            sec = get_section_sizes(os.path.join(root, f))
+            if sec.get("text"):
+                # Keyed by target too: the shared library is LTO'd, so its .p
+                # holds a single fused lto.o and only the static archive's .p
+                # attributes .text to a source file.
+                sizes[f"{stem}/{f}"] = sec["text"]
+    return sizes
+
+
+def get_toolchain_fp(build_dir=None):
+    """Identity of the toolchain that produced the binaries.
+
+    A compiler or runner-image bump changes both size and timing with zero
+    source change. Without this in the cache key, a stale baseline gets reused
+    across that bump and the diff is attributed to the PR.
+    """
+    fp = {}
+
+    cc = os.environ.get("CC") or "cc"
+    r = subprocess.run([cc, "--version"], capture_output=True, text=True)
+    if r.returncode == 0:
+        fp["cc"] = r.stdout.splitlines()[0].strip()
+    r = subprocess.run([cc, "-dumpmachine"], capture_output=True, text=True)
+    if r.returncode == 0:
+        fp["triple"] = r.stdout.strip()
+
+    if build_dir:
+        r = subprocess.run(["meson", "configure", build_dir],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            for key in ("buildtype", "b_lto", "default_library", "optimization",
+                        "tuning"):
+                m = re.search(rf"^\s*{key}\s+(\S+)", r.stdout, re.M)
+                if m:
+                    fp[key] = m.group(1)
+
+    return fp
+
 def load_results(path):
     if os.path.exists(path):
         with open(path, "r") as f:

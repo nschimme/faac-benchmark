@@ -32,6 +32,102 @@ from utils import get_scenario_sort_key
 STRICT_DECODE = False
 
 
+# Footprint gate. Section sums are deterministic for a fixed source and
+# toolchain, so the only question is how large a legitimate commit-to-commit
+# step is. Replaying 30 commits put routine work at or below +1556 bytes and
+# notable work at or above +3416, so 2048 sits in an empty band. It does not
+# separate wanted from unwanted growth -- four feature commits are larger than
+# the regression that motivated this -- so growth is acknowledged, not
+# thresholded away. See docs/footprint-gate.md.
+FOOTPRINT_FAIL_BYTES = 2048
+FOOTPRINT_FAIL_FRAC = 0.005
+FOOTPRINT_WARN_BYTES = 512
+
+# Bytes of growth the author has explicitly accepted (--footprint-allow).
+FOOTPRINT_ALLOW = 0
+
+
+def add_gate(suite_results, name, status, detail):
+    """Record one gate decision. "fail" is the only thing that fails the run.
+
+    Every axis of the goal -- quality, footprint, throughput -- reports through
+    here, so the verdict is a list of named decisions rather than a single
+    boolean set from several places. "skip" exists because a gate that cannot
+    be evaluated (no data, mismatched toolchain) must be visible in the report:
+    a silently skipped gate reads exactly like a passing one, which is how a
+    +13.9% library regression survived nine commits.
+    """
+    suite_results["gates"].append(
+        {"name": name, "status": status, "detail": detail})
+    if status == "fail":
+        suite_results["has_regression"] = True
+
+
+def check_footprint(suite_results, base, cand):
+    """Gate .text + .rodata of the release shared library.
+
+    Whole-file size moves with symbol tables, build IDs and section padding for
+    reasons unrelated to code, which is why lib_size stayed display-only. The
+    section sum does not move for those reasons, so it can carry a gate.
+    """
+    b_sec = base.get("lib_sections") or {}
+    c_sec = cand.get("lib_sections") or {}
+    if not b_sec or not c_sec:
+        add_gate(suite_results, "footprint", "skip",
+                 "no section sizes in results (pre-dates the metric?)")
+        return
+
+    b_fp = get_toolchain_fp_key(base)
+    c_fp = get_toolchain_fp_key(cand)
+    if b_fp != c_fp:
+        add_gate(suite_results, "footprint", "skip",
+                 f"toolchain differs: base {b_fp or 'unknown'} vs cand {c_fp or 'unknown'}")
+        return
+
+    b_code = b_sec.get("text", 0) + b_sec.get("rodata", 0)
+    c_code = c_sec.get("text", 0) + c_sec.get("rodata", 0)
+    if b_code <= 0:
+        add_gate(suite_results, "footprint", "skip", "baseline code size is zero")
+        return
+
+    delta = c_code - b_code
+    frac = delta / b_code
+    suite_results["footprint_delta"] = delta
+    suite_results["footprint_frac"] = frac * 100
+    detail = (f".text+.rodata {b_code} -> {c_code} "
+              f"({delta:+d} bytes, {frac * 100:+.2f}%)")
+
+    if delta > FOOTPRINT_FAIL_BYTES and frac > FOOTPRINT_FAIL_FRAC:
+        if delta <= FOOTPRINT_ALLOW:
+            add_gate(suite_results, "footprint", "warn",
+                     f"{detail}; accepted via --footprint-allow {FOOTPRINT_ALLOW}")
+        else:
+            add_gate(suite_results, "footprint", "fail",
+                     f"{detail}; if intended, re-run with "
+                     f"--footprint-allow {delta}")
+    elif delta > FOOTPRINT_WARN_BYTES:
+        add_gate(suite_results, "footprint", "warn", detail)
+    else:
+        add_gate(suite_results, "footprint", "pass", detail)
+
+    # Ungated attribution: turn "the library grew" into "frame.c.o grew".
+    b_obj = base.get("object_text") or {}
+    c_obj = cand.get("object_text") or {}
+    movers = sorted(
+        ((c_obj.get(k, 0) - b_obj.get(k, 0), k)
+         for k in set(b_obj) | set(c_obj)),
+        key=lambda kv: -abs(kv[0]))
+    suite_results["object_movers"] = [m for m in movers if m[0]][:8]
+
+
+def get_toolchain_fp_key(results):
+    """Stable string identity of the toolchain that produced a results file."""
+    fp = results.get("toolchain_fp") or {}
+    if not fp:
+        return ""
+    return "|".join(f"{k}={fp[k]}" for k in sorted(fp))
+
+
 def analyze_pair(base_file, cand_file):
     try:
         with open(base_file, "r") as f:
@@ -50,6 +146,7 @@ def analyze_pair(base_file, cand_file):
         return None
 
     suite_results = {
+        "gates": [],
         "has_regression": False,
         "decode_error_count": 0,
         "missing_data": False,
@@ -286,6 +383,22 @@ def analyze_pair(base_file, cand_file):
     suite_results["opportunities"].sort(
         key=lambda x: x["mos"] if x["mos"] is not None else 6.0)
 
+    # Record the per-clip MOS verdict as a named gate too, so the gate list is
+    # the whole story and not just the axes added later.
+    n_crit = len(suite_results["reg_critical"])
+    n_sig = len(suite_results["reg_significant"])
+    n_min = len(suite_results["reg_minor"])
+    if n_crit or n_sig:
+        add_gate(suite_results, "mos", "fail",
+                 f"{n_crit} critical, {n_sig} past -0.10, {n_min} past -0.05")
+    elif n_min:
+        add_gate(suite_results, "mos", "warn", f"{n_min} clip(s) past -0.05")
+    elif suite_results["mos_count"]:
+        add_gate(suite_results, "mos", "pass",
+                 f"no clip past -0.05 over {suite_results['mos_count']} clips")
+    else:
+        add_gate(suite_results, "mos", "skip", "no MOS data in results")
+
     # Throughput
     base_tp = base.get("throughput", {})
     cand_tp = cand.get("throughput", {})
@@ -328,6 +441,8 @@ def analyze_pair(base_file, cand_file):
     else:
         suite_results["lib_rodata_chg"] = 0.0
 
+    check_footprint(suite_results, base, cand)
+
     return suite_results
 
 
@@ -345,11 +460,16 @@ def main():
     parser.add_argument("--strict-decode", action="store_true",
                         help="Treat candidate decode-validation failures as hard regressions "
                              "(default: report only, do not fail the run)")
+    parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
+                        help="Accept up to BYTES of .text+.rodata growth without failing. "
+                             "For changes whose size cost is intended and stated in the PR.")
 
     args = parser.parse_args()
 
     global STRICT_DECODE
     STRICT_DECODE = args.strict_decode
+    global FOOTPRINT_ALLOW
+    FOOTPRINT_ALLOW = args.footprint_allow
 
     results_dir = args.results_dir
     summary_only = args.summary_only
@@ -492,9 +612,16 @@ def main():
         worst_tp_scen, worst_tp_delta = min(
             scenario_tp_deltas, key=lambda x: x[1])
 
+    # Name the gates that failed rather than always saying "Quality": the
+    # verdict now covers footprint and throughput too, and a footprint failure
+    # reported as a quality failure sends the reader to the wrong table.
+    failed_gates = sorted({g["name"] for d in all_suite_data.values()
+                           for g in d.get("gates", []) if g["status"] == "fail"})
+
     summary_lines = []
     if overall_regression:
-        summary_lines.append("## ❌ Quality Regression Detected")
+        what = ", ".join(g.capitalize() for g in failed_gates) or "Quality"
+        summary_lines.append(f"## ❌ {what} Regression Detected")
     elif worst_tp_delta < -5.0:
         summary_lines.append("## ⚠️ Performance Regression Detected")
     elif overall_missing:
@@ -705,6 +832,20 @@ def main():
                 f"- MOS Δ: {avg_mos_suite}, TP Δ: {data['tp_reduction']:+.1f}%, Size Δ: {data['lib_size_chg']:+.2f}%")
             report.append(
                 f"- Bitstream Consistency: {suite_bit_exact_percent:.1f}%")
+
+            # Named gate decisions. A skipped gate is printed as loudly as a
+            # failing one: silence about a gate is not evidence it passed.
+            if data.get("gates"):
+                icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
+                report.append("\n**Gates**")
+                for g in data["gates"]:
+                    report.append(
+                        f"- {icons.get(g['status'], '?')} `{g['name']}`: {g['detail']}")
+
+            if data.get("object_movers"):
+                report.append("\n**Object .text movers**")
+                report.append(", ".join(
+                    f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))
 
             if data["new_wins"]:
                 report.append("\n**🆕 New Wins**")
