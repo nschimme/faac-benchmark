@@ -68,12 +68,41 @@ runs:
       run: |
         pip install -r ${{ github.action_path }}/requirements.txt
 
+    # hashFiles() only resolves paths under GITHUB_WORKSPACE, and action_path
+    # is outside it, so the expression form of this key evaluated to the empty
+    # string -- giving a constant key that could never invalidate. The cache
+    # then outlived every change to the generator, which is why signals added
+    # to it never appeared and the gate kept measuring an old dataset. Hash the
+    # file in a step, where the path is real.
+    - name: Fingerprint Dataset Generator
+      id: ds-key
+      shell: bash
+      run: |
+        # Hashed in Python, not `sha256sum | cut`, and with no fallback on
+        # failure. Both matter, and for the same reason.
+        #
+        # A pipeline reports its LAST command's status, and cut exits 0 on empty
+        # input -- so `h=$(sha256sum ... | cut) || h=unhashed` can never take its
+        # fallback. A missing hasher would leave h empty and the key would read
+        # "Linux-datasets-": the constant this step exists to eliminate,
+        # reintroduced silently. Python also removes the portability question,
+        # since setup-python above guarantees it and sha256sum is coreutils-only.
+        #
+        # No `|| default` here at all: a key that cannot be computed must fail
+        # the run loudly. Degrading to any fixed string rebuilds the same
+        # never-expiring cache, and the failure would again be invisible.
+        h=$(python3 -c \
+          'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16])' \
+          "${{ github.action_path }}/setup_datasets.py")
+        echo "hash=$h" >> $GITHUB_OUTPUT
+        echo "Dataset generator hash: $h"
+
     - name: Restore Datasets
       id: cache-datasets
       uses: actions/cache/restore@v6
       with:
         path: ${{ github.action_path }}/data/external
-        key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
+        key: ${{ runner.os }}-datasets-${{ steps.ds-key.outputs.hash }}
 
     - name: Setup Datasets
       if: steps.cache-datasets.outputs.cache-hit != 'true'
@@ -86,7 +115,7 @@ runs:
       uses: actions/cache/save@v6
       with:
         path: ${{ github.action_path }}/data/external
-        key: ${{ runner.os }}-datasets-${{ hashFiles(format('{0}/setup_datasets.py', github.action_path)) }}
+        key: ${{ runner.os }}-datasets-${{ steps.ds-key.outputs.hash }}
 
     - name: Run Benchmark
       shell: bash
