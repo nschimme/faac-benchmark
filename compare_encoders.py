@@ -116,18 +116,21 @@ class FAACEncoder(Encoder):
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
-    def __init__(self, name, binary_path, codec_name):
+    def __init__(self, name, binary_path, codec_name, supports_nmr=False):
         lib_name_substr = {
             "libfdk_aac": "libfdk-aac",
             "vo_aacenc": "vo-aacenc",
         }.get(codec_name)
         super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
+        self.supports_nmr = supports_nmr
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
         if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels, sample_rate):
             cmd.extend(["-profile:a", "aac_he"])
+        if self.codec_name == "aac" and self.supports_nmr:
+            cmd.extend(["-aac_coder", "nmr"])
         cmd.extend(["-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path])
         return cmd
 
@@ -188,7 +191,13 @@ def detect_encoders(args):
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
     if ffmpeg_path:
-        encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac"))
+        supports_nmr = False
+        try:
+            res = subprocess.run([ffmpeg_path, "-h", "encoder=aac"], capture_output=True, text=True)
+            supports_nmr = "nmr" in res.stdout
+        except Exception:
+            pass
+        encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac", supports_nmr=supports_nmr))
 
         # Check for libfdk_aac in ffmpeg
         try:
