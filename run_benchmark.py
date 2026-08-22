@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
+    parser.add_argument("--skip-zimtohrli", action="store_true", help="Skip Zimtohrli perceptual MOS computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -60,6 +61,7 @@ def main():
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
     parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
+    parser.add_argument("--rate-control", choices=["abr", "vbr"], default="abr", help="Rate control mode (abr or vbr)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
     parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
@@ -88,6 +90,7 @@ def main():
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
     phase3_script = os.path.join(script_dir, "phase3_stereo.py")
+    phase4_script = os.path.join(script_dir, "phase4_zimtohrli.py")
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
 
     # Logic for A/B or Sweep
@@ -139,7 +142,8 @@ def main():
         cmd_phase1 = [
             sys.executable, phase1_script,
             args.faac_bin, args.lib_path, run["tag"], run["output"],
-            "--coverage", str(args.coverage)
+            "--coverage", str(args.coverage),
+            "--rate-control", args.rate_control
         ]
         if args.sha:
             cmd_phase1.extend(["--sha", args.sha])
@@ -305,6 +309,16 @@ def main():
             print(">>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
             subprocess.run([
                 sys.executable, phase3_script,
+                run["output"],
+                os.path.join(script_dir, "output"),
+                external_data_dir,
+            ], check=True)
+
+        # Phase 4: Zimtohrli perceptual metric.
+        if not args.skip_zimtohrli and not args.skip_encode:
+            print(">>> Phase 4: Zimtohrli Perceptual Metric")
+            subprocess.run([
+                sys.executable, phase4_script,
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,

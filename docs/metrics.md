@@ -9,6 +9,14 @@ positive is better. Per-clip status: `🌟` significant win, `⚠️`/`❌`/`�
 increasing regression severity, where `💀` means the candidate fell below the
 scenario's pass threshold.
 
+## Zimtohrli Perceptual Quality
+
+From phase 4 (`phase4_zimtohrli.py`). ViSQOL MOS measures overall spectral quality, whereas **Zimtohrli** (`zimtohrli.Pyohrli()`) uses a deterministic psychoacoustic model focused on transient audio events, temporal smearing, and pre-echo artifacts.
+
+- **Scale**: Mapped to 1.0–5.0 MOS scale via `zimtohrli.mos_from_zimtohrli(distance)`.
+- **Significance**: $|\Delta| \le 0.01$ is treated as negligible noise. $|\Delta| \ge 0.05$ represents a significant shift in temporal transient fidelity.
+- **Summary**: Reported in the main summary table when an overall shift ($|\Delta| > 0.01$) or worst drop ($\le -0.05$) occurs.
+
 ## Stereo Fidelity (Inter-channel Coherence Fidelity)
 
 From phase 3 (`phase3_stereo.py`). MOS is monaural and cannot see stereo-image

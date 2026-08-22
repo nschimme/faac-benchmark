@@ -18,7 +18,7 @@ jobs:
     strategy:
       matrix:
         arch: [amd64]
-        precision: [single, double]
+        rate_control: [abr, vbr]
     steps:
       - name: Checkout Candidate
         uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
       - name: Build Candidate
         run: |
           cd candidate
-          meson setup build_cand -Dfloating-point=${{ matrix.precision }} --buildtype=release
+          meson setup build_cand --buildtype=release
           ninja -C build_cand
       - name: Determine Baseline SHA
         id: baseline-sha
@@ -45,26 +45,28 @@ jobs:
       - name: Build Baseline
         run: |
           cd baseline
-          meson setup build_base -Dfloating-point=${{ matrix.precision }} --buildtype=release
+          meson setup build_base --buildtype=release
           ninja -C build_base
       - name: Run Benchmark (Baseline)
         uses: nschimme/faac-benchmark@v1
         with:
           faac-bin: ./baseline/build_base/frontend/faac
           libfaac-so: ./baseline/build_base/libfaac/libfaac.so
-          run-name: ${{ matrix.arch }}_${{ matrix.precision }}_base
-          output-json: ./results/${{ matrix.arch }}_${{ matrix.precision }}_base.json
+          rate-control: ${{ matrix.rate_control }}
+          run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_base
+          output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_base.json
       - name: Run Benchmark (Candidate)
         uses: nschimme/faac-benchmark@v1
         with:
           faac-bin: ./candidate/build_cand/frontend/faac
           libfaac-so: ./candidate/build_cand/libfaac/libfaac.so
-          run-name: ${{ matrix.arch }}_${{ matrix.precision }}_cand
-          output-json: ./results/${{ matrix.arch }}_${{ matrix.precision }}_cand.json
+          rate-control: ${{ matrix.rate_control }}
+          run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_cand
+          output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_cand.json
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.arch }}-${{ matrix.precision }}
+          name: results-${{ matrix.arch }}-${{ matrix.rate_control }}
           path: results/*.json
 
   report:
@@ -102,7 +104,8 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | :--- | :--- | :---: | :--- |
 | `faac-bin` | Path to the `faac` binary. | Yes | |
 | `libfaac-so` | Path to the `libfaac.so` library. | Yes | |
-| `run-name` | Identifier for this run (e.g. `amd64_single_base`). | Yes | |
+| `run-name` | Identifier for this run (e.g. `amd64_abr_base`). | Yes | |
+| `rate-control` | Rate control mode: `abr` or `vbr`. | No | `abr` |
 | `output-json` | Path where the result JSON should be saved. | Yes | |
 | `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |

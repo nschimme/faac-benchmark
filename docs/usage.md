@@ -36,22 +36,24 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
+| `--rate-control abr\|vbr` | Choose rate control mode (`abr` using `-b` bitrates, or `vbr` using `-q` quality targets) |
 | `--scenarios 16k_mono_16k,48k_stereo_64k` | Restrict to specific scenarios (default: all) |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
 | `--extra-args "--tns"` | Pass extra flags through to the faac encoder |
-| `--skip-mos` / `--skip-stereo` | Skip the ViSQOL / stereo-image phases |
+| `--skip-mos` / `--skip-stereo` / `--skip-zimtohrli` | Skip the ViSQOL / stereo-image / Zimtohrli phases |
 | `--backend auto\|visqol-python\|visqol\|docker` | Choose the ViSQOL backend |
 | `--sha $(git rev-parse HEAD)` | Stamp results with a commit SHA |
 
-The script runs three phases:
+The script runs four phases:
 
 1. **Phase 1** — encodes samples, measures throughput, library size, and
-   decode-validates each encode.
+   decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
 2. **Phase 2** — perceptual quality (MOS) via ViSQOL.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
+4. **Phase 4** — Zimtohrli perceptual quality score (`zimtohrli.Pyohrli()`), sensitive to transients and temporal pre-echo.
 
 ### Selecting the ViSQOL backend
 
