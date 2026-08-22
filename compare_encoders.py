@@ -99,12 +99,12 @@ def use_he_aac(bitrate_kbps, channels, sample_rate):
     Centralized heuristic for selecting HE-AAC vs LC-AAC.
     HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
     It also generally requires a minimum sample rate (typically 32kHz+).
-    Typical range for HE-AAC: 10kbps to 32kbps per channel.
+    Typical range for HE-AAC: 10kbps to 48kbps per channel.
     """
     if sample_rate < 32000:
         return False
     bitrate_per_ch = bitrate_kbps / channels
-    return 10 <= bitrate_per_ch < 32
+    return 10 <= bitrate_per_ch < 48
 
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
