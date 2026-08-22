@@ -42,22 +42,21 @@ Common options:
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
 | `--extra-args "--tns"` | Pass extra flags through to the faac encoder |
-| `--skip-mos` / `--skip-stereo` / `--skip-zimtohrli` | Skip the ViSQOL / stereo-image / Zimtohrli phases |
-| `--backend auto\|visqol-python\|visqol\|docker` | Choose the ViSQOL backend |
+| `--skip-mos` / `--skip-stereo` | Skip the perceptual MOS / stereo-image phases |
+| `--backend auto\|zimtohrli\|visqol-python\|visqol\|docker` | Choose the perceptual MOS backend |
 | `--sha $(git rev-parse HEAD)` | Stamp results with a commit SHA |
 
-The script runs four phases:
+The script runs three phases:
 
 1. **Phase 1** — encodes samples, measures throughput, library size, and
    decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
-2. **Phase 2** — perceptual quality (MOS) via ViSQOL.
+2. **Phase 2** — perceptual quality (MOS) via Zimtohrli (default) or ViSQOL.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
-4. **Phase 4** — Zimtohrli perceptual quality score (`zimtohrli.Pyohrli()`), sensitive to transients and temporal pre-echo.
 
-### Selecting the ViSQOL backend
+### Selecting the perceptual MOS backend
 
-In `auto` mode (default) the suite tries, in order: `visqol-python` (preferred),
+In `auto` mode (default) the suite tries, in order: `zimtohrli` (preferred), `visqol-python`,
 the `visqol` binary (PATH or `VISQOL_BIN`), Docker/Podman container, then the
 legacy `visqol_py`. Force one explicitly:
 
@@ -132,6 +131,7 @@ python3 compare_encoders.py [options]
 
 Options:
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
+- `--rate-control abr|vbr|both`: Rate control mode(s) to benchmark (default: `both`).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
 - `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`: Manual paths to encoder binaries.
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).

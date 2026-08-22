@@ -1,21 +1,14 @@
 # Metric Definitions
 
-## MOS (Mean Opinion Score)
+## Perceptual Quality (MOS)
 
-Perceptual quality via **ViSQOL**, computed in phase 2. Audio scenarios use the
-SVR model (`libsvm_nu_svr_model.txt`); speech scenarios use ViSQOL speech mode
-with the lattice TFLite model. Reported as **Avg MOS Δ** (candidate − base);
-positive is better. Per-clip status: `🌟` significant win, `⚠️`/`❌`/`💀`
-increasing regression severity, where `💀` means the candidate fell below the
-scenario's pass threshold.
+Computed in Phase 2 (`phase2_mos.py`). By default, Phase 2 uses **Zimtohrli** (`zimtohrli.Pyohrli()`) as the primary perceptual engine, mapping psychoacoustic distance deterministically to a 1.0–5.0 MOS scale (`zimtohrli.mos_from_zimtohrli()`). Zimtohrli is particularly sensitive to transient preservation, temporal smearing, and pre-echo artifacts.
 
-## Zimtohrli Perceptual Quality
+ViSQOL is also supported as an explicit or fallback backend (`--backend visqol-python` / `--backend visqol`).
 
-From phase 4 (`phase4_zimtohrli.py`). ViSQOL MOS measures overall spectral quality, whereas **Zimtohrli** (`zimtohrli.Pyohrli()`) uses a deterministic psychoacoustic model focused on transient audio events, temporal smearing, and pre-echo artifacts.
-
-- **Scale**: Mapped to 1.0–5.0 MOS scale via `zimtohrli.mos_from_zimtohrli(distance)`.
-- **Significance**: $|\Delta| \le 0.01$ is treated as negligible noise. $|\Delta| \ge 0.05$ represents a significant shift in temporal transient fidelity.
-- **Summary**: Reported in the main summary table when an overall shift ($|\Delta| > 0.01$) or worst drop ($\le -0.05$) occurs.
+- **Scale**: 1.0 to 5.0 MOS scale (higher is better).
+- **Reported Delta**: **Avg MOS Δ** (candidate − base); positive indicates improvement.
+- **Significance**: $|\Delta| \le 0.01$ is treated as noise. $|\Delta| \ge 0.05$ represents a noticeable shift in perceptual quality.
 
 ## Stereo Fidelity (Inter-channel Coherence Fidelity)
 

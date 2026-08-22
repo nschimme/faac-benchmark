@@ -275,6 +275,9 @@ def analyze_pair(base_file, cand_file):
             f"  Error: Could not load candidate file {cand_file}: {e}\n")
         return None
 
+    base_m = base.get("matrix", {})
+    cand_m = cand.get("matrix", {})
+
     suite_results = {
         "gates": [],
         "has_regression": False,
@@ -283,9 +286,6 @@ def analyze_pair(base_file, cand_file):
         "mos_delta_sum": 0,
         "mos_count": 0,
         "missing_mos_count": 0,
-        "z_mos_delta_sum": 0,
-        "z_mos_count": 0,
-        "worst_z_mos_drop": (0, "N/A"),
         "ic_delta_sum": 0,
         "ic_count": 0,
         "worst_ic_regression": (0, "N/A"),
@@ -316,8 +316,6 @@ def analyze_pair(base_file, cand_file):
                 "tp_sum_base": 0,
                 "mos_delta_sum": 0,
                 "mos_count": 0,
-                "z_mos_delta_sum": 0,
-                "z_mos_count": 0,
                 "ic_delta_sum": 0,
                 "ic_count": 0,
                 "bitrate_acc_sum": 0,
@@ -327,11 +325,9 @@ def analyze_pair(base_file, cand_file):
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
         "base_sha": base.get("sha"),
-        "cand_sha": cand.get("sha")
+        "cand_sha": cand.get("sha"),
+        "mos_backend": next((o.get("mos_backend") or o.get("mos_provider") for o in cand_m.values() if o.get("mos_backend") or o.get("mos_provider")), "zimtohrli")
     }
-
-    base_m = base.get("matrix", {})
-    cand_m = cand.get("matrix", {})
 
     if cand_m:
         suite_results["total_cases"] = len(cand_m)
@@ -385,17 +381,6 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["count"] += 1
                 speed_delta = (1 - o_time / b_time) * 100
 
-            # Zimtohrli perceptual quality (Phase 4)
-            o_z_mos = o.get("zimtohrli_mos")
-            b_z_mos = b.get("zimtohrli_mos")
-            if o_z_mos is not None and b_z_mos is not None:
-                z_delta = o_z_mos - b_z_mos
-                suite_results["z_mos_delta_sum"] += z_delta
-                suite_results["z_mos_count"] += 1
-                suite_results["scenario_stats"][scenario]["z_mos_delta_sum"] += z_delta
-                suite_results["scenario_stats"][scenario]["z_mos_count"] += 1
-                if z_delta < suite_results["worst_z_mos_drop"][0]:
-                    suite_results["worst_z_mos_drop"] = (z_delta, display_name)
 
             # Stereo image fidelity (Phase 3). ic_err = inter-channel coherence
             # error, lower = truer stereo image. Sign matches MOS: a positive
@@ -664,9 +649,6 @@ def main():
     total_mos_delta = 0
     total_mos_count = 0
     total_missing_mos = 0
-    total_z_mos_delta = 0
-    total_z_mos_count = 0
-    worst_z_mos_drop = (0, "N/A")
     total_decode_errors = 0
     total_ic_delta = 0
     total_ic_count = 0
@@ -710,10 +692,6 @@ def main():
             total_mos_delta += data["mos_delta_sum"]
             total_mos_count += data["mos_count"]
             total_missing_mos += data["missing_mos_count"]
-            total_z_mos_delta += data["z_mos_delta_sum"]
-            total_z_mos_count += data["z_mos_count"]
-            if data["worst_z_mos_drop"][0] < worst_z_mos_drop[0]:
-                worst_z_mos_drop = data["worst_z_mos_drop"]
             total_decode_errors += data["decode_error_count"]
             total_ic_delta += data["ic_delta_sum"]
             total_ic_count += data["ic_count"]
@@ -820,9 +798,18 @@ def main():
         if total_reg_minor: reg_parts.append(f"{total_reg_minor} ⚠️")
         summary_lines.append(f"| **Regressions** | {', '.join(reg_parts)} |")
 
+    # Determine backend name across suites
+    backend = "zimtohrli"
+    for d in all_suite_data.values():
+        b = d.get("mos_backend") or d.get("mos_provider")
+        if b:
+            backend = b
+            break
+    mos_label = "Zimtohrli" if "zimtohrli" in backend else "ViSQOL" if "visqol" in backend else backend.capitalize()
+
     # Worst-Case Outliers
     if worst_mos_drop[0] < -0.01:
-        summary_lines.append(f"| **Worst MOS Drop** | {worst_mos_drop[0]:.2f} ({worst_mos_drop[1]}) |")
+        summary_lines.append(f"| **Worst {mos_label} Drop** | {worst_mos_drop[0]:.2f} ({worst_mos_drop[1]}) |")
 
     if abs(worst_bitrate_err[0]) > 1.0:
         err_icon = "📈" if worst_bitrate_err[0] > 0 else "📉"
@@ -907,16 +894,8 @@ def main():
 
     # Avg MOS Delta
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
-        summary_lines.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
+        summary_lines.append(f"| **Avg {mos_label} Δ** | {avg_mos_delta_str} |")
 
-    # Zimtohrli MOS Delta (shown when change is significant)
-    if total_z_mos_count > 0:
-        avg_z_delta = total_z_mos_delta / total_z_mos_count
-        if abs(avg_z_delta) > 0.01:
-            z_icon = "🚀" if avg_z_delta > 0.05 else "📉" if avg_z_delta < -0.05 else ""
-            summary_lines.append(f"| **Avg Zimtohrli Δ** | {avg_z_delta:+.3f} {z_icon} |")
-        if worst_z_mos_drop[0] <= -0.05:
-            summary_lines.append(f"| **Worst Zim Drop** | {worst_z_mos_drop[0]:.2f} ({worst_z_mos_drop[1]}) |")
 
     # Stereo Fidelity Δ (inter-channel coherence; positive = candidate truer stereo).
     # MOS is monaural and cannot see this — see phase3_stereo.py.
@@ -953,17 +932,15 @@ def main():
     if not summary_only:
         # Scenario Performance Table
         report.append("\n### Scenario Performance")
-        report.append("| Scenario | Avg MOS Δ | 95% CI | W/L | Zimtohrli Δ | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
-        report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        report.append(f"| Scenario | {mos_label} Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+        report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "z_mos_delta": 0, "z_mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": []})
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": []})
         for suite_data in all_suite_data.values():
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
                 global_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
                 global_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
-                global_scenario_stats[sc_name]["z_mos_delta"] += sc_stats["z_mos_delta_sum"]
-                global_scenario_stats[sc_name]["z_mos_count"] += sc_stats["z_mos_count"]
                 global_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
                 global_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
                 global_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
@@ -975,7 +952,6 @@ def main():
         for sc_name in sorted(global_scenario_stats.keys(), key=get_scenario_sort_key):
             gs = global_scenario_stats[sc_name]
             sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
-            sc_z_delta = f"{(gs['z_mos_delta'] / gs['z_mos_count']):+.3f}" if gs['z_mos_count'] > 0 else "N/A"
             sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
             sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
             sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
@@ -992,7 +968,7 @@ def main():
 
             report.append(
                 f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                f"{sc_z_delta} | {sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+                f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
 
         # 1. Collapsible Details: Regressions
         if total_regressions > 0:
@@ -1002,7 +978,7 @@ def main():
                 if data["regressions"]:
                     report.append(f"\n#### {name}")
                     report.append(
-                        "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                     report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                     for r in data["regressions"]:
                         report.append(r["line"])
@@ -1048,7 +1024,7 @@ def main():
 
             if data["new_wins"]:
                 report.append("\n**🆕 New Wins**")
-                report.append("| Test Case | MOS (Base) | Delta |")
+                report.append(f"| Test Case | {mos_label} (Base) | Delta |")
                 report.append("| :--- | :---: | :---: |")
                 for w in data["new_wins"]:
                     report.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
@@ -1057,7 +1033,7 @@ def main():
             if data["significant_wins"]:
                 report.append("\n**🌟 Significant Wins**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for w in data["significant_wins"]:
                     report.append(w["line"])
@@ -1065,7 +1041,7 @@ def main():
             if data["opportunities"]:
                 report.append("\n**💡 Opportunities**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for o in data["opportunities"]:
                     report.append(o["line"])
@@ -1074,7 +1050,7 @@ def main():
                 report.append(
                     f"\n<details><summary>View all {len(data['all_cases'])} cases for {name}</summary>\n")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for c in data["all_cases"]:
                     report.append(c["line"])

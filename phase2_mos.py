@@ -26,12 +26,22 @@ import subprocess
 import shutil
 import argparse
 
+import numpy as np
+
 from utils import wav_conv, get_aac_path, calculate_provenance_hash
 
 try:
     import ffmpeg
 except ImportError:
     ffmpeg = None
+
+try:
+    import zimtohrli
+    import soundfile as sf
+    import scipy.signal
+    HAS_ZIMTOHRLI = True
+except ImportError:
+    HAS_ZIMTOHRLI = False
 
 # Support for multiple Python ViSQOL implementations
 try:
@@ -84,9 +94,23 @@ def find_visqol_assets():
 # Initialize paths
 find_visqol_assets()
 
-# Process-local storage for ViSQOL instances (Python mode)
+# Process-local storage for instances
+_process_zimtohrli_instances = {}
 _process_visqol_instances = {}
 _process_visqol_api_instances = {}
+
+def get_process_zimtohrli():
+    pid = os.getpid()
+    if pid not in _process_zimtohrli_instances:
+        if HAS_ZIMTOHRLI:
+            try:
+                _process_zimtohrli_instances[pid] = zimtohrli.Pyohrli()
+            except Exception as e:
+                print(f" Failed to initialize Zimtohrli: {e}")
+                _process_zimtohrli_instances[pid] = None
+        else:
+            _process_zimtohrli_instances[pid] = None
+    return _process_zimtohrli_instances[pid]
 
 def get_process_visqol_python(mode_str, model_dir=None):
     if not HAS_VISQOL_PYTHON:
@@ -155,7 +179,7 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                         if isinstance(result, Exception):
                             print(f"    Error for {key} in batch: {result}")
                         else:
-                            results[key] = float(result.moslqo)
+                            results[key] = (float(result.moslqo), "visqol-python")
                 except Exception as e:
                     print(f"    Batch execution failed for {mode}: {e}")
 
@@ -197,7 +221,7 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
 def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
-        return key, None
+        return key, None, "none"
 
     cfg = info["cfg"]
     ref_input_path = info["ref_input_path"]
@@ -210,23 +234,58 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
         v_deg = os.path.join(tmpdir, "vdeg.wav")
 
         if not wav_conv(ref_input_path, v_ref, v_rate, v_channels):
-            return key, None
+            return key, None, "none"
 
         if not wav_conv(aac_path, v_deg, v_rate, v_channels):
             print(f"  FFmpeg decode gate failed for {key}")
-            return key, 1.0
+            return key, 1.0, "none"
 
         try:
-            # 1. Try visqol-python (Modern)
+            # 1. Try Zimtohrli (Default)
+            if backend in ["auto", "zimtohrli"]:
+                if HAS_ZIMTOHRLI:
+                    z_engine = get_process_zimtohrli()
+                    if z_engine:
+                        ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
+                        dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
+                        r_mono = ref_data.mean(axis=1)
+                        d_mono = dec_data.mean(axis=1)
+
+                        n_search = min(len(r_mono), len(d_mono), sr_r * 3)
+                        r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+                        d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+                        corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
+                        lag = int(np.argmax(corr)) - (n_search - 1)
+
+                        if lag < 0:
+                            dec_aligned = d_mono[-lag:]
+                            ref_aligned = r_mono[:len(r_mono) + lag]
+                        elif lag > 0:
+                            ref_aligned = r_mono[lag:]
+                            dec_aligned = d_mono[:len(d_mono) - lag]
+                        else:
+                            ref_aligned, dec_aligned = r_mono, d_mono
+
+                        n = min(len(ref_aligned), len(dec_aligned))
+                        dist = z_engine.distance(
+                            np.ascontiguousarray(ref_aligned[:n], dtype=np.float32),
+                            np.ascontiguousarray(dec_aligned[:n], dtype=np.float32)
+                        )
+                        return key, float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
+                elif backend == "zimtohrli":
+                    print(f"  ERROR: zimtohrli not found but requested for {key}")
+                    return key, None, "zimtohrli"
+
+            # 2. Try visqol-python (Modern)
             if backend in ["auto", "visqol-python"]:
                 if HAS_VISQOL_PYTHON:
                     api = get_process_visqol_python(cfg["mode"], MODEL_DIR)
                     if api:
                         result = api.measure(v_ref, v_deg)
-                        return key, float(result.moslqo)
+                        return key, float(result.moslqo), "visqol-python"
                 elif backend == "visqol-python":
                     print(f"  ERROR: visqol-python not found but requested for {key}")
-                    return key, None
+                    return key, None, "visqol-python"
 
             # 2. Try Binary Mode
             if backend in ["auto", "visqol"]:
@@ -244,10 +303,10 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                     for line in result.stdout.splitlines():
                         if "MOS-LQO:" in line:
                             mos = float(line.split()[-1])
-                            return key, mos
+                            return key, mos, "visqol"
                 elif backend == "visqol":
                     print(f"  ERROR: visqol binary not found but requested for {key}")
-                    return key, None
+                    return key, None, "visqol"
 
             # 3. Try visqol_py (Legacy)
             if backend in ["auto", "visqol-py"]:
@@ -255,23 +314,23 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
                     visqol = get_process_visqol_py(cfg["mode"])
                     if visqol:
                         result = visqol.measure(v_ref, v_deg)
-                        return key, float(result.moslqo)
+                        return key, float(result.moslqo), "visqol-py"
                 elif backend == "visqol-py":
                     print(f"  ERROR: visqol-py not found but requested for {key}")
-                    return key, None
+                    return key, None, "visqol-py"
 
         except Exception as e:
             print(f"  Error computing MOS for {key}: {e}")
 
-    return key, None
+    return key, None, "none"
 
 def main():
     parser = argparse.ArgumentParser(description="ViSQOL MOS computation (Phase 2)")
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
-    parser.add_argument("--backend", choices=["auto", "visqol", "visqol-py", "visqol-python"],
-                        default="auto", help="ViSQOL backend to use")
+    parser.add_argument("--backend", choices=["auto", "zimtohrli", "visqol", "visqol-py", "visqol-python"],
+                        default="auto", help="Perceptual MOS backend to use")
     parser.add_argument("--faac-bin", help="Path to faac binary for provenance verification")
     parser.add_argument("--lib-path", help="Path to libfaac.so for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
@@ -337,7 +396,7 @@ def main():
     still_pending = pending
     if still_pending:
         if args.backend == "auto":
-            mode_str = "visqol-python" if HAS_VISQOL_PYTHON else "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "None"
+            mode_str = "zimtohrli" if HAS_ZIMTOHRLI else "visqol-python" if HAS_VISQOL_PYTHON else "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "None"
             print(f"Computing MOS for {len(still_pending)} samples using prioritized stack (Primary: {mode_str}, {num_cpus} cores)...")
         else:
             print(f"Computing MOS for {len(still_pending)} samples using backend '{args.backend}' ({num_cpus} cores)...")
@@ -349,15 +408,24 @@ def main():
             }
 
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                key, mos = future.result()
+                res = future.result()
+                if len(res) == 3:
+                    key, mos, backend_used = res
+                else:
+                    key, mos = res
+                    backend_used = "zimtohrli" if HAS_ZIMTOHRLI else "visqol-python"
                 if mos is not None:
-                    mos_results[key] = mos
+                    mos_results[key] = (mos, backend_used)
                 mos_str = f"{mos:.2f}" if mos is not None else "N/A"
                 print(f"  ({i+1}/{len(still_pending)}) {key}: {mos_str}")
 
-    for key, mos in mos_results.items():
+    for key, item in mos_results.items():
         if key in matrix:
-            matrix[key]["mos"] = mos
+            if isinstance(item, tuple):
+                matrix[key]["mos"] = item[0]
+                matrix[key]["mos_backend"] = item[1]
+            else:
+                matrix[key]["mos"] = item
 
     with open(results_path, 'w') as f:
         json.dump(data, f, indent=2)

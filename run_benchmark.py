@@ -56,8 +56,8 @@ def main():
     parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
     parser.add_argument("--exclude-tests", help="Comma-separated list of test filename globs to exclude")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
-    parser.add_argument("--backend", choices=["auto", "docker", "visqol", "visqol-py", "visqol-python"],
-                        default="auto", help="ViSQOL backend to use")
+    parser.add_argument("--backend", choices=["auto", "zimtohrli", "docker", "visqol", "visqol-py", "visqol-python"],
+                        default="auto", help="Perceptual MOS backend to use")
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
     parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
@@ -90,7 +90,6 @@ def main():
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
     phase3_script = os.path.join(script_dir, "phase3_stereo.py")
-    phase4_script = os.path.join(script_dir, "phase4_zimtohrli.py")
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
 
     # Logic for A/B or Sweep
@@ -314,15 +313,6 @@ def main():
                 external_data_dir,
             ], check=True)
 
-        # Phase 4: Zimtohrli perceptual metric.
-        if not args.skip_zimtohrli and not args.skip_encode:
-            print(">>> Phase 4: Zimtohrli Perceptual Metric")
-            subprocess.run([
-                sys.executable, phase4_script,
-                run["output"],
-                os.path.join(script_dir, "output"),
-                external_data_dir,
-            ], check=True)
 
         print(f">>> Benchmark run {run['tag']} complete.")
         run_results.append(run)

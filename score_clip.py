@@ -36,7 +36,7 @@ def score_clip(ref, deg, mode="audio"):
         if not wav_conv(deg, deg_wav, rate, channels):
             return None
 
-        print(f"Computing MOS (mode: {mode})...")
+        print(f"Computing ViSQOL MOS (mode: {mode})...")
         try:
             api = get_process_visqol_python(mode, MODEL_DIR)
             if api:
@@ -75,7 +75,7 @@ def main():
 
     mos = score_clip(args.reference, args.degraded, args.mode)
     if mos is not None:
-        print(f"MOS: {mos:.4f}")
+        print(f"ViSQOL MOS: {mos:.4f}")
     else:
         sys.exit(1)
 

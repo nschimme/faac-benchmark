@@ -39,9 +39,9 @@ inputs:
     description: 'Comma-separated list of test filename globs to exclude'
     required: false
   backend:
-    description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
+    description: 'Perceptual MOS backend to use (auto, zimtohrli, docker, visqol, visqol-py, visqol-python)'
     required: false
-    default: 'visqol-python'
+    default: 'auto'
   throughput-only:
     description: 'Re-measure only throughput and merge into an existing output JSON. Use to refresh a cached baseline on the machine that will measure the candidate.'
     required: false
