@@ -123,7 +123,7 @@ a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 
 ## Cross-Encoder Comparison (`compare_encoders.py`)
 
-Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard.
+Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard. Every encoder is compared at the same target bitrate; there is no VBR/quality-knob comparison mode here, since each encoder's own quality scale (FAAC's `-q`, FDK-AAC's `-vbr`, etc.) isn't calibrated against any other's.
 
 ```bash
 python3 compare_encoders.py [options]
@@ -131,7 +131,6 @@ python3 compare_encoders.py [options]
 
 Options:
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
-- `--rate-control abr|vbr|both`: Rate control mode(s) to benchmark (default: `both`).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
 - `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`: Manual paths to encoder binaries.
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).

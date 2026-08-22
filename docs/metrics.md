@@ -30,6 +30,23 @@ the worst-case scenario.
 How close the actual output bitrate is to the scenario target, and whether the
 encoder systematically over- or under-shoots.
 
+In VBR mode this compares against `config.py`'s `vbr_q` (faac's `-q`, a percent
+quantizer quality, not a bitrate). `vbr_q` per scenario is chosen by grid
+search (`calibrate_vbr_q.py`) against representative content so it lands near
+the scenario's nominal `bitrate`, but VBR is inherently content-dependent, so
+expect single-digit-to-teens percent deviation even with no code change.
+
+Two scenarios, `48k_stereo_48k` and `48k_stereo_56k`, have **no achievable
+`vbr_q`** and will always show a larger (~15-35%) deviation: libfaac's AUTO
+object-type resolution in VBR mode picks HE-AAC when `quantqual <= 75` and
+forces plain LC-AAC above that (`HE_VBR_QUANTQUAL_MAX` in `libfaac/frame.c`).
+On 48kHz stereo content HE-AAC tops out around ~41 kbps at q=75 and LC-AAC's
+cheapest encode is ~71 kbps at q=76 — there is no `-q` value that lands in the
+42-70 kbps gap between them. For these two scenarios, judge a PR by the
+**baseline-vs-candidate delta**, not the absolute deviation from `bitrate`; a
+large but *unchanged* deviation on both sides is expected and not a
+regression.
+
 ## Decode errors
 
 Count of candidate clips whose encoded `.aac` ffmpeg could not decode cleanly
