@@ -49,7 +49,6 @@ def main():
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
-    parser.add_argument("--skip-zimtohrli", action="store_true", help="Skip Zimtohrli perceptual MOS computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
