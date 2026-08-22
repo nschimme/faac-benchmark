@@ -104,7 +104,7 @@ def use_he_aac(bitrate_kbps, channels, sample_rate):
     if sample_rate < 32000:
         return False
     bitrate_per_ch = bitrate_kbps / channels
-    return 10 <= bitrate_per_ch < 48
+    return 10 <= bitrate_per_ch <= 48
 
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
