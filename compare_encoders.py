@@ -398,10 +398,13 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
+                "aac": f"{key}.aac",
                 "mos": None
             }
             shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
@@ -429,7 +432,9 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             if key in updated_bridge["matrix"]:
                 res["mos"] = updated_bridge["matrix"][key].get("mos")
 
@@ -442,10 +447,13 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
+                "aac": f"{key}.aac",
                 "ic_err": None
             }
             # Ensure files exist in output_dir
@@ -475,7 +483,9 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             if key in updated_bridge["matrix"]:
                 res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
@@ -618,7 +628,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
             m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
-            zm_str = f"{o['avg_z_mos']:.3f}" if o.get('avg_z_mos', 0) > 0 else "N/A"
 
             ic_val = o['avg_ic']
             if ic_val > 0:

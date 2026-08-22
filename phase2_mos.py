@@ -388,7 +388,7 @@ def main():
 
     mos_results = {}
 
-    if (args.backend in ["auto", "visqol-python"]) and HAS_VISQOL_PYTHON:
+    if HAS_VISQOL_PYTHON and (args.backend == "visqol-python" or (args.backend == "auto" and not HAS_ZIMTOHRLI)):
         batch_results = run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files)
         mos_results.update(batch_results)
         pending = {k: v for k, v in pending.items() if k not in mos_results}

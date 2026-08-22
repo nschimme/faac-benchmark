@@ -113,6 +113,30 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
         if not valid:
             print(f"    [DECODE ERROR] {sample}: {decode_err}")
 
+        # Rate control bias & accuracy calculations per SOP
+        rc_mode = "abr" if rate_control == "abr" else "vbr"
+        expected_rate = cfg.get("bitrate")
+        bias_ratio = None
+        bias_percent = None
+        accuracy_score = None
+        bias_status = "Optimal"
+
+        if actual_bitrate is not None and expected_rate and expected_rate > 0:
+            bias_ratio = actual_bitrate / expected_rate
+            bias_percent = (bias_ratio - 1.0) * 100
+            accuracy_score = max(0.0, 1.0 - abs((actual_bitrate - expected_rate) / expected_rate))
+
+            if rc_mode == "abr":
+                if bias_ratio > 1.05:
+                    bias_status = "Overshoot"
+                elif bias_ratio < 0.95:
+                    bias_status = "Undershoot"
+            else:
+                if bias_ratio > 1.15:
+                    bias_status = "Overshoot"
+                elif bias_ratio < 0.85:
+                    bias_status = "Undershoot"
+
         # Provenance hash
         prov_hash = calculate_provenance_hash(faac_bin_path, lib_path, extra_args, input_path)
 
@@ -121,6 +145,12 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             "size": aac_size,
             "bitrate": actual_bitrate,
             "bitrate_target": cfg.get("bitrate"),
+            "expected_bitrate": expected_rate,
+            "rate_control_mode": rc_mode,
+            "bias_ratio": bias_ratio,
+            "bias_percent": bias_percent,
+            "accuracy_score": accuracy_score,
+            "bias_status": bias_status,
             "time": t_duration,
             "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],

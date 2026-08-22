@@ -326,6 +326,7 @@ def analyze_pair(base_file, cand_file):
         "cand_tp": cand.get("throughput", {}),
         "base_sha": base.get("sha"),
         "cand_sha": cand.get("sha"),
+        "rate_control_mode": next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr"),
         "mos_backend": next((o.get("mos_backend") or o.get("mos_provider") for o in cand_m.values() if o.get("mos_backend") or o.get("mos_provider")), "zimtohrli")
     }
 
@@ -881,16 +882,25 @@ def main():
         summary_lines.append(
             f"| **Bitrate Δ** | {avg_bitrate_chg:+.2f}% {bitrate_icon} |")
 
-    # Bitrate Accuracy & Bias
+    # Determine Rate Control mode labels for summary
+    rc_mode = "ABR"
+    for d in all_suite_data.values():
+        if d.get("rate_control_mode") == "vbr":
+            rc_mode = "VBR"
+            break
+    acc_label = "Allocation Accuracy" if rc_mode == "VBR" else "Bitrate Accuracy"
+    bias_label = "Allocation Bias" if rc_mode == "VBR" else "Bitrate Bias"
+
+    # Bitrate / Allocation Accuracy & Bias
     if total_bitrate_acc_count > 0:
         acc_icon = "🎯" if avg_bitrate_acc > 95 else "⚠️" if avg_bitrate_acc < 80 else ""
         summary_lines.append(
-            f"| **Bitrate Accuracy** | {avg_bitrate_acc:.1f}% {acc_icon} |")
+            f"| **{acc_label}** | {avg_bitrate_acc:.1f}% {acc_icon} |")
 
         bias_icon = "📈" if avg_bitrate_bias > 2.0 else "📉" if avg_bitrate_bias < -2.0 else "🎯"
-        bias_desc = "(Overshooting)" if avg_bitrate_bias > 0.5 else "(Undershooting)" if avg_bitrate_bias < -0.5 else "(Balanced)"
+        bias_desc = "Overshooting" if avg_bitrate_bias > 0.5 else "Undershooting" if avg_bitrate_bias < -0.5 else "Optimal"
         summary_lines.append(
-            f"| **Bitrate Bias** | {avg_bitrate_bias:+.1f}% {bias_desc} {bias_icon} |")
+            f"| **{bias_label}** | {avg_bitrate_bias:+.1f}% ({bias_desc}) {bias_icon} |")
 
     # Avg MOS Delta
     if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
