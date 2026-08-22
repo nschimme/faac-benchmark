@@ -125,29 +125,50 @@ class FFmpegEncoder(Encoder):
         self.codec_name = codec_name
         self.supports_nmr = supports_nmr
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate, rate_control="abr", vbr_q=100):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
         if self.codec_name == "libfdk_aac" and use_he_aac(bitrate_kbps, channels, sample_rate):
             cmd.extend(["-profile:a", "aac_he"])
         if self.codec_name == "aac" and self.supports_nmr:
             cmd.extend(["-aac_coder", "nmr"])
-        cmd.extend(["-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path])
+
+        if rate_control == "vbr":
+            if self.codec_name == "aac":
+                # FFmpeg internal AAC VBR scale: 1 to 5 (mapped roughly from vbr_q)
+                q_val = str(max(1, min(5, int(round(vbr_q / 30.0)))))
+                cmd.extend(["-q:a", q_val])
+            elif self.codec_name == "libfdk_aac":
+                # FDK-AAC VBR scale: 1 to 5
+                q_val = str(max(1, min(5, int(round(vbr_q / 30.0)))))
+                cmd.extend(["-vbr", q_val])
+            else:
+                cmd.extend(["-b:a", f"{bitrate_kbps}k"])
+        else:
+            cmd.extend(["-b:a", f"{bitrate_kbps}k"])
+
+        cmd.extend(["-ac", str(channels), output_path])
         return cmd
 
 class FDKAACEncoder(Encoder):
     def __init__(self, name, binary_path, encoder_type):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate, rate_control="abr", vbr_q=100):
         profile = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
-        # fdkaac might be picky about 'k' suffix vs bps depending on version
-        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels), "-o", output_path, input_path]
+        cmd = [self.binary_path, "-p", profile]
+        if rate_control == "vbr":
+            q_val = str(max(1, min(5, int(round(vbr_q / 30.0)))))
+            cmd.extend(["-m", q_val])
+        else:
+            cmd.extend(["-b", f"{bitrate_kbps}k", "-m", str(channels)])
+        cmd.extend(["-o", output_path, input_path])
+        return cmd
 
 class AACEncEncoder(Encoder):
     def __init__(self, name, binary_path):
         super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate, rate_control="abr", vbr_q=100):
         aot = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
         # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
@@ -157,7 +178,7 @@ class AFConvertEncoder(Encoder):
         # AudioToolbox is the framework providing the AAC codec on macOS
         super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate, rate_control="abr", vbr_q=100):
         codec = "aach" if use_he_aac(bitrate_kbps, channels, sample_rate) else "aac "
         # Use ADTS format to get a standard .aac file
         # Add -c to force channel count if needed
@@ -194,7 +215,8 @@ def detect_encoders(args):
         supports_nmr = False
         try:
             res = subprocess.run([ffmpeg_path, "-h", "encoder=aac"], capture_output=True, text=True)
-            supports_nmr = "nmr" in res.stdout
+            import re
+            supports_nmr = bool(re.search(r"\bnmr\b", res.stdout))
         except Exception:
             pass
         encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac", supports_nmr=supports_nmr))
@@ -555,7 +577,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     encoder_info = {e.name: e for e in encoders}
     all_em_keys = sorted(list(stats.keys()))
 
-    overall = {}
+    per_em = {}
     for em_key in all_em_keys:
         e_name, m_name = em_key
         e_mos, e_speed, e_br_err, e_ic = [], [], [], []
@@ -583,7 +605,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
         if has_data:
             enc_obj = encoder_info.get(e_name)
-            overall[em_key] = {
+            per_em[em_key] = {
                 "encoder": e_name,
                 "mode": m_name,
                 "avg_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
@@ -599,35 +621,70 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
             }
 
-    has_mos = any(o["avg_mos"] > 0 for o in overall.values())
-    sorted_em_keys = sorted(overall.keys(), key=lambda x: overall[x]["avg_mos"], reverse=True) if has_mos else sorted(overall.keys())
+    # Consolidate per-encoder overall summary across ABR and VBR modes
+    encoder_names = sorted(list(set(e for e, m in per_em.keys())))
+    overall = {}
+
+    for e_name in encoder_names:
+        abr_entry = per_em.get((e_name, "ABR"))
+        vbr_entry = per_em.get((e_name, "VBR"))
+        modes = [m for m in [abr_entry, vbr_entry] if m is not None]
+        if not modes:
+            continue
+
+        all_mos = [m["avg_mos"] for m in modes if m["avg_mos"] > 0]
+        worst_mos = min(m["worst_mos"] for m in modes) if modes else 0
+        all_ic = [m["avg_ic"] for m in modes if m["avg_ic"] > 0]
+        all_speed = [m["avg_speed"] for m in modes if m["avg_speed"] > 0]
+        all_br_err = [m["avg_br_err"] for m in modes]
+        min_valid_rate = min(m["valid_rate"] for m in modes)
+
+        enc_obj = encoder_info.get(e_name)
+
+        overall[e_name] = {
+            "encoder": e_name,
+            "overall_mos": sum(all_mos) / len(all_mos) if all_mos else 0,
+            "abr_mos": abr_entry["avg_mos"] if abr_entry else None,
+            "vbr_mos": vbr_entry["avg_mos"] if vbr_entry else None,
+            "worst_mos": worst_mos,
+            "avg_ic": sum(all_ic) / len(all_ic) if all_ic else 0,
+            "avg_speed": sum(all_speed) / len(all_speed) if all_speed else 0,
+            "avg_br_err": sum(all_br_err) / len(all_br_err) if all_br_err else 0,
+            "text_size": enc_obj.text_size if enc_obj else 0,
+            "rodata_size": enc_obj.rodata_size if enc_obj else 0,
+            "valid_rate": min_valid_rate
+        }
+
+    has_mos = any(o["overall_mos"] > 0 for o in overall.values())
+    sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["overall_mos"], reverse=True) if has_mos else sorted(overall.keys())
 
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Mode | Status | Quality (MOS) | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | Overall MOS | ABR MOS | VBR MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
-        best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
+        best_mos = max(o['overall_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
         has_ic = any(o['avg_ic'] > 0 for o in overall.values())
         best_ic = max(1.0 - o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
         valid_br = [o['avg_br_err'] for o in overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
-        for i, em_key in enumerate(sorted_em_keys):
-            o = overall[em_key]
-            e_name, m_name = em_key
-            rank_str = f"🏆 {i+1}" if i == 0 and o['avg_mos'] > 0 else f"{i+1}"
+        for i, e_name in enumerate(sorted_encoders):
+            o = overall[e_name]
+            rank_str = f"🏆 {i+1}" if i == 0 and o['overall_mos'] > 0 else f"{i+1}"
 
             if o['valid_rate'] == 100:
                 status_str = "OK"
             else:
-                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name} [{m_name}]: ")}
+                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name} [")}
                 top_err = max(relevant_errors, key=relevant_errors.get) if relevant_errors else "Err"
                 status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
-            m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
+            m_str = f"**{o['overall_mos']:.3f}**" if o['overall_mos'] == best_mos and best_mos > 0 else f"{o['overall_mos']:.3f}"
+            abr_str = f"{o['abr_mos']:.3f}" if o['abr_mos'] is not None else "N/A"
+            vbr_str = f"{o['vbr_mos']:.3f}" if o['vbr_mos'] is not None else "N/A"
 
             ic_val = o['avg_ic']
             if ic_val > 0:
@@ -640,22 +697,23 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
             rom_str = format_size(o['text_size'] + o['rodata_size'])
 
-            f.write(f"| {rank_str} | {e_name} | {m_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {abr_str} | {vbr_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
 
         # Per-Scenario Tables in Collapsible Section
         f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
 
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
-        em_headers = [f"{e} [{m}]" for e, m in sorted_em_keys]
+        all_em_keys_sorted = sorted(per_em.keys(), key=lambda x: (x[0], x[1]))
+        em_headers = [f"{e} [{m}]" for e, m in all_em_keys_sorted]
 
         # 1. Perceptual Quality (MOS)
         f.write("\n### Per-Scenario Perceptual Quality (MOS)\n\n")
         f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] for em in sorted_em_keys if stats[em][s]["mos_count"] > 0) if any(stats[em][s]["mos_count"] > 0 for em in sorted_em_keys) else 0
+            best_val = max(stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] for em in all_em_keys_sorted if stats[em][s]["mos_count"] > 0) if any(stats[em][s]["mos_count"] > 0 for em in all_em_keys_sorted) else 0
             line = f"| {s} |"
-            for em in sorted_em_keys:
+            for em in all_em_keys_sorted:
                 val = stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] if stats[em][s]["mos_count"] > 0 else None
                 line += f" **{val:.3f}** |" if val == best_val and best_val > 0 else (f" {val:.3f} |" if val is not None else " N/A |")
             f.write(line + "\n")
@@ -666,9 +724,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(1.0 - (stats[em][s]["ic_sum"]/stats[em][s]["ic_count"]) for em in sorted_em_keys if stats[em][s]["ic_count"] > 0) if any(stats[em][s]["ic_count"] > 0 for em in sorted_em_keys) else -1.0
+            best_val = max(1.0 - (stats[em][s]["ic_sum"]/stats[em][s]["ic_count"]) for em in all_em_keys_sorted if stats[em][s]["ic_count"] > 0) if any(stats[em][s]["ic_count"] > 0 for em in all_em_keys_sorted) else -1.0
             line = f"| {s} |"
-            for em in sorted_em_keys:
+            for em in all_em_keys_sorted:
                 val = stats[em][s]["ic_sum"]/stats[em][s]["ic_count"] if stats[em][s]["ic_count"] > 0 else None
                 if val is not None:
                     fid = 1.0 - val
@@ -682,9 +740,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = min(stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] for em in sorted_em_keys if stats[em][s]["br_err_count"] > 0) if any(stats[em][s]["br_err_count"] > 0 for em in sorted_em_keys) else float('inf')
+            best_val = min(stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] for em in all_em_keys_sorted if stats[em][s]["br_err_count"] > 0) if any(stats[em][s]["br_err_count"] > 0 for em in all_em_keys_sorted) else float('inf')
             line = f"| {s} |"
-            for em in sorted_em_keys:
+            for em in all_em_keys_sorted:
                 val = stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] if stats[em][s]["br_err_count"] > 0 else None
                 line += f" **{val:.1f}%** |" if val == best_val and best_val != float('inf') else (f" {val:.1f}% |" if val is not None else " N/A |")
             f.write(line + "\n")
@@ -694,9 +752,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] for em in sorted_em_keys if stats[em][s]["speed_count"] > 0) if any(stats[em][s]["speed_count"] > 0 for em in sorted_em_keys) else 0
+            best_val = max(stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] for em in all_em_keys_sorted if stats[em][s]["speed_count"] > 0) if any(stats[em][s]["speed_count"] > 0 for em in all_em_keys_sorted) else 0
             line = f"| {s} |"
-            for em in sorted_em_keys:
+            for em in all_em_keys_sorted:
                 val = stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] if stats[em][s]["speed_count"] > 0 else None
                 line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
             f.write(line + "\n")
