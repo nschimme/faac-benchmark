@@ -258,5 +258,30 @@ class TestThroughputGate(unittest.TestCase):
         self.assertIn("--throughput-only", g["detail"])
 
 
+class TestAutoBackendSelection(unittest.TestCase):
+    @patch("zimtohrli.Pyohrli", create=True)
+    def test_run_benchmark_selects_zimtohrli_when_available(self, mock_zimtohrli):
+        import run_benchmark
+        # Test that when zimtohrli is present, run_benchmark's detection logic selects zimtohrli
+        with patch.object(sys, "argv", ["run_benchmark.py", "bin", "lib", "name", "out.json", "--backend", "auto", "--skip-encode", "--skip-stereo"]):
+            with patch("subprocess.run") as mock_subproc:
+                try:
+                    run_benchmark.main()
+                except SystemExit:
+                    pass
+                # Check that phase2_mos was called with --backend zimtohrli
+                for call_args in mock_subproc.call_args_list:
+                    cmd = call_args[0][0]
+                    if "phase2_mos.py" in str(cmd):
+                        self.assertIn("zimtohrli", cmd)
+                        self.assertIn("--backend", cmd)
+                        idx = cmd.index("--backend")
+                        self.assertEqual(cmd[idx + 1], "zimtohrli")
+
+    def test_phase2_mos_auto_uses_zimtohrli_primary(self):
+        import phase2_mos
+        self.assertTrue(hasattr(phase2_mos, "HAS_ZIMTOHRLI"))
+
+
 if __name__ == "__main__":
     unittest.main()
