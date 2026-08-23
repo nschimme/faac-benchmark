@@ -180,6 +180,13 @@ def main():
             selected_backend = args.backend
 
             # Detection logic
+            has_zimtohrli = False
+            try:
+                import zimtohrli
+                has_zimtohrli = True
+            except ImportError:
+                pass
+
             has_visqol_bin = False
             visqol_bin = os.environ.get("VISQOL_BIN") or shutil.which("visqol")
             if visqol_bin or os.path.exists("/app/visqol/bazel-bin/visqol"):
@@ -210,7 +217,9 @@ def main():
 
             # Auto-selection logic
             if selected_backend == "auto":
-                if has_visqol_python:
+                if has_zimtohrli:
+                    selected_backend = "zimtohrli"
+                elif has_visqol_python:
                     selected_backend = "visqol-python"
                 elif has_visqol_bin:
                     selected_backend = "visqol"
@@ -219,7 +228,7 @@ def main():
                 elif has_visqol_py:
                     selected_backend = "visqol-py"
                 else:
-                    print(">>> ERROR: No ViSQOL backend found.")
+                    print(">>> ERROR: No perceptual MOS backend found.")
                     sys.exit(1)
 
             if selected_backend != "docker":
