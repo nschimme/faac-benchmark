@@ -275,6 +275,9 @@ def analyze_pair(base_file, cand_file):
             f"  Error: Could not load candidate file {cand_file}: {e}\n")
         return None
 
+    base_m = base.get("matrix", {})
+    cand_m = cand.get("matrix", {})
+
     suite_results = {
         "gates": [],
         "has_regression": False,
@@ -322,11 +325,10 @@ def analyze_pair(base_file, cand_file):
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
         "base_sha": base.get("sha"),
-        "cand_sha": cand.get("sha")
+        "cand_sha": cand.get("sha"),
+        "rate_control_mode": next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr"),
+        "mos_backend": next((o.get("mos_backend") or o.get("mos_provider") for o in cand_m.values() if o.get("mos_backend") or o.get("mos_provider")), "zimtohrli")
     }
-
-    base_m = base.get("matrix", {})
-    cand_m = cand.get("matrix", {})
 
     if cand_m:
         suite_results["total_cases"] = len(cand_m)
@@ -379,6 +381,7 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["tp_sum_base"] += b_time
                 suite_results["scenario_stats"][scenario]["count"] += 1
                 speed_delta = (1 - o_time / b_time) * 100
+
 
             # Stereo image fidelity (Phase 3). ic_err = inter-channel coherence
             # error, lower = truer stereo image. Sign matches MOS: a positive
@@ -583,6 +586,215 @@ def analyze_pair(base_file, cand_file):
     return suite_results
 
 
+def aggregate_suite_metrics(items):
+    """Pool the per-suite dicts from analyze_pair() into one set of averages.
+
+    Called once over every suite for the pass/fail headline, and again per
+    rate-control mode for the Summary table -- ABR and VBR runs must never be
+    averaged together into a single "Bitrate Accuracy" number, since ABR's
+    target-bitrate semantics and VBR's allocation semantics aren't the same
+    quantity.
+    """
+    total_mos_delta = total_mos_count = total_missing_mos = total_decode_errors = 0
+    total_ic_delta = total_ic_count = 0
+    worst_ic_regression = (0, "N/A")
+    total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
+    total_bitrate_chg = total_bitrate_count = 0
+    total_bitrate_acc_sum = total_bitrate_acc_count = total_bitrate_bias_sum = 0
+    total_regressions = total_reg_critical = total_reg_significant = total_reg_minor = 0
+    total_new_wins = total_significant_wins = 0
+    total_bit_exact = total_cases_all = 0
+    worst_mos_drop = (0, "N/A")
+    worst_bitrate_err = (0, "N/A")
+    scenario_tp_deltas = []
+    n_suites = 0
+
+    for name, data in items:
+        n_suites += 1
+        total_mos_delta += data["mos_delta_sum"]
+        total_mos_count += data["mos_count"]
+        total_missing_mos += data["missing_mos_count"]
+        total_decode_errors += data["decode_error_count"]
+        total_ic_delta += data["ic_delta_sum"]
+        total_ic_count += data["ic_count"]
+        if data["worst_ic_regression"][0] < worst_ic_regression[0]:
+            worst_ic_regression = data["worst_ic_regression"]
+        total_tp_reduction += data["tp_reduction"]
+        total_lib_chg += data["lib_size_chg"]
+        total_lib_text_chg += data.get("lib_text_chg", 0)
+        total_lib_rodata_chg += data.get("lib_rodata_chg", 0)
+        total_bitrate_chg += data["bitrate_chg_sum"]
+        total_bitrate_count += data["bitrate_count"]
+        total_bitrate_acc_sum += data["bitrate_acc_sum"]
+        total_bitrate_acc_count += data["bitrate_acc_count"]
+        total_bitrate_bias_sum += data["bitrate_bias_sum"]
+
+        total_regressions += len(data["regressions"])
+        total_reg_critical += len(data["reg_critical"])
+        total_reg_significant += len(data["reg_significant"])
+        total_reg_minor += len(data["reg_minor"])
+
+        total_new_wins += len(data["new_wins"])
+        total_significant_wins += len(data["significant_wins"])
+        total_bit_exact += data["bit_exact_count"]
+        total_cases_all += data["total_cases"]
+
+        if data["worst_mos_drop"][0] < worst_mos_drop[0]:
+            worst_mos_drop = data["worst_mos_drop"]
+        if abs(data["worst_bitrate_err"][0]) > abs(worst_bitrate_err[0]):
+            worst_bitrate_err = data["worst_bitrate_err"]
+
+        for sc_name, sc_data in data["scenario_stats"].items():
+            if sc_data["tp_sum_base"] > 0:
+                delta = (1 - sc_data["tp_sum_cand"] /
+                         sc_data["tp_sum_base"]) * 100
+                scenario_tp_deltas.append((f"{name} / {sc_name}", delta))
+
+    avg_mos_delta_str = f"{(total_mos_delta / total_mos_count):+.3f}" if total_mos_count > 0 else "N/A"
+    avg_tp_reduction = total_tp_reduction / n_suites if n_suites else 0
+    avg_lib_chg = total_lib_chg / n_suites if n_suites else 0
+    avg_lib_text_chg = total_lib_text_chg / n_suites if n_suites else 0
+    avg_lib_rodata_chg = total_lib_rodata_chg / n_suites if n_suites else 0
+    avg_bitrate_chg = total_bitrate_chg / total_bitrate_count if total_bitrate_count > 0 else 0
+    avg_bitrate_acc = total_bitrate_acc_sum / total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
+    avg_bitrate_bias = total_bitrate_bias_sum / total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
+    bit_exact_percent = (total_bit_exact / total_cases_all * 100) if total_cases_all > 0 else 0
+
+    worst_tp_scen, worst_tp_delta = (None, 0)
+    if scenario_tp_deltas:
+        worst_tp_scen, worst_tp_delta = min(scenario_tp_deltas, key=lambda x: x[1])
+
+    return {
+        "avg_mos_delta_str": avg_mos_delta_str,
+        "total_mos_delta": total_mos_delta, "total_mos_count": total_mos_count,
+        "total_missing_mos": total_missing_mos,
+        "total_decode_errors": total_decode_errors,
+        "total_ic_delta": total_ic_delta, "total_ic_count": total_ic_count,
+        "worst_ic_regression": worst_ic_regression,
+        "avg_tp_reduction": avg_tp_reduction,
+        "avg_lib_chg": avg_lib_chg, "avg_lib_text_chg": avg_lib_text_chg,
+        "avg_lib_rodata_chg": avg_lib_rodata_chg,
+        "avg_bitrate_chg": avg_bitrate_chg,
+        "avg_bitrate_acc": avg_bitrate_acc, "avg_bitrate_bias": avg_bitrate_bias,
+        "total_bitrate_acc_count": total_bitrate_acc_count,
+        "bit_exact_percent": bit_exact_percent,
+        "total_regressions": total_regressions, "total_reg_critical": total_reg_critical,
+        "total_reg_significant": total_reg_significant, "total_reg_minor": total_reg_minor,
+        "total_new_wins": total_new_wins, "total_significant_wins": total_significant_wins,
+        "worst_mos_drop": worst_mos_drop, "worst_bitrate_err": worst_bitrate_err,
+        "worst_tp_scen": worst_tp_scen, "worst_tp_delta": worst_tp_delta,
+        "tp_details_source": items,
+    }
+
+
+def render_summary_table(metrics, mos_label, rc_mode):
+    """Render the '| Metric | Value |' rows for one metrics dict.
+
+    Shared by the single-mode summary and by each per-mode (ABR/VBR)
+    subsection, so the two paths can never drift apart in formatting.
+    """
+    lines = ["| Metric | Value |", "| :--- | :--- |"]
+
+    if metrics["total_regressions"] == 0:
+        lines.append("| **Regressions** | 0 ✅ |")
+    else:
+        reg_parts = []
+        if metrics["total_reg_critical"]:
+            reg_parts.append(f"{metrics['total_reg_critical']} 💀")
+        if metrics["total_reg_significant"]:
+            reg_parts.append(f"{metrics['total_reg_significant']} ❌")
+        if metrics["total_reg_minor"]:
+            reg_parts.append(f"{metrics['total_reg_minor']} ⚠️")
+        lines.append(f"| **Regressions** | {', '.join(reg_parts)} |")
+
+    if metrics["worst_mos_drop"][0] < -0.01:
+        lines.append(f"| **Worst {mos_label} Drop** | {metrics['worst_mos_drop'][0]:.2f} ({metrics['worst_mos_drop'][1]}) |")
+
+    if abs(metrics["worst_bitrate_err"][0]) > 1.0:
+        err_icon = "📈" if metrics["worst_bitrate_err"][0] > 0 else "📉"
+        lines.append(f"| **Max Bitrate Err** | {metrics['worst_bitrate_err'][0]:+.1f}% ({metrics['worst_bitrate_err'][1]}) {err_icon} |")
+
+    if metrics["total_new_wins"] > 0:
+        lines.append(f"| **New Wins** | {metrics['total_new_wins']} 🆕 |")
+
+    if metrics["total_significant_wins"] > 0:
+        lines.append(f"| **Significant Wins** | {metrics['total_significant_wins']} 🌟 |")
+
+    consist_status = f"{metrics['bit_exact_percent']:.1f}%"
+    if metrics["bit_exact_percent"] == 100.0:
+        consist_status += " (MD5 Match)"
+    lines.append(f"| **Consistency** | {consist_status} |")
+
+    if abs(metrics["avg_tp_reduction"]) > 0.1:
+        tp_icon = "🚀" if metrics["avg_tp_reduction"] > 1.0 else "📉" if metrics["avg_tp_reduction"] < -1.0 else ""
+        lines.append(f"| **Throughput (Avg)** | {metrics['avg_tp_reduction']:+.1f}% {tp_icon} |")
+
+    tp_details = []
+    items = metrics["tp_details_source"]
+    if items:
+        _, first_data = items[0]
+        base_tp = first_data.get("base_tp", {})
+        cand_tp = first_data.get("cand_tp", {})
+        for signal in sorted(cand_tp.keys()):
+            if signal == "overall":
+                continue
+            if signal in base_tp and base_tp[signal] > 0:
+                delta = (1 - cand_tp[signal] / base_tp[signal]) * 100
+                icon = "🚀" if delta > 1.0 else "📉" if delta < -1.0 else ""
+                tp_details.append(f"{signal.split('.')[0]}: {delta:+.1f}% {icon}")
+    if tp_details:
+        lines.append(f"| **TP Breakdown** | {', '.join(tp_details)} |")
+
+    if metrics["worst_tp_delta"] < -1.0:
+        lines.append(f"| **Worst-case TP Δ** | {metrics['worst_tp_delta']:.1f}% ({metrics['worst_tp_scen']}) ⚠️ |")
+
+    if abs(metrics["avg_lib_chg"]) > 0.001:
+        size_icon = "📉" if metrics["avg_lib_chg"] < -0.1 else "📈" if metrics["avg_lib_chg"] > 0.1 else ""
+        lines.append(f"| **Library Size** | {metrics['avg_lib_chg']:+.2f}% {size_icon} |")
+
+        sec_details = []
+        if abs(metrics["avg_lib_text_chg"]) > 0.001:
+            sec_details.append(f".text: {metrics['avg_lib_text_chg']:+.2f}%")
+        if abs(metrics["avg_lib_rodata_chg"]) > 0.001:
+            sec_details.append(f".rodata: {metrics['avg_lib_rodata_chg']:+.2f}%")
+        if sec_details:
+            lines.append(f"| **Footprint Breakdown** | {', '.join(sec_details)} |")
+
+    if abs(metrics["avg_bitrate_chg"]) > 0.1:
+        bitrate_icon = "📉" if metrics["avg_bitrate_chg"] < -1.0 else "📈" if metrics["avg_bitrate_chg"] > 1.0 else ""
+        lines.append(f"| **Bitrate Δ** | {metrics['avg_bitrate_chg']:+.2f}% {bitrate_icon} |")
+
+    acc_label = "Allocation Accuracy" if rc_mode == "VBR" else "Bitrate Accuracy"
+    bias_label = "Allocation Bias" if rc_mode == "VBR" else "Bitrate Bias"
+    if metrics["total_bitrate_acc_count"] > 0:
+        acc_icon = "🎯" if metrics["avg_bitrate_acc"] > 95 else "⚠️" if metrics["avg_bitrate_acc"] < 80 else ""
+        lines.append(f"| **{acc_label}** | {metrics['avg_bitrate_acc']:.1f}% {acc_icon} |")
+
+        bias_icon = "📈" if metrics["avg_bitrate_bias"] > 2.0 else "📉" if metrics["avg_bitrate_bias"] < -2.0 else "🎯"
+        bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting" if metrics["avg_bitrate_bias"] < -0.5 else "Optimal"
+        lines.append(f"| **{bias_label}** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
+
+    if metrics["total_mos_count"] > 0 and abs(metrics["total_mos_delta"] / metrics["total_mos_count"]) > 0.001:
+        lines.append(f"| **Avg {mos_label} Δ** | {metrics['avg_mos_delta_str']} |")
+
+    if metrics["total_ic_count"] > 0:
+        avg_ic_delta = metrics["total_ic_delta"] / metrics["total_ic_count"]
+        if abs(avg_ic_delta) > 0.0005:
+            ic_icon = "🎧" if avg_ic_delta > 0.002 else "📉" if avg_ic_delta < -0.002 else ""
+            lines.append(f"| **Stereo Fidelity Δ** | {avg_ic_delta:+.4f} {ic_icon} |")
+        if metrics["worst_ic_regression"][0] < -0.005:
+            lines.append(f"| **Worst Stereo Drop** | {metrics['worst_ic_regression'][0]:+.4f} ({metrics['worst_ic_regression'][1]}) |")
+
+    if metrics["total_decode_errors"] > 0:
+        gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
+        lines.append(f"| **Decode Errors** | {metrics['total_decode_errors']} 🧨 ({gate}) |")
+
+    if metrics["total_missing_mos"] > 0:
+        lines.append(f"\n⚠️ **Warning**: {metrics['total_missing_mos']} MOS scores were missing/failed (treated as ❌).")
+
+    return lines
+
+
 def main():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -644,40 +856,8 @@ def main():
     all_suite_data = {}
     overall_regression = False
     overall_missing = False
-    total_mos_delta = 0
-    total_mos_count = 0
-    total_missing_mos = 0
-    total_decode_errors = 0
-    total_ic_delta = 0
-    total_ic_count = 0
-    worst_ic_regression = (0, "N/A")
-    total_tp_reduction = 0
-    total_lib_chg = 0
-    total_lib_text_chg = 0
-    total_lib_rodata_chg = 0
-    total_bitrate_chg = 0
-    total_bitrate_count = 0
-    total_bitrate_acc_sum = 0
-    total_bitrate_acc_count = 0
-    total_bitrate_bias_sum = 0
-
-    total_regressions = 0
-    total_reg_critical = 0
-    total_reg_significant = 0
-    total_reg_minor = 0
-    total_new_wins = 0
-    total_significant_wins = 0
-    total_bit_exact = 0
-    total_cases_all = 0
-
     final_base_sha = base_sha
     final_cand_sha = cand_sha
-
-    worst_mos_drop = (0, "N/A")
-    worst_bitrate_err = (0, "N/A")
-
-    # For worst-case scenario throughput
-    scenario_tp_deltas = []
 
     for name, (base, cand) in sorted(suites.items()):
         data = analyze_pair(base, cand)
@@ -687,74 +867,29 @@ def main():
                 overall_regression = True
             if data["missing_data"]:
                 overall_missing = True
-            total_mos_delta += data["mos_delta_sum"]
-            total_mos_count += data["mos_count"]
-            total_missing_mos += data["missing_mos_count"]
-            total_decode_errors += data["decode_error_count"]
-            total_ic_delta += data["ic_delta_sum"]
-            total_ic_count += data["ic_count"]
-            if data["worst_ic_regression"][0] < worst_ic_regression[0]:
-                worst_ic_regression = data["worst_ic_regression"]
-            total_tp_reduction += data["tp_reduction"]
-            total_lib_chg += data["lib_size_chg"]
-            total_lib_text_chg += data.get("lib_text_chg", 0)
-            total_lib_rodata_chg += data.get("lib_rodata_chg", 0)
-            total_bitrate_chg += data["bitrate_chg_sum"]
-            total_bitrate_count += data["bitrate_count"]
-            total_bitrate_acc_sum += data["bitrate_acc_sum"]
-            total_bitrate_acc_count += data["bitrate_acc_count"]
-            total_bitrate_bias_sum += data["bitrate_bias_sum"]
-
-            total_regressions += len(data["regressions"])
-            total_reg_critical += len(data["reg_critical"])
-            total_reg_significant += len(data["reg_significant"])
-            total_reg_minor += len(data["reg_minor"])
-
-            total_new_wins += len(data["new_wins"])
-            total_significant_wins += len(data["significant_wins"])
-            total_bit_exact += data["bit_exact_count"]
-            total_cases_all += data["total_cases"]
-
             if not final_base_sha and data["base_sha"]:
                 final_base_sha = data["base_sha"]
             if not final_cand_sha and data["cand_sha"]:
                 final_cand_sha = data["cand_sha"]
 
-            if data["worst_mos_drop"][0] < worst_mos_drop[0]:
-                worst_mos_drop = data["worst_mos_drop"]
-            if abs(data["worst_bitrate_err"][0]) > abs(worst_bitrate_err[0]):
-                worst_bitrate_err = data["worst_bitrate_err"]
+    # Pooled across every suite: drives the pass/fail headline, which must
+    # reflect a regression in ANY mode, not an average across modes.
+    global_metrics = aggregate_suite_metrics(sorted(all_suite_data.items()))
+    avg_tp_reduction = global_metrics["avg_tp_reduction"]
+    bit_exact_percent = global_metrics["bit_exact_percent"]
+    total_new_wins = global_metrics["total_new_wins"]
+    total_significant_wins = global_metrics["total_significant_wins"]
+    total_mos_count = global_metrics["total_mos_count"]
+    total_mos_delta = global_metrics["total_mos_delta"]
+    worst_tp_delta = global_metrics["worst_tp_delta"]
 
-            for sc_name, sc_data in data["scenario_stats"].items():
-                if sc_data["tp_sum_base"] > 0:
-                    delta = (1 - sc_data["tp_sum_cand"] /
-                             sc_data["tp_sum_base"]) * 100
-                    scenario_tp_deltas.append((f"{name} / {sc_name}", delta))
-
-    avg_mos_delta_str = f"{(total_mos_delta /
-                            total_mos_count):+.3f}" if total_mos_count > 0 else "N/A"
-    avg_tp_reduction = total_tp_reduction / \
-        len(all_suite_data) if all_suite_data else 0
-    avg_lib_chg = total_lib_chg / len(all_suite_data) if all_suite_data else 0
-    avg_lib_text_chg = total_lib_text_chg / len(all_suite_data) if all_suite_data else 0
-    avg_lib_rodata_chg = total_lib_rodata_chg / len(all_suite_data) if all_suite_data else 0
-    avg_bitrate_chg = total_bitrate_chg / \
-        total_bitrate_count if total_bitrate_count > 0 else 0
-    avg_bitrate_acc = total_bitrate_acc_sum / \
-        total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
-    avg_bitrate_bias = total_bitrate_bias_sum / \
-        total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
-
-    bit_exact_percent = (
-        total_bit_exact /
-        total_cases_all *
-        100) if total_cases_all > 0 else 0
-
-    # Worst-case throughput
-    worst_tp_scen, worst_tp_delta = (None, 0)
-    if scenario_tp_deltas:
-        worst_tp_scen, worst_tp_delta = min(
-            scenario_tp_deltas, key=lambda x: x[1])
+    # Rate-control modes present in this report. When both ABR and VBR ran
+    # (the common case per docs/ci.md's matrix), the Summary and Scenario
+    # Performance tables below are split per mode -- pooling ABR's bitrate
+    # accuracy with VBR's allocation accuracy into one averaged number would
+    # hide a regression confined to a single mode.
+    modes_present = sorted({d.get("rate_control_mode", "abr")
+                            for d in all_suite_data.values()}) or ["abr"]
 
     # Name the gates that failed rather than always saying "Quality": the
     # verdict now covers footprint and throughput too, and a footprint failure
@@ -782,130 +917,28 @@ def main():
     else:
         summary_lines.append("## 📊 Benchmark Summary")
 
+    # Determine backend name across suites
+    backend = "zimtohrli"
+    for d in all_suite_data.values():
+        b = d.get("mos_backend") or d.get("mos_provider")
+        if b:
+            backend = b
+            break
+    mos_label = "Zimtohrli" if "zimtohrli" in backend else "ViSQOL" if "visqol" in backend else backend.capitalize()
+
     summary_lines.append("\n### Summary")
-    summary_lines.append("| Metric | Value |")
-    summary_lines.append("| :--- | :--- |")
-
-    # Regressions (Always shown)
-    if total_regressions == 0:
-        summary_lines.append(f"| **Regressions** | 0 ✅ |")
+    if len(modes_present) > 1:
+        # Both ABR and VBR ran: one table per mode, so a maintainer can see
+        # at a glance whether either mode specifically regressed instead of
+        # reading one number that pools both together.
+        for mode in modes_present:
+            mode_items = sorted((n, d) for n, d in all_suite_data.items()
+                                 if d.get("rate_control_mode", "abr") == mode)
+            mode_metrics = aggregate_suite_metrics(mode_items)
+            summary_lines.append(f"\n#### {mode.upper()}")
+            summary_lines.extend(render_summary_table(mode_metrics, mos_label, mode.upper()))
     else:
-        reg_parts = []
-        if total_reg_critical: reg_parts.append(f"{total_reg_critical} 💀")
-        if total_reg_significant: reg_parts.append(f"{total_reg_significant} ❌")
-        if total_reg_minor: reg_parts.append(f"{total_reg_minor} ⚠️")
-        summary_lines.append(f"| **Regressions** | {', '.join(reg_parts)} |")
-
-    # Worst-Case Outliers
-    if worst_mos_drop[0] < -0.01:
-        summary_lines.append(f"| **Worst MOS Drop** | {worst_mos_drop[0]:.2f} ({worst_mos_drop[1]}) |")
-
-    if abs(worst_bitrate_err[0]) > 1.0:
-        err_icon = "📈" if worst_bitrate_err[0] > 0 else "📉"
-        summary_lines.append(f"| **Max Bitrate Err** | {worst_bitrate_err[0]:+.1f}% ({worst_bitrate_err[1]}) {err_icon} |")
-
-    # New Wins (Only if baseline < threshold and candidate >= threshold)
-    if total_new_wins > 0:
-        summary_lines.append(f"| **New Wins** | {total_new_wins} 🆕 |")
-
-    # Significant Wins (MOS delta > 0.1)
-    if total_significant_wins > 0:
-        summary_lines.append(f"| **Significant Wins** | {total_significant_wins} 🌟 |")
-
-    # Bitstream Consistency (Against baseline)
-    consist_status = f"{bit_exact_percent:.1f}%"
-    if bit_exact_percent == 100.0:
-        consist_status += " (MD5 Match)"
-    summary_lines.append(f"| **Consistency** | {consist_status} |")
-
-    # Throughput
-    if abs(avg_tp_reduction) > 0.1:
-        tp_icon = "🚀" if avg_tp_reduction > 1.0 else "📉" if avg_tp_reduction < -1.0 else ""
-        summary_lines.append(
-            f"| **Throughput (Avg)** | {avg_tp_reduction:+.1f}% {tp_icon} |")
-
-    # Per-signal throughput deltas if available
-    tp_details = []
-    if all_suite_data:
-        first_data = list(all_suite_data.values())[0]
-        base_tp = first_data.get("base_tp", {})
-        cand_tp = first_data.get("cand_tp", {})
-        for signal in sorted(cand_tp.keys()):
-            if signal == "overall":
-                continue
-            if signal in base_tp and base_tp[signal] > 0:
-                delta = (1 - cand_tp[signal] / base_tp[signal]) * 100
-                icon = "🚀" if delta > 1.0 else "📉" if delta < -1.0 else ""
-                tp_details.append(
-                    f"{signal.split('.')[0]}: {delta:+.1f}% {icon}")
-
-    if tp_details:
-        summary_lines.append(f"| **TP Breakdown** | {', '.join(tp_details)} |")
-
-    if worst_tp_delta < -1.0:
-        summary_lines.append(
-            f"| **Worst-case TP Δ** | {worst_tp_delta:.1f}% ({worst_tp_scen}) ⚠️ |")
-
-    # Binary Size
-    if abs(avg_lib_chg) > 0.001:  # Lower threshold slightly to capture minor exact changes
-        size_icon = "📉" if avg_lib_chg < -0.1 else "📈" if avg_lib_chg > 0.1 else ""
-        summary_lines.append(
-            f"| **Library Size** | {avg_lib_chg:+.2f}% {size_icon} |")
-
-        # Section changes breakdown
-        sec_details = []
-        if abs(avg_lib_text_chg) > 0.001:
-            sec_details.append(f".text: {avg_lib_text_chg:+.2f}%")
-        if abs(avg_lib_rodata_chg) > 0.001:
-            sec_details.append(f".rodata: {avg_lib_rodata_chg:+.2f}%")
-        if sec_details:
-            summary_lines.append(
-                f"| **Footprint Breakdown** | {', '.join(sec_details)} |")
-
-
-    # Bitrate Δ
-    if abs(avg_bitrate_chg) > 0.1:
-        bitrate_icon = "📉" if avg_bitrate_chg < - \
-            1.0 else "📈" if avg_bitrate_chg > 1.0 else ""
-        summary_lines.append(
-            f"| **Bitrate Δ** | {avg_bitrate_chg:+.2f}% {bitrate_icon} |")
-
-    # Bitrate Accuracy & Bias
-    if total_bitrate_acc_count > 0:
-        acc_icon = "🎯" if avg_bitrate_acc > 95 else "⚠️" if avg_bitrate_acc < 80 else ""
-        summary_lines.append(
-            f"| **Bitrate Accuracy** | {avg_bitrate_acc:.1f}% {acc_icon} |")
-
-        bias_icon = "📈" if avg_bitrate_bias > 2.0 else "📉" if avg_bitrate_bias < -2.0 else "🎯"
-        bias_desc = "(Overshooting)" if avg_bitrate_bias > 0.5 else "(Undershooting)" if avg_bitrate_bias < -0.5 else "(Balanced)"
-        summary_lines.append(
-            f"| **Bitrate Bias** | {avg_bitrate_bias:+.1f}% {bias_desc} {bias_icon} |")
-
-    # Avg MOS Delta
-    if total_mos_count > 0 and abs(total_mos_delta / total_mos_count) > 0.001:
-        summary_lines.append(f"| **Avg MOS Delta** | {avg_mos_delta_str} |")
-
-    # Stereo Fidelity Δ (inter-channel coherence; positive = candidate truer stereo).
-    # MOS is monaural and cannot see this — see phase3_stereo.py.
-    if total_ic_count > 0:
-        avg_ic_delta = total_ic_delta / total_ic_count
-        if abs(avg_ic_delta) > 0.0005:
-            ic_icon = "🎧" if avg_ic_delta > 0.002 else "📉" if avg_ic_delta < -0.002 else ""
-            summary_lines.append(
-                f"| **Stereo Fidelity Δ** | {avg_ic_delta:+.4f} {ic_icon} |")
-        if worst_ic_regression[0] < -0.005:
-            summary_lines.append(
-                f"| **Worst Stereo Drop** | {worst_ic_regression[0]:+.4f} ({worst_ic_regression[1]}) |")
-
-    # Decode errors (candidate bitstreams ffmpeg could not decode cleanly).
-    if total_decode_errors > 0:
-        gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
-        summary_lines.append(
-            f"| **Decode Errors** | {total_decode_errors} 🧨 ({gate}) |")
-
-    if total_missing_mos > 0:
-        summary_lines.append(
-            f"\n⚠️ **Warning**: {total_missing_mos} MOS scores were missing/failed (treated as ❌).")
+        summary_lines.extend(render_summary_table(global_metrics, mos_label, modes_present[0].upper()))
 
     # Build the full report
     report = list(summary_lines)
@@ -918,27 +951,39 @@ def main():
             report.insert(3, f"- **Candidate SHA**: `{final_cand_sha}`")
 
     if not summary_only:
-        # Scenario Performance Table
+        # Scenario Performance Table. When both ABR and VBR ran, a "Mode"
+        # column keys each scenario by mode too -- otherwise an ABR scenario
+        # row would silently average in its VBR counterpart's numbers.
+        multi_mode = len(modes_present) > 1
         report.append("\n### Scenario Performance")
-        report.append("| Scenario | Avg MOS Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
-        report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+        if multi_mode:
+            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        else:
+            report.append(f"| Scenario | {mos_label} Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-        # Aggregating across all suites for scenarios
+        # Aggregating across all suites for scenarios, keyed by mode too when
+        # more than one mode is present.
         global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": []})
         for suite_data in all_suite_data.values():
+            mode = suite_data.get("rate_control_mode", "abr")
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
-                global_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
-                global_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
-                global_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
-                global_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
-                global_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
-                global_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
-                global_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
-                global_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
-                global_scenario_stats[sc_name]["mos_deltas"] += sc_stats.get("mos_deltas", [])
+                key = (sc_name, mode) if multi_mode else sc_name
+                global_scenario_stats[key]["mos_delta"] += sc_stats["mos_delta_sum"]
+                global_scenario_stats[key]["mos_count"] += sc_stats["mos_count"]
+                global_scenario_stats[key]["ic_delta"] += sc_stats["ic_delta_sum"]
+                global_scenario_stats[key]["ic_count"] += sc_stats["ic_count"]
+                global_scenario_stats[key]["tp_cand"] += sc_stats["tp_sum_cand"]
+                global_scenario_stats[key]["tp_base"] += sc_stats["tp_sum_base"]
+                global_scenario_stats[key]["acc_sum"] += sc_stats["bitrate_acc_sum"]
+                global_scenario_stats[key]["acc_count"] += sc_stats["bitrate_acc_count"]
+                global_scenario_stats[key]["mos_deltas"] += sc_stats.get("mos_deltas", [])
 
-        for sc_name in sorted(global_scenario_stats.keys(), key=get_scenario_sort_key):
-            gs = global_scenario_stats[sc_name]
+        sort_key = (lambda k: (get_scenario_sort_key(k[0]), k[1])) if multi_mode else get_scenario_sort_key
+        for key in sorted(global_scenario_stats.keys(), key=sort_key):
+            gs = global_scenario_stats[key]
+            sc_name = key[0] if multi_mode else key
             sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
             sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
             sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
@@ -954,11 +999,17 @@ def main():
             else:
                 sc_ci, sc_wl = "N/A", "N/A"
 
-            report.append(
-                f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+            if multi_mode:
+                report.append(
+                    f"| {sc_name} | {key[1].upper()} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
+                    f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+            else:
+                report.append(
+                    f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
+                    f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
 
         # 1. Collapsible Details: Regressions
+        total_regressions = global_metrics["total_regressions"]
         if total_regressions > 0:
             report.append(
                 "\n<details><summary><b>❌ View Regression Details ({})</b></summary>\n".format(total_regressions))
@@ -966,7 +1017,7 @@ def main():
                 if data["regressions"]:
                     report.append(f"\n#### {name}")
                     report.append(
-                        "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                     report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                     for r in data["regressions"]:
                         report.append(r["line"])
@@ -1012,7 +1063,7 @@ def main():
 
             if data["new_wins"]:
                 report.append("\n**🆕 New Wins**")
-                report.append("| Test Case | MOS (Base) | Delta |")
+                report.append(f"| Test Case | {mos_label} (Base) | Delta |")
                 report.append("| :--- | :---: | :---: |")
                 for w in data["new_wins"]:
                     report.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
@@ -1021,7 +1072,7 @@ def main():
             if data["significant_wins"]:
                 report.append("\n**🌟 Significant Wins**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for w in data["significant_wins"]:
                     report.append(w["line"])
@@ -1029,7 +1080,7 @@ def main():
             if data["opportunities"]:
                 report.append("\n**💡 Opportunities**")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for o in data["opportunities"]:
                     report.append(o["line"])
@@ -1038,7 +1089,7 @@ def main():
                 report.append(
                     f"\n<details><summary>View all {len(data['all_cases'])} cases for {name}</summary>\n")
                 report.append(
-                    "| Test Case | Status | MOS (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                 for c in data["all_cases"]:
                     report.append(c["line"])

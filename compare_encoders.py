@@ -111,8 +111,6 @@ class FAACEncoder(Encoder):
         super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        # faac handles LC/HE selection internally, but we can nudge it if needed.
-        # However, it doesn't have an explicit 'aot' flag for HE-AAC in the CLI.
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
@@ -131,7 +129,9 @@ class FFmpegEncoder(Encoder):
             cmd.extend(["-profile:a", "aac_he"])
         if self.codec_name == "aac" and self.supports_nmr:
             cmd.extend(["-aac_coder", "nmr"])
-        cmd.extend(["-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path])
+
+        cmd.extend(["-b:a", f"{bitrate_kbps}k"])
+        cmd.extend(["-ac", str(channels), output_path])
         return cmd
 
 class FDKAACEncoder(Encoder):
@@ -140,8 +140,9 @@ class FDKAACEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         profile = "5" if use_he_aac(bitrate_kbps, channels, sample_rate) else "2"
-        # fdkaac might be picky about 'k' suffix vs bps depending on version
-        return [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels), "-o", output_path, input_path]
+        cmd = [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels)]
+        cmd.extend(["-o", output_path, input_path])
+        return cmd
 
 class AACEncEncoder(Encoder):
     def __init__(self, name, binary_path):
@@ -194,7 +195,8 @@ def detect_encoders(args):
         supports_nmr = False
         try:
             res = subprocess.run([ffmpeg_path, "-h", "encoder=aac"], capture_output=True, text=True)
-            supports_nmr = "nmr" in res.stdout
+            import re
+            supports_nmr = bool(re.search(r"\bnmr\b", res.stdout))
         except Exception:
             pass
         encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac", supports_nmr=supports_nmr))
@@ -321,7 +323,7 @@ def main():
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
-    parser.add_argument("--backend", default="auto", help="ViSQOL backend")
+    parser.add_argument("--backend", default="auto", help="Perceptual MOS backend")
 
     args = parser.parse_args()
 
@@ -389,10 +391,13 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
+                "aac": f"{key}.aac",
                 "mos": None
             }
             shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
@@ -420,7 +425,9 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             if key in updated_bridge["matrix"]:
                 res["mos"] = updated_bridge["matrix"][key].get("mos")
 
@@ -433,10 +440,13 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
+                "aac": f"{key}.aac",
                 "ic_err": None
             }
             # Ensure files exist in output_dir
@@ -466,12 +476,15 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            key = f"res_{i}"
+            enc_clean = res["encoder"].replace(" ", "_")
+            rc_clean = res.get("rate_control", "abr")
+            key = f"res_{rc_clean}_{enc_clean}_{i}"
             if key in updated_bridge["matrix"]:
                 res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
         if os.path.exists(bridge_json_stereo):
             os.remove(bridge_json_stereo)
+
 
     if os.path.exists("bridge_results.json"):
         os.remove("bridge_results.json")
@@ -487,7 +500,11 @@ def format_size(bytes_val):
     return f"{bytes_val / 1024:.1f} KB"
 
 def generate_leaderboard(encoders, results, output_path, scenario_list):
-    # Aggregation
+    # Aggregation keyed by encoder name. Every encoder is compared at the
+    # same target bitrate (there is no cross-encoder VBR/quality mode here --
+    # each encoder's own quality knob isn't comparable to any other's, see
+    # compare_encoders.py's Encoder.get_encode_cmd), so there is nothing left
+    # to key on beyond the encoder itself.
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "ic_sum": 0, "ic_count": 0,
@@ -496,7 +513,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         "valid_count": 0, "total_count": 0
     }))
 
-    # Track top errors for troubleshooting
     error_counts = defaultdict(int)
 
     for res in results:
@@ -505,7 +521,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
         if not res.get("decode_valid"):
             err_msg = res.get("decode_error") or "Unknown error"
-            # Normalize error message for aggregation (take first line or short version)
             short_err = err_msg.split("\n")[0].split(":")[0].strip()
             error_counts[f"{e}: {short_err}"] += 1
 
@@ -532,10 +547,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         if res.get("decode_valid"):
             stats[e][s]["valid_count"] += 1
 
-    # Overall rankings
     encoder_info = {e.name: e for e in encoders}
+    all_encoder_names = sorted(stats.keys())
+
     overall = {}
-    for e_name in encoder_info:
+    for e_name in all_encoder_names:
         e_mos, e_speed, e_br_err, e_ic = [], [], [], []
         e_mos_min = 6.0
         e_total = e_valid = 0
@@ -559,54 +575,50 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                 e_ic.append(s_stats["ic_sum"] / s_stats["ic_count"])
                 has_data = True
 
-        if has_data:
-            overall[e_name] = {
-                "avg_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
-                "worst_mos": e_mos_min if e_mos else 0,
-                "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
-                "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
-                "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
-                "size_kb": encoder_info[e_name].size / 1024,
-                "text_size": encoder_info[e_name].text_size,
-                "rodata_size": encoder_info[e_name].rodata_size,
-                "bss_size": encoder_info[e_name].bss_size,
-                "data_size": encoder_info[e_name].data_size,
-                "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
-            }
+        if not has_data:
+            continue
 
-    # Rank by Avg MOS if available
-    has_mos = any(o["avg_mos"] > 0 for o in overall.values())
-    sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["avg_mos"], reverse=True) if has_mos else sorted(overall.keys())
+        enc_obj = encoder_info.get(e_name)
+        overall[e_name] = {
+            "encoder": e_name,
+            "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
+            "worst_mos": e_mos_min if e_mos else 0,
+            "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
+            "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
+            "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
+            "text_size": enc_obj.text_size if enc_obj else 0,
+            "rodata_size": enc_obj.rodata_size if enc_obj else 0,
+            "valid_rate": (e_valid / e_total * 100) if e_total > 0 else 0
+        }
+
+    has_mos = any(o["overall_mos"] > 0 for o in overall.values())
+    sorted_encoders = sorted(overall.keys(), key=lambda x: overall[x]["overall_mos"], reverse=True) if has_mos else sorted(overall.keys())
 
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Avg MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
+        f.write("| Rank | Encoder | Status | Overall MOS | Worst MOS | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
-        best_mos = max(o['avg_mos'] for o in overall.values()) if overall else 0
+        best_mos = max(o['overall_mos'] for o in overall.values()) if overall else 0
         best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
-
         has_ic = any(o['avg_ic'] > 0 for o in overall.values())
-        # Stereo Fidelity = 1.0 - error. Higher is better.
         best_ic = max(1.0 - o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
-
         valid_br = [o['avg_br_err'] for o in overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
         for i, e_name in enumerate(sorted_encoders):
             o = overall[e_name]
-            rank_str = f"🏆 {i+1}" if i == 0 and o['avg_mos'] > 0 else f"{i+1}"
+            rank_str = f"🏆 {i+1}" if i == 0 and o['overall_mos'] > 0 else f"{i+1}"
 
             if o['valid_rate'] == 100:
                 status_str = "OK"
             else:
-                # Find most common error for this encoder
-                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name}: ")}
+                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name}:")}
                 top_err = max(relevant_errors, key=relevant_errors.get) if relevant_errors else "Err"
                 status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
-            m_str = f"**{o['avg_mos']:.3f}**" if o['avg_mos'] == best_mos and best_mos > 0 else f"{o['avg_mos']:.3f}"
+            m_str = f"**{o['overall_mos']:.3f}**" if o['overall_mos'] == best_mos and best_mos > 0 else f"{o['overall_mos']:.3f}"
 
             ic_val = o['avg_ic']
             if ic_val > 0:
@@ -617,35 +629,39 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
-
             rom_str = format_size(o['text_size'] + o['rodata_size'])
+
             f.write(f"| {rank_str} | {e_name} | {status_str} | {m_str} | {o['worst_mos']:.3f} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
 
-        # Per-Scenario Tables
-        scenarios = sorted(scenario_list, key=get_scenario_sort_key)
+        # Per-Scenario Tables in Collapsible Section
+        f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
 
-        # 1. Quality
-        f.write("\n## Per-Scenario Quality (MOS)\n\n")
-        f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
+        scenarios = sorted(scenario_list, key=get_scenario_sort_key)
+        all_em_keys_sorted = sorted(overall.keys())
+        em_headers = all_em_keys_sorted
+
+        # 1. Perceptual Quality (MOS)
+        f.write("\n### Per-Scenario Perceptual Quality (MOS)\n\n")
+        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(stats[e][s]["mos_sum"]/stats[e][s]["mos_count"] for e in sorted_encoders if stats[e][s]["mos_count"] > 0) if any(stats[e][s]["mos_count"] > 0 for e in sorted_encoders) else 0
+            best_val = max(stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] for em in all_em_keys_sorted if stats[em][s]["mos_count"] > 0) if any(stats[em][s]["mos_count"] > 0 for em in all_em_keys_sorted) else 0
             line = f"| {s} |"
-            for e in sorted_encoders:
-                val = stats[e][s]["mos_sum"]/stats[e][s]["mos_count"] if stats[e][s]["mos_count"] > 0 else None
+            for em in all_em_keys_sorted:
+                val = stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] if stats[em][s]["mos_count"] > 0 else None
                 line += f" **{val:.3f}** |" if val == best_val and best_val > 0 else (f" {val:.3f} |" if val is not None else " N/A |")
             f.write(line + "\n")
 
         # 2. Stereo
-        f.write("\n## Per-Scenario Stereo Fidelity\n\n")
+        f.write("\n### Per-Scenario Stereo Fidelity\n\n")
         f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
-        f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
+        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(1.0 - (stats[e][s]["ic_sum"]/stats[e][s]["ic_count"]) for e in sorted_encoders if stats[e][s]["ic_count"] > 0) if any(stats[e][s]["ic_count"] > 0 for e in sorted_encoders) else -1.0
+            best_val = max(1.0 - (stats[em][s]["ic_sum"]/stats[em][s]["ic_count"]) for em in all_em_keys_sorted if stats[em][s]["ic_count"] > 0) if any(stats[em][s]["ic_count"] > 0 for em in all_em_keys_sorted) else -1.0
             line = f"| {s} |"
-            for e in sorted_encoders:
-                val = stats[e][s]["ic_sum"]/stats[e][s]["ic_count"] if stats[e][s]["ic_count"] > 0 else None
+            for em in all_em_keys_sorted:
+                val = stats[em][s]["ic_sum"]/stats[em][s]["ic_count"] if stats[em][s]["ic_count"] > 0 else None
                 if val is not None:
                     fid = 1.0 - val
                     line += f" **{fid:.4f}** |" if fid == best_val and best_val != -1.0 else f" {fid:.4f} |"
@@ -654,28 +670,30 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             f.write(line + "\n")
 
         # 3. Bitrate Error
-        f.write("\n## Per-Scenario Bitrate Accuracy (Error %)\n\n")
-        f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
+        f.write("\n### Per-Scenario Bitrate Accuracy (Error %)\n\n")
+        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = min(stats[e][s]["br_err_sum"]/stats[e][s]["br_err_count"] for e in sorted_encoders if stats[e][s]["br_err_count"] > 0) if any(stats[e][s]["br_err_count"] > 0 for e in sorted_encoders) else float('inf')
+            best_val = min(stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] for em in all_em_keys_sorted if stats[em][s]["br_err_count"] > 0) if any(stats[em][s]["br_err_count"] > 0 for em in all_em_keys_sorted) else float('inf')
             line = f"| {s} |"
-            for e in sorted_encoders:
-                val = stats[e][s]["br_err_sum"]/stats[e][s]["br_err_count"] if stats[e][s]["br_err_count"] > 0 else None
+            for em in all_em_keys_sorted:
+                val = stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] if stats[em][s]["br_err_count"] > 0 else None
                 line += f" **{val:.1f}%** |" if val == best_val and best_val != float('inf') else (f" {val:.1f}% |" if val is not None else " N/A |")
             f.write(line + "\n")
 
         # 4. Efficiency
-        f.write("\n## Per-Scenario Efficiency (Speed xRT)\n\n")
-        f.write("| Scenario | " + " | ".join(sorted_encoders) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_encoders)) + " |\n")
+        f.write("\n### Per-Scenario Efficiency (Speed xRT)\n\n")
+        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
         for s in scenarios:
-            best_val = max(stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] for e in sorted_encoders if stats[e][s]["speed_count"] > 0) if any(stats[e][s]["speed_count"] > 0 for e in sorted_encoders) else 0
+            best_val = max(stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] for em in all_em_keys_sorted if stats[em][s]["speed_count"] > 0) if any(stats[em][s]["speed_count"] > 0 for em in all_em_keys_sorted) else 0
             line = f"| {s} |"
-            for e in sorted_encoders:
-                val = stats[e][s]["speed_sum"]/stats[e][s]["speed_count"] if stats[e][s]["speed_count"] > 0 else None
+            for em in all_em_keys_sorted:
+                val = stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] if stats[em][s]["speed_count"] > 0 else None
                 line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
             f.write(line + "\n")
+
+        f.write("\n</details>\n")
 
         if error_counts:
             f.write("\n## Failure Analysis\n\n")
@@ -686,7 +704,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
-        f.write("- **Avg MOS**: Perceptual quality (1-5, **Higher is Better**)\n")
+        f.write("- **Quality (MOS)**: Perceptual audio quality via Zimtohrli or ViSQOL (1-5, **Higher is Better**)\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")

@@ -72,14 +72,17 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None):
+def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None, rate_control="abr"):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.aac")
 
     # Determine encoding parameters
     cmd = [faac_bin_path, "-o", output_path, input_path]
-    cmd.extend(["-b", str(cfg["bitrate"])])
+    if rate_control == "vbr":
+        cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
+    else:
+        cmd.extend(["-b", str(cfg["bitrate"])])
     if extra_args:
         cmd.extend(extra_args)
 
@@ -110,6 +113,30 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
         if not valid:
             print(f"    [DECODE ERROR] {sample}: {decode_err}")
 
+        # Rate control bias & accuracy calculations per SOP
+        rc_mode = "abr" if rate_control == "abr" else "vbr"
+        expected_rate = cfg.get("bitrate")
+        bias_ratio = None
+        bias_percent = None
+        accuracy_score = None
+        bias_status = "Optimal"
+
+        if actual_bitrate is not None and expected_rate and expected_rate > 0:
+            bias_ratio = actual_bitrate / expected_rate
+            bias_percent = (bias_ratio - 1.0) * 100
+            accuracy_score = max(0.0, 1.0 - abs((actual_bitrate - expected_rate) / expected_rate))
+
+            if rc_mode == "abr":
+                if bias_ratio > 1.05:
+                    bias_status = "Overshoot"
+                elif bias_ratio < 0.95:
+                    bias_status = "Undershoot"
+            else:
+                if bias_ratio > 1.15:
+                    bias_status = "Overshoot"
+                elif bias_ratio < 0.85:
+                    bias_status = "Undershoot"
+
         # Provenance hash
         prov_hash = calculate_provenance_hash(faac_bin_path, lib_path, extra_args, input_path)
 
@@ -118,6 +145,12 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             "size": aac_size,
             "bitrate": actual_bitrate,
             "bitrate_target": cfg.get("bitrate"),
+            "expected_bitrate": expected_rate,
+            "rate_control_mode": rc_mode,
+            "bias_ratio": bias_ratio,
+            "bias_percent": bias_percent,
+            "accuracy_score": accuracy_score,
+            "bias_status": bias_status,
             "time": t_duration,
             "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],
@@ -145,7 +178,8 @@ def run_benchmark(
         extra_args=None,
         gate=False,
         build_dir=None,
-        throughput_only=False):
+        throughput_only=False,
+        rate_control="abr"):
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -253,7 +287,8 @@ def run_benchmark(
                         data_dir,
                         precision,
                         env,
-                        extra_args): sample for sample in samples}
+                        extra_args,
+                        rate_control): sample for sample in samples}
                 for i, future in enumerate(
                         concurrent.futures.as_completed(futures)):
                     result = future.result()
@@ -345,6 +380,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
+    parser.add_argument("--rate-control", choices=["abr", "vbr"], default="abr", help="Rate control mode (abr or vbr)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge it into an existing output JSON. "
@@ -377,7 +413,8 @@ if __name__ == "__main__":
         extra_args=extra_args,
         gate=args.gate,
         build_dir=args.build_dir,
-        throughput_only=args.throughput_only)
+        throughput_only=args.throughput_only,
+        rate_control=args.rate_control)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

@@ -36,26 +36,27 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
+| `--rate-control abr\|vbr` | Choose rate control mode (`abr` using `-b` bitrates, or `vbr` using `-q` quality targets) |
 | `--scenarios 16k_mono_16k,48k_stereo_64k` | Restrict to specific scenarios (default: all) |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
 | `--extra-args "--tns"` | Pass extra flags through to the faac encoder |
-| `--skip-mos` / `--skip-stereo` | Skip the ViSQOL / stereo-image phases |
-| `--backend auto\|visqol-python\|visqol\|docker` | Choose the ViSQOL backend |
+| `--skip-mos` / `--skip-stereo` | Skip the perceptual MOS / stereo-image phases |
+| `--backend auto\|zimtohrli\|visqol-python\|visqol\|docker` | Choose the perceptual MOS backend |
 | `--sha $(git rev-parse HEAD)` | Stamp results with a commit SHA |
 
 The script runs three phases:
 
 1. **Phase 1** — encodes samples, measures throughput, library size, and
-   decode-validates each encode.
-2. **Phase 2** — perceptual quality (MOS) via ViSQOL.
+   decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
+2. **Phase 2** — perceptual quality (MOS) via Zimtohrli (default) or ViSQOL.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
 
-### Selecting the ViSQOL backend
+### Selecting the perceptual MOS backend
 
-In `auto` mode (default) the suite tries, in order: `visqol-python` (preferred),
+In `auto` mode (default) the suite tries, in order: `zimtohrli` (preferred), `visqol-python`,
 the `visqol` binary (PATH or `VISQOL_BIN`), Docker/Podman container, then the
 legacy `visqol_py`. Force one explicitly:
 
@@ -122,7 +123,7 @@ a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 
 ## Cross-Encoder Comparison (`compare_encoders.py`)
 
-Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard.
+Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard. Every encoder is compared at the same target bitrate; there is no VBR/quality-knob comparison mode here, since each encoder's own quality scale (FAAC's `-q`, FDK-AAC's `-vbr`, etc.) isn't calibrated against any other's.
 
 ```bash
 python3 compare_encoders.py [options]

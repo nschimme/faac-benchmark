@@ -40,7 +40,7 @@ jobs:
             GATE_FLAG="--gate"
           fi
 
-          # visqol-python is installed via requirements.txt and bundles its own models.
+          # Zimtohrli is installed via requirements.txt and acts as default perceptual engine.
           python3 compare_encoders.py $GATE_FLAG --output leaderboard_ci.md
 
       - name: Upload Leaderboard

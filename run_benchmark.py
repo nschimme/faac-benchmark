@@ -55,11 +55,12 @@ def main():
     parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
     parser.add_argument("--exclude-tests", help="Comma-separated list of test filename globs to exclude")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
-    parser.add_argument("--backend", choices=["auto", "docker", "visqol", "visqol-py", "visqol-python"],
-                        default="auto", help="ViSQOL backend to use")
+    parser.add_argument("--backend", choices=["auto", "zimtohrli", "docker", "visqol", "visqol-py", "visqol-python"],
+                        default="auto", help="Perceptual MOS backend to use")
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
     parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
+    parser.add_argument("--rate-control", choices=["abr", "vbr"], default="abr", help="Rate control mode (abr or vbr)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
     parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
@@ -139,7 +140,8 @@ def main():
         cmd_phase1 = [
             sys.executable, phase1_script,
             args.faac_bin, args.lib_path, run["tag"], run["output"],
-            "--coverage", str(args.coverage)
+            "--coverage", str(args.coverage),
+            "--rate-control", args.rate_control
         ]
         if args.sha:
             cmd_phase1.extend(["--sha", args.sha])
@@ -309,6 +311,7 @@ def main():
                 os.path.join(script_dir, "output"),
                 external_data_dir,
             ], check=True)
+
 
         print(f">>> Benchmark run {run['tag']} complete.")
         run_results.append(run)

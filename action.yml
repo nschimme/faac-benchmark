@@ -39,9 +39,9 @@ inputs:
     description: 'Comma-separated list of test filename globs to exclude'
     required: false
   backend:
-    description: 'ViSQOL backend to use (auto, docker, visqol, visqol-py, visqol-python)'
+    description: 'Perceptual MOS backend to use (auto, zimtohrli, docker, visqol, visqol-py, visqol-python)'
     required: false
-    default: 'visqol-python'
+    default: 'auto'
   throughput-only:
     description: 'Re-measure only throughput and merge into an existing output JSON. Use to refresh a cached baseline on the machine that will measure the candidate.'
     required: false
@@ -50,6 +50,10 @@ inputs:
     description: 'Use the fast fixed gate subset (config.GATE_CLIPS) instead of the full corpus'
     required: false
     default: 'false'
+  rate-control:
+    description: 'Rate control mode (abr or vbr)'
+    required: false
+    default: 'abr'
   build-dir:
     description: 'Meson build directory, for per-object sizes and toolchain identity'
     required: false
@@ -149,6 +153,10 @@ runs:
 
         if [ "${{ inputs.gate }}" == "true" ]; then
           EXTRA_ARGS="$EXTRA_ARGS --gate"
+        fi
+
+        if [ -n "${{ inputs.rate-control }}" ]; then
+          EXTRA_ARGS="$EXTRA_ARGS --rate-control ${{ inputs.rate-control }}"
         fi
 
         if [ "${{ inputs.throughput-only }}" == "true" ]; then
