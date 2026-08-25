@@ -20,6 +20,8 @@
 import os
 import sys
 import json
+import math
+import hashlib
 import tempfile
 import concurrent.futures
 import subprocess
@@ -232,29 +234,56 @@ def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
                 if z_engine:
                     ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
                     dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
+
+                    # Zimtohrli requires 48kHz input and does not check or
+                    # resample internally -- feeding it a lower rate silently
+                    # mis-scales the signal against its psychoacoustic filterbank.
+                    ZIMT_RATE = 48000
+                    if sr_r != ZIMT_RATE:
+                        g = math.gcd(ZIMT_RATE, sr_r)
+                        ref_data = scipy.signal.resample_poly(
+                            ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
+                    if sr_d != ZIMT_RATE:
+                        g = math.gcd(ZIMT_RATE, sr_d)
+                        dec_data = scipy.signal.resample_poly(
+                            dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
+
+                    # Align using a mono mixdown for the cross-correlation lag
+                    # estimate, then apply that lag per-channel below --
+                    # Zimtohrli has no native multi-channel mode (per its
+                    # authors: "compares a single reference channel with a
+                    # single distortion channel"), so per-channel distance,
+                    # combined via L2, is the tool's own recommended approach
+                    # for stereo -- averaging channels into one signal before
+                    # scoring would dilute artifacts present in only one channel.
                     r_mono = ref_data.mean(axis=1)
                     d_mono = dec_data.mean(axis=1)
 
-                    n_search = min(len(r_mono), len(d_mono), sr_r * 3)
+                    n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
                     r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
                     d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
                     corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
                     lag = int(np.argmax(corr)) - (n_search - 1)
 
                     if lag < 0:
-                        dec_aligned = d_mono[-lag:]
-                        ref_aligned = r_mono[:len(r_mono) + lag]
+                        dec_aligned = dec_data[-lag:]
+                        ref_aligned = ref_data[:len(ref_data) + lag]
                     elif lag > 0:
-                        ref_aligned = r_mono[lag:]
-                        dec_aligned = d_mono[:len(d_mono) - lag]
+                        ref_aligned = ref_data[lag:]
+                        dec_aligned = dec_data[:len(dec_data) - lag]
                     else:
-                        ref_aligned, dec_aligned = r_mono, d_mono
+                        ref_aligned, dec_aligned = ref_data, dec_data
 
                     n = min(len(ref_aligned), len(dec_aligned))
-                    dist = z_engine.distance(
-                        np.ascontiguousarray(ref_aligned[:n], dtype=np.float32),
-                        np.ascontiguousarray(dec_aligned[:n], dtype=np.float32)
-                    )
+                    num_channels = ref_aligned.shape[1]
+                    per_channel_dist = [
+                        z_engine.distance(
+                            np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
+                            np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
+                        )
+                        for ch in range(num_channels)
+                    ]
+                    dist = math.sqrt(sum(d * d for d in per_channel_dist))
                     return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
             elif backend == "zimtohrli":
                 print("  ERROR: zimtohrli not found but requested")
@@ -308,7 +337,29 @@ def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
     return None, "none"
 
 
-def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None):
+def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
+    """Converts ref_input_path to a (v_rate, v_channels) WAV under cache_dir,
+    reusing a prior conversion for the same (path, rate, channels) key.
+    The same source clip is typically scored against many bitrates/scenarios
+    that share identical conversion parameters (e.g. all 48k_stereo_* run the
+    same clips at 48kHz/2ch), so this avoids redundant ffmpeg decodes of the
+    reference audio. Safe under concurrent workers: the conversion is written
+    to a private temp file and atomically renamed into place, so a cache-miss
+    race just repeats the (idempotent) conversion rather than corrupting it."""
+    key = hashlib.sha1(f"{ref_input_path}|{v_rate}|{v_channels}".encode()).hexdigest()
+    cached_path = os.path.join(cache_dir, f"{key}.wav")
+    if os.path.exists(cached_path):
+        return cached_path
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=cache_dir)
+    os.close(fd)
+    if not wav_conv(ref_input_path, tmp_path, v_rate, v_channels):
+        os.unlink(tmp_path)
+        return None
+    os.replace(tmp_path, cached_path)
+    return cached_path
+
+def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None, ref_wav_cache_dir=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
         return key, None, "none"
@@ -320,10 +371,16 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
     v_channels = info["v_channels"]
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        v_ref = os.path.join(tmpdir, "vref.wav")
         v_deg = os.path.join(tmpdir, "vdeg.wav")
 
-        if not wav_conv(ref_input_path, v_ref, v_rate, v_channels):
+        if ref_wav_cache_dir:
+            v_ref = get_cached_ref_wav(ref_wav_cache_dir, ref_input_path, v_rate, v_channels)
+        else:
+            v_ref = os.path.join(tmpdir, "vref.wav")
+            if not wav_conv(ref_input_path, v_ref, v_rate, v_channels):
+                v_ref = None
+
+        if not v_ref:
             return key, None, "none"
 
         if not wav_conv(aac_path, v_deg, v_rate, v_channels):
@@ -412,9 +469,10 @@ def main():
         else:
             print(f"Computing MOS for {len(still_pending)} samples using backend '{args.backend}' ({num_cpus} cores)...")
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+        with tempfile.TemporaryDirectory() as ref_wav_cache_dir, \
+             concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
             futures = {
-                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, args.backend, aac_files): key
+                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, args.backend, aac_files, ref_wav_cache_dir): key
                 for key, entry in still_pending.items()
             }
 
