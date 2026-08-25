@@ -8,11 +8,12 @@ A decrease in NPER with increasing bitrate validates that the metric is working.
 
 Usage:
   score_preecho.py REF.wav DEC.wav [--verbose]
-  score_preecho.py --validate FAAC_BIN [--bitrates 20,40,80] [--sr 48000]
+  score_preecho.py --validate FAAC_BIN [--bitrates 20,40,80]
   score_preecho.py --sweep   FAAC_BIN REF.wav [--bitrates 20,40,80]
 """
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -24,6 +25,9 @@ import soundfile as sf
 
 
 # ── algorithm constants ────────────────────────────────────────────────────────
+ZIMT_RATE         = 48000  # Zimtohrli hard-assumes this rate and does not
+                            # resample internally; HOP/WIN_LEN/MIN_ONSET_SPACING
+                            # below are also calibrated in samples at this rate.
 HOP               = 512    # STFT hop length (~10 ms at 48 kHz)
 WIN_LEN           = 2048   # STFT window (4× hop → good freq resolution)
 MIN_ONSET_SPACING = 1024   # minimum samples between detected onsets (~21 ms)
@@ -33,9 +37,20 @@ NOISE_FLOOR_DB    = -80.0  # log floor relative to onset peak energy
 # ── audio I/O ─────────────────────────────────────────────────────────────────
 
 def load_mono(path):
-    """Load audio, mix to mono, return (float32 array, sample_rate)."""
+    """Load audio, mix to mono, resample to 48kHz, return (float32 array, sample_rate).
+
+    Every caller (onset detection, NPER windowing, zimtohrli_mos) assumes
+    48kHz -- resampling once here, at the one place audio enters the
+    pipeline, keeps that assumption true regardless of the source file's
+    native rate instead of silently mis-scaling non-48kHz input downstream.
+    """
     audio, sr = sf.read(path, dtype='float32', always_2d=True)
-    return audio.mean(axis=1), int(sr)
+    mono = audio.mean(axis=1)
+    if sr != ZIMT_RATE:
+        g = math.gcd(ZIMT_RATE, sr)
+        mono = scipy.signal.resample_poly(mono, ZIMT_RATE // g, sr // g)
+        sr = ZIMT_RATE
+    return mono.astype(np.float32), sr
 
 
 def decode_aac(aac_path, wav_path, sr=48000, channels=1):
