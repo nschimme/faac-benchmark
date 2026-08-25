@@ -21,6 +21,7 @@ import wave
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import wav_conv
 
 # Band edges in Hz. The 8-12k / 12-18.4k split is deliberate: at HE-AAC's

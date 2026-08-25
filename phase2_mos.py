@@ -218,6 +218,96 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "v_channels": 1 if cfg["mode"] == "speech" else 2
     }
 
+def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
+    """Score an already-converted (matching rate/channels) ref/deg WAV pair
+    against the configured backend stack: zimtohrli (default/preferred),
+    then visqol-python, then the visqol binary, then legacy visqol_py.
+    Returns (mos, backend_used); mos is None on failure or if the requested
+    backend isn't available."""
+    try:
+        # 1. Try Zimtohrli (Default)
+        if backend in ["auto", "zimtohrli"]:
+            if HAS_ZIMTOHRLI:
+                z_engine = get_process_zimtohrli()
+                if z_engine:
+                    ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
+                    dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
+                    r_mono = ref_data.mean(axis=1)
+                    d_mono = dec_data.mean(axis=1)
+
+                    n_search = min(len(r_mono), len(d_mono), sr_r * 3)
+                    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+                    d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+                    corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
+                    lag = int(np.argmax(corr)) - (n_search - 1)
+
+                    if lag < 0:
+                        dec_aligned = d_mono[-lag:]
+                        ref_aligned = r_mono[:len(r_mono) + lag]
+                    elif lag > 0:
+                        ref_aligned = r_mono[lag:]
+                        dec_aligned = d_mono[:len(d_mono) - lag]
+                    else:
+                        ref_aligned, dec_aligned = r_mono, d_mono
+
+                    n = min(len(ref_aligned), len(dec_aligned))
+                    dist = z_engine.distance(
+                        np.ascontiguousarray(ref_aligned[:n], dtype=np.float32),
+                        np.ascontiguousarray(dec_aligned[:n], dtype=np.float32)
+                    )
+                    return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
+            elif backend == "zimtohrli":
+                print("  ERROR: zimtohrli not found but requested")
+                return None, "zimtohrli"
+
+        # 2. Try visqol-python (Modern)
+        if backend in ["auto", "visqol-python"]:
+            if HAS_VISQOL_PYTHON:
+                api = get_process_visqol_python(mode_str, MODEL_DIR)
+                if api:
+                    result = api.measure(v_ref, v_deg)
+                    return float(result.moslqo), "visqol-python"
+            elif backend == "visqol-python":
+                print("  ERROR: visqol-python not found but requested")
+                return None, "visqol-python"
+
+        # 3. Try Binary Mode
+        if backend in ["auto", "visqol"]:
+            if VISQOL_BIN and os.path.exists(VISQOL_BIN):
+                cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
+                if mode_str == "speech":
+                    cmd.append("--use_speech_mode")
+                    if MODEL_DIR:
+                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
+                else:
+                    if MODEL_DIR:
+                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, AUDIO_MODEL_NAME)])
+
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                for line in result.stdout.splitlines():
+                    if "MOS-LQO:" in line:
+                        return float(line.split()[-1]), "visqol"
+            elif backend == "visqol":
+                print("  ERROR: visqol binary not found but requested")
+                return None, "visqol"
+
+        # 4. Try visqol_py (Legacy)
+        if backend in ["auto", "visqol-py"]:
+            if HAS_VISQOL_PY:
+                visqol = get_process_visqol_py(mode_str)
+                if visqol:
+                    result = visqol.measure(v_ref, v_deg)
+                    return float(result.moslqo), "visqol-py"
+            elif backend == "visqol-py":
+                print("  ERROR: visqol-py not found but requested")
+                return None, "visqol-py"
+
+    except Exception as e:
+        print(f"  Error computing MOS: {e}")
+
+    return None, "none"
+
+
 def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
@@ -240,89 +330,10 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
             print(f"  FFmpeg decode gate failed for {key}")
             return key, 1.0, "none"
 
-        try:
-            # 1. Try Zimtohrli (Default)
-            if backend in ["auto", "zimtohrli"]:
-                if HAS_ZIMTOHRLI:
-                    z_engine = get_process_zimtohrli()
-                    if z_engine:
-                        ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
-                        dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
-                        r_mono = ref_data.mean(axis=1)
-                        d_mono = dec_data.mean(axis=1)
-
-                        n_search = min(len(r_mono), len(d_mono), sr_r * 3)
-                        r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-                        d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
-                        corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
-                        lag = int(np.argmax(corr)) - (n_search - 1)
-
-                        if lag < 0:
-                            dec_aligned = d_mono[-lag:]
-                            ref_aligned = r_mono[:len(r_mono) + lag]
-                        elif lag > 0:
-                            ref_aligned = r_mono[lag:]
-                            dec_aligned = d_mono[:len(d_mono) - lag]
-                        else:
-                            ref_aligned, dec_aligned = r_mono, d_mono
-
-                        n = min(len(ref_aligned), len(dec_aligned))
-                        dist = z_engine.distance(
-                            np.ascontiguousarray(ref_aligned[:n], dtype=np.float32),
-                            np.ascontiguousarray(dec_aligned[:n], dtype=np.float32)
-                        )
-                        return key, float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
-                elif backend == "zimtohrli":
-                    print(f"  ERROR: zimtohrli not found but requested for {key}")
-                    return key, None, "zimtohrli"
-
-            # 2. Try visqol-python (Modern)
-            if backend in ["auto", "visqol-python"]:
-                if HAS_VISQOL_PYTHON:
-                    api = get_process_visqol_python(cfg["mode"], MODEL_DIR)
-                    if api:
-                        result = api.measure(v_ref, v_deg)
-                        return key, float(result.moslqo), "visqol-python"
-                elif backend == "visqol-python":
-                    print(f"  ERROR: visqol-python not found but requested for {key}")
-                    return key, None, "visqol-python"
-
-            # 2. Try Binary Mode
-            if backend in ["auto", "visqol"]:
-                if VISQOL_BIN and os.path.exists(VISQOL_BIN):
-                    cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
-                    if cfg["mode"] == "speech":
-                        cmd.append("--use_speech_mode")
-                        if MODEL_DIR:
-                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
-                    else:
-                        if MODEL_DIR:
-                            cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, AUDIO_MODEL_NAME)])
-
-                    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                    for line in result.stdout.splitlines():
-                        if "MOS-LQO:" in line:
-                            mos = float(line.split()[-1])
-                            return key, mos, "visqol"
-                elif backend == "visqol":
-                    print(f"  ERROR: visqol binary not found but requested for {key}")
-                    return key, None, "visqol"
-
-            # 3. Try visqol_py (Legacy)
-            if backend in ["auto", "visqol-py"]:
-                if HAS_VISQOL_PY:
-                    visqol = get_process_visqol_py(cfg["mode"])
-                    if visqol:
-                        result = visqol.measure(v_ref, v_deg)
-                        return key, float(result.moslqo), "visqol-py"
-                elif backend == "visqol-py":
-                    print(f"  ERROR: visqol-py not found but requested for {key}")
-                    return key, None, "visqol-py"
-
-        except Exception as e:
-            print(f"  Error computing MOS for {key}: {e}")
-
-    return key, None, "none"
+        mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], backend)
+        if mos is None and backend_used != "none":
+            print(f"  ERROR: backend '{backend_used}' failed for {key}")
+        return key, mos, backend_used
 
 def main():
     parser = argparse.ArgumentParser(description="ViSQOL MOS computation (Phase 2)")

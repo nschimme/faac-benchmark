@@ -23,8 +23,8 @@
 # checked against real faac output: it undershot by 18-67%, worse at higher
 # bitrates, because faac's -q-to-bitrate curve isn't linear. These values
 # were found by grid search against GATE_CLIPS content (see
-# calibrate_vbr_q.py) and validated to land within ~1-16% of "bitrate" on
-# held-out clips not used in the search. Re-run calibrate_vbr_q.py after any
+# scripts/calibrate_vbr_q.py) and validated to land within ~1-16% of "bitrate" on
+# held-out clips not used in the search. Re-run scripts/calibrate_vbr_q.py after any
 # libfaac change that could shift its quantizer/bitrate curve.
 #
 # Two scenarios (48k_stereo_48k, 48k_stereo_56k) are UNAVOIDABLY off target:

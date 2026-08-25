@@ -32,6 +32,11 @@ python3 setup_datasets.py
 python3 run_benchmark.py <faac> <libfaac.so> <name> <output.json> [options]
 ```
 
+A bare `<output.json>` (no directory component, e.g. `test.json`) is written
+under `results/` (gitignored) instead of the repo root; pass a path with a
+directory (e.g. `./results/test.json` or `./out/test.json`) to control it
+explicitly.
+
 Common options:
 
 | Flag | Purpose |
@@ -144,23 +149,9 @@ The leaderboard evaluates the **Golden Triangle**:
 
 **Winner Highlighting**: The best-performing encoder in each category is **bolded** in the leaderboard tables.
 
-## Diagnostic tools
+## Diagnostic and ad hoc tools
 
-```bash
-# Ranked per-clip diff of two result JSONs (also: run_benchmark.py --diff a b)
-python3 compare_clips.py base.json cand.json
-
-# ...with per-band log-spectral distortion for the worst regressors
-python3 compare_clips.py base.json cand.json --bands [--bands-top N]
-
-# One-shot perceptual score of a single encode vs its reference
-python3 score_clip.py reference.wav encoded.aac --mode audio|speech
-
-# Per-band distortion of one encode (locates *where* in the spectrum loss is)
-python3 band_diag.py reference.wav encoded.aac --mode audio
-```
-
-`--bands` / `band_diag.py` report RMS log-spectral error in fixed bands
-(0–4k, 4–8k, 8–12k, 12–18.4k, 18.4–24k). The 8–12k / 12–18.4k split corresponds
-to an HE-AAC half-rate core's top octave vs the SBR band, which is how the
-HE-AAC percussive loss was localized to the core rather than SBR.
+`run_benchmark.py --compare`/`--sweep`/`--diff` cover the everyday A/B and
+sweep workflows above. For per-band spectral diagnostics, pre-echo/TNS A/B
+tooling, VBR-q calibration, and other local investigation scripts, see
+[scripts.md](scripts.md) — everything under `scripts/` at the repo root.

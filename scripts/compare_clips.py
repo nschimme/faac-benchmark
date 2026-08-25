@@ -12,11 +12,13 @@ import os
 import json
 import sys
 import argparse
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 from utils import load_results, get_aac_path, get_scenario_sort_key
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
-EXTERNAL_DATA_DIR = os.path.join(SCRIPT_DIR, "data", "external")
+OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
+EXTERNAL_DATA_DIR = os.path.join(ROOT_DIR, "data", "external")
 
 
 def _band_report(rows, scenario, file_a, file_b, top, matrix_a):

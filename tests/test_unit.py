@@ -110,7 +110,7 @@ class TestCompareClipsRanking(unittest.TestCase):
                 "r_c2.wav": {"mos": 3.6, "scenario": "48k_stereo_64k", "filename": "c2.wav",
                              "bitrate": 64, "time": 1.0},
             }})
-            r = subprocess.run([sys.executable, "compare_clips.py", a, b],
+            r = subprocess.run([sys.executable, os.path.join("scripts", "compare_clips.py"), a, b],
                                cwd=REPO, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("48k_stereo_64k", r.stdout)

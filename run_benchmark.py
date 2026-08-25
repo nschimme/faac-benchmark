@@ -68,8 +68,16 @@ def main():
 
     args, unknown = parser.parse_known_args()
 
+    # A bare filename (no directory component) is an ad hoc/manual run --
+    # default it under results/ instead of littering the repo root. Callers
+    # that already pass a path with a directory (CI's action.yml always does,
+    # e.g. "./results/base.json") are untouched.
+    if not os.path.dirname(args.output):
+        os.makedirs("results", exist_ok=True)
+        args.output = os.path.join("results", args.output)
+
     if args.diff:
-        subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "compare_clips.py"), args.diff[0], args.diff[1]])
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "scripts", "compare_clips.py"), args.diff[0], args.diff[1]])
         return
 
     # Combine explicit extra args and any unknown args (which might be hyphenated flags)
@@ -329,7 +337,7 @@ def main():
         if (args.compare or args.sweep) and len(run_results) >= 2:
             print("\n>>> Intermediate Comparison Results:")
             base_run = run_results[0]
-            subprocess.run([sys.executable, os.path.join(script_dir, "compare_clips.py"), base_run["output"], run["output"]])
+            subprocess.run([sys.executable, os.path.join(script_dir, "scripts", "compare_clips.py"), base_run["output"], run["output"]])
 
     print("\n>>> All benchmarks complete.")
 

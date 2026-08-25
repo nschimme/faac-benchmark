@@ -32,7 +32,7 @@ encoder systematically over- or under-shoots.
 
 In VBR mode this compares against `config.py`'s `vbr_q` (faac's `-q`, a percent
 quantizer quality, not a bitrate). `vbr_q` per scenario is chosen by grid
-search (`calibrate_vbr_q.py`) against representative content so it lands near
+search (`scripts/calibrate_vbr_q.py`) against representative content so it lands near
 the scenario's nominal `bitrate`, but VBR is inherently content-dependent, so
 expect single-digit-to-teens percent deviation even with no code change.
 
@@ -56,8 +56,8 @@ See [ci.md](ci.md).
 
 ## Per-band distortion (diagnostic)
 
-Not a headline metric — an on-demand tool (`band_diag.py`,
-`compare_clips.py --bands`). Reports RMS log-spectral error vs the reference in
+Not a headline metric — an on-demand tool (`scripts/band_diag.py`,
+`scripts/compare_clips.py --bands`). Reports RMS log-spectral error vs the reference in
 fixed bands (0–4k, 4–8k, 8–12k, 12–18.4k, 18.4–24k). It localizes *where* in the
 spectrum quality is lost; the 8–12k vs 12–18.4k split maps to an HE-AAC
 half-rate core's top octave vs its SBR band.
