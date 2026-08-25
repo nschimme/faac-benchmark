@@ -283,5 +283,69 @@ class TestAutoBackendSelection(unittest.TestCase):
         self.assertTrue(hasattr(phase2_mos, "HAS_ZIMTOHRLI"))
 
 
+class TestCompareResultsRendering(unittest.TestCase):
+    def test_summary_table_mos_delta_rendering(self):
+        import compare_results as C
+        metrics_with_churn = {
+            "total_mos_count": 20,
+            "total_mos_delta": 0.020,
+            "total_clip_wins": 15,
+            "total_clip_losses": 3,
+            "total_regressions": 0,
+            "total_reg_critical": 0,
+            "total_reg_significant": 0,
+            "total_reg_minor": 0,
+            "worst_mos_drop": (0, "N/A"),
+            "worst_bitrate_err": (0, "N/A"),
+            "total_new_wins": 0,
+            "total_significant_wins": 0,
+            "bit_exact_percent": 85.0,
+            "avg_tp_reduction": 0.0,
+            "tp_details_source": [],
+            "worst_tp_delta": 0.0,
+            "avg_lib_chg": 0.0,
+            "avg_bitrate_chg": 0.0,
+            "total_bitrate_acc_count": 0,
+            "total_ic_count": 0,
+            "total_decode_errors": 0,
+            "total_missing_mos": 0,
+        }
+        lines = C.render_summary_table(metrics_with_churn, "Zimtohrli", "ABR")
+        avg_line = next((l for l in lines if "Avg Zimtohrli Δ" in l), None)
+        self.assertIsNotNone(avg_line, "Expected Avg Zimtohrli Δ row to be present when clip movement exists")
+        self.assertIn("+0.001", avg_line)
+        self.assertIn("15 clips improved, 3 degraded", avg_line)
+
+    def test_summary_table_mos_delta_omitted_for_identical(self):
+        import compare_results as C
+        metrics_identical = {
+            "total_mos_count": 20,
+            "total_mos_delta": 0.0,
+            "total_clip_wins": 0,
+            "total_clip_losses": 0,
+            "total_regressions": 0,
+            "total_reg_critical": 0,
+            "total_reg_significant": 0,
+            "total_reg_minor": 0,
+            "worst_mos_drop": (0, "N/A"),
+            "worst_bitrate_err": (0, "N/A"),
+            "total_new_wins": 0,
+            "total_significant_wins": 0,
+            "bit_exact_percent": 100.0,
+            "avg_tp_reduction": 0.0,
+            "tp_details_source": [],
+            "worst_tp_delta": 0.0,
+            "avg_lib_chg": 0.0,
+            "avg_bitrate_chg": 0.0,
+            "total_bitrate_acc_count": 0,
+            "total_ic_count": 0,
+            "total_decode_errors": 0,
+            "total_missing_mos": 0,
+        }
+        lines = C.render_summary_table(metrics_identical, "Zimtohrli", "ABR")
+        avg_line = next((l for l in lines if "Avg Zimtohrli Δ" in l), None)
+        self.assertIsNone(avg_line, "Avg Zimtohrli Δ row should be omitted for identical runs to avoid noise")
+
+
 if __name__ == "__main__":
     unittest.main()
