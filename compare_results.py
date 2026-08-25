@@ -286,6 +286,9 @@ def analyze_pair(base_file, cand_file):
         "mos_delta_sum": 0,
         "mos_count": 0,
         "missing_mos_count": 0,
+        "mos_deltas": [],
+        "clip_wins": 0,
+        "clip_losses": 0,
         "ic_delta_sum": 0,
         "ic_count": 0,
         "worst_ic_regression": (0, "N/A"),
@@ -421,6 +424,11 @@ def analyze_pair(base_file, cand_file):
                     delta = o_mos - b_mos
                     suite_results["mos_delta_sum"] += delta
                     suite_results["mos_count"] += 1
+                    suite_results["mos_deltas"].append(delta)
+                    if delta > 0.005:
+                        suite_results["clip_wins"] += 1
+                    elif delta < -0.005:
+                        suite_results["clip_losses"] += 1
                     suite_results["scenario_stats"][scenario]["mos_delta_sum"] += delta
                     # Retained so a scenario mean can carry a CI and a sign
                     # count. A mean of +0.02 built from 49 consistent small
@@ -596,6 +604,7 @@ def aggregate_suite_metrics(items):
     quantity.
     """
     total_mos_delta = total_mos_count = total_missing_mos = total_decode_errors = 0
+    total_clip_wins = total_clip_losses = 0
     total_ic_delta = total_ic_count = 0
     worst_ic_regression = (0, "N/A")
     total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
@@ -613,6 +622,8 @@ def aggregate_suite_metrics(items):
         n_suites += 1
         total_mos_delta += data["mos_delta_sum"]
         total_mos_count += data["mos_count"]
+        total_clip_wins += data.get("clip_wins", 0)
+        total_clip_losses += data.get("clip_losses", 0)
         total_missing_mos += data["missing_mos_count"]
         total_decode_errors += data["decode_error_count"]
         total_ic_delta += data["ic_delta_sum"]
@@ -667,6 +678,7 @@ def aggregate_suite_metrics(items):
     return {
         "avg_mos_delta_str": avg_mos_delta_str,
         "total_mos_delta": total_mos_delta, "total_mos_count": total_mos_count,
+        "total_clip_wins": total_clip_wins, "total_clip_losses": total_clip_losses,
         "total_missing_mos": total_missing_mos,
         "total_decode_errors": total_decode_errors,
         "total_ic_delta": total_ic_delta, "total_ic_count": total_ic_count,
@@ -774,8 +786,34 @@ def render_summary_table(metrics, mos_label, rc_mode):
         bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting" if metrics["avg_bitrate_bias"] < -0.5 else "Optimal"
         lines.append(f"| **{bias_label}** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
 
-    if metrics["total_mos_count"] > 0 and abs(metrics["total_mos_delta"] / metrics["total_mos_count"]) > 0.001:
-        lines.append(f"| **Avg {mos_label} Δ** | {metrics['avg_mos_delta_str']} |")
+    mos_count = metrics["total_mos_count"]
+    total_wins = metrics.get("total_clip_wins", 0)
+    total_losses = metrics.get("total_clip_losses", 0)
+    if mos_count > 0:
+        avg_delta = metrics["total_mos_delta"] / mos_count
+        if total_wins > 0 or total_losses > 0 or abs(avg_delta) > 0.001:
+            if total_wins > 0 and total_losses > 0:
+                if abs(avg_delta) <= 0.005:
+                    icon = "⚠️"
+                    clip_str = f" Quality Churn ({total_wins} clip{'s' if total_wins != 1 else ''} improved, {total_losses} degraded)"
+                elif avg_delta > 0.005:
+                    icon = "🚀"
+                    clip_str = f" ({total_wins} clip{'s' if total_wins != 1 else ''} improved, {total_losses} degraded)"
+                else:
+                    icon = "📉"
+                    clip_str = f" ({total_wins} clip{'s' if total_wins != 1 else ''} improved, {total_losses} degraded)"
+            elif total_wins > 0:
+                icon = "🚀"
+                clip_str = f" ({total_wins} clip{'s' if total_wins != 1 else ''} improved)"
+            elif total_losses > 0:
+                icon = "📉"
+                clip_str = f" ({total_losses} clip{'s' if total_losses != 1 else ''} degraded)"
+            else:
+                icon = "🚀" if avg_delta > 0.001 else "📉" if avg_delta < -0.001 else ""
+                clip_str = ""
+
+            val_str = f"{avg_delta:+.3f} {icon}{clip_str}".strip()
+            lines.append(f"| **Avg {mos_label} Δ** | {val_str} |")
 
     if metrics["total_ic_count"] > 0:
         avg_ic_delta = metrics["total_ic_delta"] / metrics["total_ic_count"]
@@ -957,10 +995,10 @@ def main():
         multi_mode = len(modes_present) > 1
         report.append("\n### Scenario Performance")
         if multi_mode:
-            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
             report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
         else:
-            report.append(f"| Scenario | {mos_label} Δ | 95% CI | W/L | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
+            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
             report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios, keyed by mode too when
@@ -980,6 +1018,7 @@ def main():
                 global_scenario_stats[key]["acc_count"] += sc_stats["bitrate_acc_count"]
                 global_scenario_stats[key]["mos_deltas"] += sc_stats.get("mos_deltas", [])
 
+        has_sig_mark = False
         sort_key = (lambda k: (get_scenario_sort_key(k[0]), k[1])) if multi_mode else get_scenario_sort_key
         for key in sorted(global_scenario_stats.keys(), key=sort_key):
             gs = global_scenario_stats[key]
@@ -993,7 +1032,11 @@ def main():
             # it is a consistent shift or a couple of clips carrying the rest.
             ci = bootstrap_mean_ci(gs["mos_deltas"])
             if ci:
-                sig = "" if ci["lo"] <= 0 <= ci["hi"] else " ✳"
+                if ci["lo"] <= 0 <= ci["hi"]:
+                    sig = ""
+                else:
+                    sig = " ✳"
+                    has_sig_mark = True
                 sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
                 sc_wl = f"{ci['wins']}/{ci['losses']}"
             else:
@@ -1007,6 +1050,9 @@ def main():
                 report.append(
                     f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
                     f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+
+        if has_sig_mark:
+            report.append("\n_✳ Statistically significant change (95% confidence interval excludes 0)_")
 
         # 1. Collapsible Details: Regressions
         total_regressions = global_metrics["total_regressions"]
