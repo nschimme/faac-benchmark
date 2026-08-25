@@ -17,6 +17,7 @@ leaderboard*.md
 comparison_results.json
 test_results/
 test_report.md
+/*.json
 
 # OS
 .DS_Store
