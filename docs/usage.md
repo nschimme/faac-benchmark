@@ -137,7 +137,7 @@ python3 compare_encoders.py [options]
 Options:
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
-- `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`: Manual paths to encoder binaries.
+- `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--aac-enc-bin`, `--falabaac-bin`, `--afconvert-bin`: Manual paths to encoder binaries.
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
 
 The leaderboard evaluates the **Golden Triangle**:
