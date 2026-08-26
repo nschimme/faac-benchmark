@@ -370,14 +370,7 @@ def _wav_conv_faad(input_path, output_path, rate=None, channels=None):
         except Exception:
             return False
 
-def wav_conv(input_path, output_path, rate=None, channels=None):
-    """Converts audio to WAV using FAAD2 for AAC/M4A/MP4 files (with FFmpeg fallback)
-    and FFmpeg for other formats."""
-    is_aac = input_path.lower().endswith((".aac", ".m4a", ".mp4"))
-    if is_aac:
-        if _wav_conv_faad(input_path, output_path, rate, channels):
-            return True
-
+def _wav_conv_ffmpeg(input_path, output_path, rate=None, channels=None):
     cmd = ["ffmpeg", "-y", "-i", input_path]
     if rate:
         cmd.extend(["-ar", str(rate)])
@@ -394,6 +387,18 @@ def wav_conv(input_path, output_path, rate=None, channels=None):
     except Exception as e:
         print(f"FFmpeg conversion failed for {input_path}: {e}", file=sys.stderr)
         return False
+
+def wav_conv(input_path, output_path, rate=None, channels=None):
+    """Converts audio to WAV using FFmpeg (with FAAD2 fallback for AAC/M4A/MP4 files)."""
+    if _wav_conv_ffmpeg(input_path, output_path, rate, channels):
+        return True
+
+    is_aac = input_path.lower().endswith((".aac", ".m4a", ".mp4"))
+    if is_aac:
+        if _wav_conv_faad(input_path, output_path, rate, channels):
+            return True
+
+    return False
 
 def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
     """Converts ref_input_path to a (v_rate, v_channels) WAV under cache_dir,

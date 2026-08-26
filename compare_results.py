@@ -892,21 +892,16 @@ def render_summary_table(metrics, mos_label, rc_mode):
         p, _neg, n = transient.sign_test_p(centroid_deltas)
         verdict = transient.ci_signtest_verdict(
             lo, hi, p, label_decrease="improved", label_increase="regression")
-        icon = "📉" if verdict == "regression" else "📈" if verdict == "improved" else "➖"
-        fid_str = ""
         if verdict in ("regression", "improved"):
-            # Only surface the actual fidelity numbers (same 1/(1+mean|ms|)
-            # formula as compare_encoders.py's leaderboard, for a maintainer
-            # to read as "how much") once the change has cleared the CI +
-            # sign-test bar above -- a magnitude next to an inconclusive
-            # result would read as more certain than it is.
+            icon = "📉" if verdict == "regression" else "📈"
             o_abs = metrics.get("centroid_o_abs", [])
             b_abs = metrics.get("centroid_b_abs", [])
+            fid_str = ""
             if o_abs and b_abs:
                 fid_o = 1.0 / (1.0 + sum(o_abs) / len(o_abs))
                 fid_b = 1.0 / (1.0 + sum(b_abs) / len(b_abs))
                 fid_str = f", fidelity {fid_b:.3f} → {fid_o:.3f}"
-        lines.append(f"| **Transient Fidelity (attack-centroid)** | {icon} (n={n}{fid_str}) |")
+            lines.append(f"| **Transient Fidelity (attack-centroid)** | {icon} (n={n}{fid_str}) |")
         if metrics["worst_centroid_regression"][0] > 0.5:
             lines.append(
                 f"| **Worst Transient Regression** | "
