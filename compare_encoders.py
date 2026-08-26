@@ -843,128 +843,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {rom_str} |\n")
 
-        # Visualizations Section (Mermaid Graphs)
-        if not skip_graphs and sorted_tools:
-            f.write("\n## Visualizations\n\n")
-
-            # Chart 1: Overall vs Worst MOS Comparison
-            chart_tools = sorted_tools[:10]  # Top 10 for clean display
-            tool_labels = [f'"{t}"' for t in chart_tools]
-            overall_vals = [f"{tool_overall[t]['overall_mos']:.3f}" for t in chart_tools]
-            worst_vals = [f"{tool_overall[t]['worst_mos']:.3f}" for t in chart_tools]
-
-            f.write("### Overall MOS vs Worst MOS\n\n")
-            f.write("```mermaid\n")
-            f.write("xychart-beta\n")
-            f.write('    title "Overall MOS vs. Worst MOS (Higher is Better)"\n')
-            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
-            f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
-            f.write(f"    bar [{', '.join(overall_vals)}]\n")
-            f.write(f"    line [{', '.join(worst_vals)}]\n")
-            f.write("```\n\n")
-
-            # Chart 2: Encoder Speed Comparison (xRT)
-            speed_vals = [f"{tool_overall[t]['avg_speed']:.1f}" for t in chart_tools]
-            max_speed = max([tool_overall[t]['avg_speed'] for t in chart_tools] + [1.0])
-            f.write("### Encoding Speed (xRT)\n\n")
-            f.write("```mermaid\n")
-            f.write("xychart-beta\n")
-            f.write('    title "Average Encoding Speed (xRealtime, Higher is Better)"\n')
-            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
-            f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_speed * 1.25) + 1}\n')
-            f.write(f"    bar [{', '.join(speed_vals)}]\n")
-            f.write("```\n\n")
-
-            # Chart 3 & 4: Quality across Bitrates (Stereo Audio vs Mono Speech)
-            scenarios_sorted = sorted(scenario_list, key=get_scenario_sort_key)
-            audio_scenarios = [s for s in scenarios_sorted if SCENARIOS.get(s, {}).get("mode") == "audio"]
-            speech_scenarios = [s for s in scenarios_sorted if SCENARIOS.get(s, {}).get("mode") == "speech"]
-
-            top_tools = chart_tools[:5]
-            legend_str = ", ".join([f"**Line {idx+1}**: {t}" for idx, t in enumerate(top_tools)]) if top_tools else ""
-
-            if audio_scenarios and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                f.write("### Stereo Audio Quality Across Bitrates (Average MOS)\n\n")
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Stereo Audio Quality across Bitrates"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_mos = []
-                    for s in audio_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["mos_count"] > 0:
-                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
-                        else:
-                            scen_mos.append("0.0")
-                    f.write(f"    line [{', '.join(scen_mos)}]\n")
-                f.write("```\n\n")
-
-            # Chart 5: Stereo Image Fidelity Across Bitrates
-            if audio_scenarios and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                f.write("### Stereo Image Fidelity Across Bitrates\n\n")
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Stereo Image Fidelity across Bitrates (Higher is Better)"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "Stereo Fidelity" 0.0 --> 1.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_ic = []
-                    for s in audio_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["ic_count"] > 0:
-                            scen_ic.append(f"{1.0 - (stats[rk][s]['ic_sum'] / stats[rk][s]['ic_count']):.4f}")
-                        else:
-                            scen_ic.append("0.0")
-                    f.write(f"    line [{', '.join(scen_ic)}]\n")
-                f.write("```\n\n")
-
-            # Chart 6: Codec ROM / Flash Footprint Comparison (KB)
-            rom_vals = [f"{(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0:.1f}" for t in chart_tools]
-            max_rom = max([(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0 for t in chart_tools] + [10.0])
-            f.write("### Codec ROM (Flash) Size\n\n")
-            f.write("```mermaid\n")
-            f.write("xychart-beta\n")
-            f.write('    title "Codec Code + Read-Only Data Size (KB, Lower is Better)"\n')
-            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
-            f.write(f'    y-axis "ROM Size (KB)" 0 --> {int(max_rom * 1.25) + 1}\n')
-            f.write(f"    bar [{', '.join(rom_vals)}]\n")
-            f.write("```\n\n")
-
-            if speech_scenarios and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in speech_scenarios]
-                f.write("### Mono Speech Quality Across Bitrates (Average MOS)\n\n")
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Mono Speech Quality across Bitrates"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_mos = []
-                    for s in speech_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["mos_count"] > 0:
-                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
-                        else:
-                            scen_mos.append("0.0")
-                    f.write(f"    line [{', '.join(scen_mos)}]\n")
-                f.write("```\n\n")
-
-        # Per-Scenario Tables in Collapsible Section
-        f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
-
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
         all_em_keys_sorted = sorted(overall.keys())
 
@@ -972,11 +850,30 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         profile_order = ["lc", "he", "hev2"]
         profile_keys = {p: [rk for rk in all_em_keys_sorted if overall[rk]["profile"] == p] for p in profile_order}
 
-        def render_metric_section(metric_title, note, extract_val_fn, fmt_fn, lower_is_better=False):
-            f.write(f"\n### {metric_title}\n\n")
-            if note:
-                f.write(f"> **Note**: {note}\n\n")
+        tool_row_keys = defaultdict(list)
+        for e in encoders:
+            tool_row_keys[e.name].append(row_key(e))
 
+        def scenario_best_row_key(candidates, s_name):
+            available = [rk for rk in candidates if stats[rk][s_name]["total_count"] > 0]
+            if not available:
+                return None
+            def sort_key(rk):
+                st = stats[rk][s_name]
+                mos_avg = st["mos_sum"] / st["mos_count"] if st["mos_count"] > 0 else None
+                valid_rate = st["valid_count"] / st["total_count"] if st["total_count"] > 0 else 0
+                return (mos_avg is not None, mos_avg if mos_avg is not None else 0, valid_rate)
+            return max(available, key=sort_key)
+
+        chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
+        top_tools = chart_tools[:5]      # Top 5 for clean line display
+        legend_str = ", ".join([f"**Line {idx+1}**: {t}" for idx, t in enumerate(top_tools)]) if top_tools else ""
+
+        audio_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "audio"]
+        speech_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "speech"]
+
+        def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None):
+            scen_list = filter_scenarios if filter_scenarios is not None else scenarios
             for p in profile_order:
                 keys = profile_keys[p]
                 if not keys:
@@ -987,7 +884,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 f.write("| Scenario | " + " | ".join(headers) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(headers)) + " |\n")
 
-                for s in scenarios:
+                for s in scen_list:
                     row_vals = [extract_val_fn(rk, s) for rk in keys]
                     valid_vals = [v for v in row_vals if v is not None]
 
@@ -1007,56 +904,175 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 f.write("\n")
 
-        # 1. Per-Scenario Average MOS
-        render_metric_section(
-            "Per-Scenario Average MOS",
-            None,
-            lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
-            lambda v: f"{v:.3f}"
-        )
+        f.write("\n## Per-Scenario Breakdown & Visualizations\n\n")
 
-        # 2. Per-Scenario Worst MOS (Min Clip MOS)
-        render_metric_section(
-            "Per-Scenario Worst MOS (Min Clip MOS)",
-            "Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.",
-            lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
-            lambda v: f"{v:.3f}"
-        )
+        # 1. Stereo Audio Quality
+        if audio_scenarios:
+            f.write("### Stereo Audio Quality Across Bitrates\n\n")
+            if not skip_graphs and top_tools:
+                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
+                if legend_str:
+                    f.write(f"{legend_str}\n\n")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write('    title "Stereo Audio Quality across Bitrates (Average MOS)"\n')
+                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
+                for t in top_tools:
+                    candidates = tool_row_keys[t]
+                    scen_mos = []
+                    for s in audio_scenarios:
+                        rk = scenario_best_row_key(candidates, s)
+                        if rk and stats[rk][s]["mos_count"] > 0:
+                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
+                        else:
+                            scen_mos.append("0.0")
+                    f.write(f'    line "{t}" [{", ".join(scen_mos)}]\n')
+                f.write("```\n\n")
 
-        # 3. Stereo Fidelity
-        render_metric_section(
-            "Per-Scenario Stereo Fidelity",
-            "Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).",
-            lambda rk, s: 1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None,
-            lambda v: f"{v:.4f}"
-        )
+            f.write("<details><summary><b>View Detailed Stereo Audio Average & Worst MOS Tables</b></summary>\n\n")
+            f.write("#### Per-Scenario Average MOS (Stereo Audio)\n\n")
+            render_metric_tables(
+                lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
+                lambda v: f"{v:.3f}",
+                filter_scenarios=audio_scenarios
+            )
+            f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Stereo Audio)\n\n")
+            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
+            render_metric_tables(
+                lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
+                lambda v: f"{v:.3f}",
+                filter_scenarios=audio_scenarios
+            )
+            f.write("</details>\n\n")
+
+        # 2. Mono Speech Quality
+        if speech_scenarios:
+            f.write("### Mono Speech Quality Across Bitrates\n\n")
+            if not skip_graphs and top_tools:
+                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in speech_scenarios]
+                if legend_str:
+                    f.write(f"{legend_str}\n\n")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write('    title "Mono Speech Quality across Bitrates (Average MOS)"\n')
+                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
+                for t in top_tools:
+                    candidates = tool_row_keys[t]
+                    scen_mos = []
+                    for s in speech_scenarios:
+                        rk = scenario_best_row_key(candidates, s)
+                        if rk and stats[rk][s]["mos_count"] > 0:
+                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
+                        else:
+                            scen_mos.append("0.0")
+                    f.write(f'    line "{t}" [{", ".join(scen_mos)}]\n')
+                f.write("```\n\n")
+
+            f.write("<details><summary><b>View Detailed Mono Speech Average & Worst MOS Tables</b></summary>\n\n")
+            f.write("#### Per-Scenario Average MOS (Mono Speech)\n\n")
+            render_metric_tables(
+                lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
+                lambda v: f"{v:.3f}",
+                filter_scenarios=speech_scenarios
+            )
+            f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Mono Speech)\n\n")
+            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
+            render_metric_tables(
+                lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
+                lambda v: f"{v:.3f}",
+                filter_scenarios=speech_scenarios
+            )
+            f.write("</details>\n\n")
+
+        # 3. Stereo Image Fidelity
+        if audio_scenarios:
+            f.write("### Stereo Image Fidelity\n\n")
+            f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
+            if not skip_graphs and top_tools:
+                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
+                if legend_str:
+                    f.write(f"{legend_str}\n\n")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write('    title "Stereo Image Fidelity across Bitrates (Higher is Better)"\n')
+                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+                f.write('    y-axis "Stereo Fidelity" 0.0 --> 1.0\n')
+                for t in top_tools:
+                    candidates = tool_row_keys[t]
+                    scen_ic = []
+                    for s in audio_scenarios:
+                        rk = scenario_best_row_key(candidates, s)
+                        if rk and stats[rk][s]["ic_count"] > 0:
+                            scen_ic.append(f"{1.0 - (stats[rk][s]['ic_sum'] / stats[rk][s]['ic_count']):.4f}")
+                        else:
+                            scen_ic.append("0.0")
+                    f.write(f'    line "{t}" [{", ".join(scen_ic)}]\n')
+                f.write("```\n\n")
+
+            f.write("<details><summary><b>View Detailed Stereo Fidelity Table</b></summary>\n\n")
+            render_metric_tables(
+                lambda rk, s: 1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None,
+                lambda v: f"{v:.4f}",
+                filter_scenarios=audio_scenarios
+            )
+            f.write("</details>\n\n")
 
         # 4. Transient Fidelity
-        render_metric_section(
-            "Per-Scenario Transient Fidelity",
-            "Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).",
+        f.write("### Transient Fidelity\n\n")
+        f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
+        f.write("<details><summary><b>View Detailed Transient Fidelity Table</b></summary>\n\n")
+        render_metric_tables(
             lambda rk, s: 1.0 / (1.0 + (stats[rk][s]["centroid_sum"] / stats[rk][s]["centroid_count"])) if stats[rk][s]["centroid_count"] > 0 else None,
             lambda v: f"{v:.4f}"
         )
+        f.write("</details>\n\n")
 
         # 5. Bitrate Accuracy
-        render_metric_section(
-            "Per-Scenario Bitrate Accuracy (Error %)",
-            "Deviation from target bitrate. **Lower is Better**.",
+        f.write("### Bitrate Accuracy (Error %)\n\n")
+        f.write("> **Note**: Deviation from target bitrate. **Lower is Better**.\n\n")
+        f.write("<details><summary><b>View Detailed Bitrate Accuracy Table</b></summary>\n\n")
+        render_metric_tables(
             lambda rk, s: stats[rk][s]["br_err_sum"] / stats[rk][s]["br_err_count"] if stats[rk][s]["br_err_count"] > 0 else None,
             lambda v: f"{v:.1f}%",
             lower_is_better=True
         )
+        f.write("</details>\n\n")
 
-        # 6. Efficiency
-        render_metric_section(
-            "Per-Scenario Efficiency (Speed xRT)",
-            "Encoding throughput relative to real-time. **Higher is Better**.",
+        # 6. Efficiency & Footprint
+        f.write("### Encoder Efficiency & Footprint\n\n")
+        if not skip_graphs and chart_tools:
+            tool_labels = [f'"{t}"' for t in chart_tools]
+            speed_vals = [f"{tool_overall[t]['avg_speed']:.1f}" for t in chart_tools]
+            max_speed = max([tool_overall[t]['avg_speed'] for t in chart_tools] + [1.0])
+            rom_vals = [f"{(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0:.1f}" for t in chart_tools]
+            max_rom = max([(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0 for t in chart_tools] + [10.0])
+
+            f.write("#### Encoding Speed (xRT)\n\n")
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write('    title "Average Encoding Speed (xRealtime, Higher is Better)"\n')
+            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
+            f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_speed * 1.25) + 1}\n')
+            f.write(f"    bar [{', '.join(speed_vals)}]\n")
+            f.write("```\n\n")
+
+            f.write("#### Codec ROM (Flash) Size\n\n")
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write('    title "Codec Code + Read-Only Data Size (KB, Lower is Better)"\n')
+            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
+            f.write(f'    y-axis "ROM Size (KB)" 0 --> {int(max_rom * 1.25) + 1}\n')
+            f.write(f"    bar [{', '.join(rom_vals)}]\n")
+            f.write("```\n\n")
+
+        f.write("<details><summary><b>View Detailed Per-Scenario Efficiency Table</b></summary>\n\n")
+        render_metric_tables(
             lambda rk, s: stats[rk][s]["speed_sum"] / stats[rk][s]["speed_count"] if stats[rk][s]["speed_count"] > 0 else None,
             lambda v: f"{v:.1f}x"
         )
-
-        f.write("\n</details>\n")
+        f.write("</details>\n\n")
 
         if error_counts:
             f.write("\n## Failure Analysis\n\n")

@@ -695,10 +695,10 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
 
             self.assertIn("# AAC Encoder Leaderboard", content)
             self.assertIn("## Overall Rankings", content)
-            self.assertIn("## Visualizations", content)
+            self.assertIn("## Per-Scenario Breakdown & Visualizations", content)
             self.assertIn("xychart-beta", content)
-            self.assertIn("### Per-Scenario Average MOS", content)
-            self.assertIn("### Per-Scenario Worst MOS (Min Clip MOS)", content)
+            self.assertIn("#### Per-Scenario Average MOS", content)
+            self.assertIn("#### Per-Scenario Worst MOS", content)
             self.assertIn("#### LC Profile", content)
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)
