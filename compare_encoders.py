@@ -61,7 +61,7 @@ def is_system_library(path):
     # On Linux, we generally want to measure library size even if in /usr/lib
     return False
 
-PROFILE_LABELS = {"lc": "LC", "he": "HE-v1"}
+PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2"}
 
 def profile_label(profile):
     return PROFILE_LABELS[profile]
@@ -117,6 +117,17 @@ def use_he_aac(bitrate_kbps, channels, sample_rate):
     bitrate_per_ch = bitrate_kbps / channels
     return 10 <= bitrate_per_ch <= 48
 
+def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
+    """
+    Centralized heuristic for selecting HE-AAC v2 (Parametric Stereo).
+    HE-v2 is specifically designed for low-bitrate stereo content.
+    Typical range: 6kbps to 20kbps per channel (stereo only), sample_rate >= 32000.
+    """
+    if channels < 2 or sample_rate < 32000:
+        return False
+    bitrate_per_ch = bitrate_kbps / channels
+    return 6 <= bitrate_per_ch <= 20
+
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id, profile="lc"):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac")
@@ -137,8 +148,11 @@ class FFmpegEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
-        if self.codec_name == "libfdk_aac" and self.profile == "he":
-            cmd.extend(["-profile:a", "aac_he"])
+        if self.codec_name == "libfdk_aac":
+            if self.profile == "he":
+                cmd.extend(["-profile:a", "aac_he"])
+            elif self.profile == "hev2":
+                cmd.extend(["-profile:a", "aac_he_v2"])
         if self.codec_name == "aac" and self.supports_nmr:
             cmd.extend(["-aac_coder", "nmr"])
 
@@ -151,7 +165,12 @@ class FDKAACEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        profile = "5" if self.profile == "he" else "2"
+        if self.profile == "hev2":
+            profile = "29"
+        elif self.profile == "he":
+            profile = "5"
+        else:
+            profile = "2"
         cmd = [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels)]
         cmd.extend(["-o", output_path, input_path])
         return cmd
@@ -161,7 +180,12 @@ class AACEncEncoder(Encoder):
         super().__init__(name, binary_path, "aac_enc", profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        aot = "5" if self.profile == "he" else "2"
+        if self.profile == "hev2":
+            aot = "29"
+        elif self.profile == "he":
+            aot = "5"
+        else:
+            aot = "2"
         # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
@@ -182,7 +206,12 @@ class AFConvertEncoder(Encoder):
         super().__init__(name, binary_path, "afconvert", profile, lib_name_substr="AudioToolbox")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        codec = "aach" if self.profile == "he" else "aac "
+        if self.profile == "hev2":
+            codec = "aacp"
+        elif self.profile == "he":
+            codec = "aach"
+        else:
+            codec = "aac "
         # Use m4af format for M4A container
         return [self.binary_path, "-f", "m4af", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
@@ -231,6 +260,7 @@ def detect_encoders(args):
             if "libfdk_aac" in res.stdout:
                 encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="lc"))
                 encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="he"))
+                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="hev2"))
             if "vo_aacenc" in res.stdout:
                 encoders.append(FFmpegEncoder("VO-AAC (FFmpeg)", ffmpeg_path, "vo_aacenc"))
         except:
@@ -241,12 +271,14 @@ def detect_encoders(args):
     if fdkaac_path:
         encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="lc"))
         encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="he"))
+        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="hev2"))
 
     # 3b. AAC-ENC (alternative FDK-AAC wrapper)
     aacenc_path = getattr(args, 'aac_enc_bin', None) or shutil.which("aac-enc")
     if aacenc_path:
         encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="lc"))
         encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="he"))
+        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="hev2"))
 
     # 3c. Falabaac (LC-only; no SBR/HE-AAC support)
     falabaac_path = getattr(args, 'falabaac_bin', None) or shutil.which("falabaac")
@@ -258,6 +290,7 @@ def detect_encoders(args):
     if afconvert_path:
         encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="lc"))
         encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="he"))
+        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="hev2"))
 
     return encoders
 
@@ -356,6 +389,7 @@ def main():
     parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) calculation")
+    parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid graph blocks in leaderboard")
     parser.add_argument("--backend", default="auto", help="Perceptual MOS backend")
 
     args = parser.parse_args()
@@ -408,6 +442,9 @@ def main():
         for encoder in encoders:
             if encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v1 range.")
+                continue
+            if encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
+                print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v2 range.")
                 continue
             print(f"  Encoding with {encoder.name}...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
@@ -528,7 +565,7 @@ def main():
         os.remove("bridge_results.json")
 
     # Final leaderboard generation
-    generate_leaderboard(encoders, all_results, args.output, scenario_list)
+    generate_leaderboard(encoders, all_results, args.output, scenario_list, skip_graphs=args.skip_graphs)
 
 def format_size(bytes_val):
     if bytes_val is None or bytes_val == 0:
@@ -537,7 +574,7 @@ def format_size(bytes_val):
         return f"{bytes_val} B"
     return f"{bytes_val / 1024:.1f} KB"
 
-def generate_leaderboard(encoders, results, output_path, scenario_list):
+def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False):
     # Aggregation keyed by row_key (tool, profile). Every encoder is compared
     # at the same target bitrate (there is no cross-encoder VBR/quality mode
     # here -- each encoder's own quality knob isn't comparable to any other's,
@@ -788,89 +825,154 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
             f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {rom_str} |\n")
 
+        # Visualizations Section (Mermaid Graphs)
+        if not skip_graphs and sorted_tools:
+            f.write("\n## Visualizations\n\n")
+
+            # Chart 1: Overall vs Worst MOS Comparison
+            chart_tools = sorted_tools[:10]  # Top 10 for clean display
+            tool_labels = [f'"{t}"' for t in chart_tools]
+            overall_vals = [f"{tool_overall[t]['overall_mos']:.3f}" for t in chart_tools]
+            worst_vals = [f"{tool_overall[t]['worst_mos']:.3f}" for t in chart_tools]
+
+            f.write("### Overall MOS vs Worst MOS\n\n")
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write('    title "Overall MOS vs. Worst MOS (Higher is Better)"\n')
+            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
+            f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
+            f.write(f"    bar [{', '.join(overall_vals)}]\n")
+            f.write(f"    line [{', '.join(worst_vals)}]\n")
+            f.write("```\n\n")
+
+            # Chart 2: Encoder Speed Comparison (xRT)
+            speed_vals = [f"{tool_overall[t]['avg_speed']:.1f}" for t in chart_tools]
+            max_speed = max([tool_overall[t]['avg_speed'] for t in chart_tools] + [1.0])
+            f.write("### Encoding Speed (xRT)\n\n")
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write('    title "Average Encoding Speed (xRealtime, Higher is Better)"\n')
+            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
+            f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_speed * 1.25) + 1}\n')
+            f.write(f"    bar [{', '.join(speed_vals)}]\n")
+            f.write("```\n\n")
+
+            # Chart 3: Quality across Bitrates (MOS vs Scenario Bitrate)
+            scenarios_sorted = sorted(scenario_list, key=get_scenario_sort_key)
+            if scenarios_sorted:
+                scen_labels = [f'"{s}"' for s in scenarios_sorted]
+                f.write("### Quality Across Bitrates (Average MOS)\n\n")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write('    title "Per-Scenario Average MOS across Bitrates"\n')
+                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
+                for t in chart_tools[:5]:  # Top 5 tools for uncluttered lines
+                    # Best profile key per scenario
+                    candidates = tool_row_keys[t]
+                    scen_mos = []
+                    for s in scenarios_sorted:
+                        rk = scenario_best_row_key(candidates, s)
+                        if rk and stats[rk][s]["mos_count"] > 0:
+                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
+                        else:
+                            scen_mos.append("0.0")
+                    f.write(f"    line [{', '.join(scen_mos)}]\n")
+                f.write("```\n\n")
+
         # Per-Scenario Tables in Collapsible Section
         f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
 
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
         all_em_keys_sorted = sorted(overall.keys())
-        tool_profile_counts = defaultdict(set)
-        for em in all_em_keys_sorted:
-            tool_profile_counts[overall[em]['tool']].add(overall[em]['profile'])
-        em_headers = [
-            overall[em]['tool'] if len(tool_profile_counts[overall[em]['tool']]) == 1
-            else f"{overall[em]['tool']} {profile_label(overall[em]['profile'])}"
-            for em in all_em_keys_sorted
-        ]
 
-        # 1. Perceptual Quality (MOS)
-        f.write("\n### Per-Scenario Perceptual Quality (MOS)\n\n")
-        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
-        for s in scenarios:
-            best_val = max(stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] for em in all_em_keys_sorted if stats[em][s]["mos_count"] > 0) if any(stats[em][s]["mos_count"] > 0 for em in all_em_keys_sorted) else 0
-            line = f"| {s} |"
-            for em in all_em_keys_sorted:
-                val = stats[em][s]["mos_sum"]/stats[em][s]["mos_count"] if stats[em][s]["mos_count"] > 0 else None
-                line += f" **{val:.3f}** |" if val == best_val and best_val > 0 else (f" {val:.3f} |" if val is not None else " N/A |")
-            f.write(line + "\n")
+        # Group encoder keys by profile ("lc", "he", "hev2")
+        profile_order = ["lc", "he", "hev2"]
+        profile_keys = {p: [rk for rk in all_em_keys_sorted if overall[rk]["profile"] == p] for p in profile_order}
 
-        # 2. Stereo
-        f.write("\n### Per-Scenario Stereo Fidelity\n\n")
-        f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
-        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
-        for s in scenarios:
-            best_val = max(1.0 - (stats[em][s]["ic_sum"]/stats[em][s]["ic_count"]) for em in all_em_keys_sorted if stats[em][s]["ic_count"] > 0) if any(stats[em][s]["ic_count"] > 0 for em in all_em_keys_sorted) else -1.0
-            line = f"| {s} |"
-            for em in all_em_keys_sorted:
-                val = stats[em][s]["ic_sum"]/stats[em][s]["ic_count"] if stats[em][s]["ic_count"] > 0 else None
-                if val is not None:
-                    fid = 1.0 - val
-                    line += f" **{fid:.4f}** |" if fid == best_val and best_val != -1.0 else f" {fid:.4f} |"
-                else:
-                    line += " N/A |"
-            f.write(line + "\n")
+        def render_metric_section(metric_title, note, extract_val_fn, fmt_fn, lower_is_better=False):
+            f.write(f"\n### {metric_title}\n\n")
+            if note:
+                f.write(f"> **Note**: {note}\n\n")
 
-        # 2b. Transient Fidelity
-        f.write("\n### Per-Scenario Transient Fidelity\n\n")
-        f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
-        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
-        for s in scenarios:
-            fids = [1.0 / (1.0 + stats[em][s]["centroid_sum"]/stats[em][s]["centroid_count"]) for em in all_em_keys_sorted if stats[em][s]["centroid_count"] > 0]
-            best_val = max(fids) if fids else None
-            line = f"| {s} |"
-            for em in all_em_keys_sorted:
-                val = 1.0 / (1.0 + stats[em][s]["centroid_sum"]/stats[em][s]["centroid_count"]) if stats[em][s]["centroid_count"] > 0 else None
-                if val is not None:
-                    line += f" **{val:.4f}** |" if val == best_val else f" {val:.4f} |"
-                else:
-                    line += " N/A |"
-            f.write(line + "\n")
+            for p in profile_order:
+                keys = profile_keys[p]
+                if not keys:
+                    continue
 
-        # 3. Bitrate Error
-        f.write("\n### Per-Scenario Bitrate Accuracy (Error %)\n\n")
-        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
-        for s in scenarios:
-            best_val = min(stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] for em in all_em_keys_sorted if stats[em][s]["br_err_count"] > 0) if any(stats[em][s]["br_err_count"] > 0 for em in all_em_keys_sorted) else float('inf')
-            line = f"| {s} |"
-            for em in all_em_keys_sorted:
-                val = stats[em][s]["br_err_sum"]/stats[em][s]["br_err_count"] if stats[em][s]["br_err_count"] > 0 else None
-                line += f" **{val:.1f}%** |" if val == best_val and best_val != float('inf') else (f" {val:.1f}% |" if val is not None else " N/A |")
-            f.write(line + "\n")
+                headers = [overall[rk]["tool"] for rk in keys]
+                f.write(f"#### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | " + " | ".join(headers) + " |\n")
+                f.write("| :--- | " + " | ".join([":---:"] * len(headers)) + " |\n")
 
-        # 4. Efficiency
-        f.write("\n### Per-Scenario Efficiency (Speed xRT)\n\n")
-        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
-        for s in scenarios:
-            best_val = max(stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] for em in all_em_keys_sorted if stats[em][s]["speed_count"] > 0) if any(stats[em][s]["speed_count"] > 0 for em in all_em_keys_sorted) else 0
-            line = f"| {s} |"
-            for em in all_em_keys_sorted:
-                val = stats[em][s]["speed_sum"]/stats[em][s]["speed_count"] if stats[em][s]["speed_count"] > 0 else None
-                line += f" **{val:.1f}x** |" if val == best_val and best_val > 0 else (f" {val:.1f}x |" if val is not None else " N/A |")
-            f.write(line + "\n")
+                for s in scenarios:
+                    row_vals = [extract_val_fn(rk, s) for rk in keys]
+                    valid_vals = [v for v in row_vals if v is not None]
+
+                    best_val = None
+                    if valid_vals:
+                        best_val = min(valid_vals) if lower_is_better else max(valid_vals)
+
+                    line = f"| {s} |"
+                    for val in row_vals:
+                        if val is None:
+                            line += " N/A |"
+                        else:
+                            formatted = fmt_fn(val)
+                            is_best = (val == best_val)
+                            line += f" **{formatted}** |" if is_best else f" {formatted} |"
+                    f.write(line + "\n")
+
+                f.write("\n")
+
+        # 1. Per-Scenario Average MOS
+        render_metric_section(
+            "Per-Scenario Average MOS",
+            None,
+            lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
+            lambda v: f"{v:.3f}"
+        )
+
+        # 2. Per-Scenario Worst MOS (Min Clip MOS)
+        render_metric_section(
+            "Per-Scenario Worst MOS (Min Clip MOS)",
+            "Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.",
+            lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
+            lambda v: f"{v:.3f}"
+        )
+
+        # 3. Stereo Fidelity
+        render_metric_section(
+            "Per-Scenario Stereo Fidelity",
+            "Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).",
+            lambda rk, s: 1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None,
+            lambda v: f"{v:.4f}"
+        )
+
+        # 4. Transient Fidelity
+        render_metric_section(
+            "Per-Scenario Transient Fidelity",
+            "Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).",
+            lambda rk, s: 1.0 / (1.0 + (stats[rk][s]["centroid_sum"] / stats[rk][s]["centroid_count"])) if stats[rk][s]["centroid_count"] > 0 else None,
+            lambda v: f"{v:.4f}"
+        )
+
+        # 5. Bitrate Accuracy
+        render_metric_section(
+            "Per-Scenario Bitrate Accuracy (Error %)",
+            "Deviation from target bitrate. **Lower is Better**.",
+            lambda rk, s: stats[rk][s]["br_err_sum"] / stats[rk][s]["br_err_count"] if stats[rk][s]["br_err_count"] > 0 else None,
+            lambda v: f"{v:.1f}%",
+            lower_is_better=True
+        )
+
+        # 6. Efficiency
+        render_metric_section(
+            "Per-Scenario Efficiency (Speed xRT)",
+            "Encoding throughput relative to real-time. **Higher is Better**.",
+            lambda rk, s: stats[rk][s]["speed_sum"] / stats[rk][s]["speed_count"] if stats[rk][s]["speed_count"] > 0 else None,
+            lambda v: f"{v:.1f}x"
+        )
 
         f.write("\n</details>\n")
 
