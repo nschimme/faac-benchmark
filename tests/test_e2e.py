@@ -46,7 +46,7 @@ class TestE2EMock(unittest.TestCase):
             f.write("mock")
 
     def _create_dummy_faac(self) -> str:
-        """Shell stub that copies its WAV input to the AAC output path."""
+        """Shell stub that copies its WAV input to the M4A/AAC output path."""
         path = os.path.join(self.test_dir, "dummy_faac")
         with open(path, "w") as f:
             f.write(
@@ -55,7 +55,8 @@ class TestE2EMock(unittest.TestCase):
                 "while [[ $# -gt 0 ]]; do\n"
                 "  case $1 in\n"
                 "    -o) output=\"$2\"; shift 2;;\n"
-                "    -*) shift 2;;\n"
+                "    -b|-q|--object-type) shift 2;;\n"
+                "    -*) shift;;\n"
                 "    *) input=\"$1\"; shift;;\n"
                 "  esac\n"
                 "done\n"

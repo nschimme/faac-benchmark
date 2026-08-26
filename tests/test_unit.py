@@ -23,7 +23,7 @@ class TestDecodeValidate(unittest.TestCase):
     def test_corrupt_file_fails(self):
         from utils import decode_validate
         with tempfile.TemporaryDirectory() as td:
-            bad = os.path.join(td, "bad.aac")
+            bad = os.path.join(td, "bad.m4a")
             with open(bad, "wb") as f:
                 f.write(b"\xff\xf1" + os.urandom(64))
             ok, err = decode_validate(bad)
@@ -283,6 +283,74 @@ class TestAutoBackendSelection(unittest.TestCase):
         self.assertTrue(hasattr(phase2_mos, "HAS_ZIMTOHRLI"))
 
 
+class TestFaadWavConv(unittest.TestCase):
+    def test_get_faad_path(self):
+        from utils import get_faad_path
+        p = get_faad_path()
+        self.assertIsNotNone(p)
+        self.assertTrue(os.path.exists(p))
+
+    def test_wav_conv_faad_decoding(self):
+        from utils import wav_conv
+        import soundfile as sf
+        with tempfile.TemporaryDirectory() as td:
+            ref_wav = os.path.join(td, "ref.wav")
+            write_wav(ref_wav, seconds=1, sr=48000, ch=2)
+            m4a_path = os.path.join(td, "test.m4a")
+            dec_wav = os.path.join(td, "dec.wav")
+
+            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            ok = wav_conv(m4a_path, dec_wav, rate=48000, channels=2)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(dec_wav))
+
+            data, sr = sf.read(dec_wav)
+            self.assertEqual(sr, 48000)
+            self.assertEqual(data.shape[1], 2)
+            self.assertGreater(len(data), 0)
+
+    def test_wav_conv_faad_resampling_mono(self):
+        from utils import wav_conv
+        import soundfile as sf
+        with tempfile.TemporaryDirectory() as td:
+            ref_wav = os.path.join(td, "ref.wav")
+            write_wav(ref_wav, seconds=1, sr=48000, ch=2)
+            m4a_path = os.path.join(td, "test.m4a")
+            dec_wav = os.path.join(td, "dec_16k_mono.wav")
+
+            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+            ok = wav_conv(m4a_path, dec_wav, rate=16000, channels=1)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(dec_wav))
+
+            data, sr = sf.read(dec_wav)
+            self.assertEqual(sr, 16000)
+            self.assertEqual(data.ndim, 1)
+
+    @patch("utils._wav_conv_faad", return_value=False)
+    def test_wav_conv_faad_fallback_to_ffmpeg(self, mock_faad):
+        from utils import wav_conv
+        with tempfile.TemporaryDirectory() as td:
+            ref_wav = os.path.join(td, "ref.wav")
+            write_wav(ref_wav, seconds=1, sr=48000, ch=2)
+            m4a_path = os.path.join(td, "test.m4a")
+            dec_wav = os.path.join(td, "dec.wav")
+
+            subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
+                           capture_output=True, check=True)
+
+            ok = wav_conv(m4a_path, dec_wav, rate=48000, channels=2)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(dec_wav))
+            mock_faad.assert_called_once()
+
+
 class TestRefWavCache(unittest.TestCase):
     """The same reference clip is scored against many scenarios that often
     share identical (rate, channels) conversion params (e.g. every
@@ -290,7 +358,7 @@ class TestRefWavCache(unittest.TestCase):
     should be deduped across those calls, not repeated per scenario."""
 
     def test_same_params_reuses_conversion(self):
-        import phase2_mos
+        from utils import get_cached_ref_wav, wav_conv
         with tempfile.TemporaryDirectory() as td:
             ref = os.path.join(td, "ref.wav")
             write_wav(ref, seconds=1, sr=48000, ch=2)
@@ -298,30 +366,31 @@ class TestRefWavCache(unittest.TestCase):
             os.makedirs(cache_dir)
 
             calls = []
-            orig_wav_conv = phase2_mos.wav_conv
+            import utils
+            orig_wav_conv = utils.wav_conv
 
             def counting_wav_conv(*args, **kwargs):
                 calls.append(args)
                 return orig_wav_conv(*args, **kwargs)
 
-            with patch.object(phase2_mos, "wav_conv", side_effect=counting_wav_conv):
-                p1 = phase2_mos.get_cached_ref_wav(cache_dir, ref, 48000, 2)
-                p2 = phase2_mos.get_cached_ref_wav(cache_dir, ref, 48000, 2)
+            with patch.object(utils, "wav_conv", side_effect=counting_wav_conv):
+                p1 = get_cached_ref_wav(cache_dir, ref, 48000, 2)
+                p2 = get_cached_ref_wav(cache_dir, ref, 48000, 2)
 
             self.assertEqual(len(calls), 1, "second call should hit the cache, not re-run ffmpeg")
             self.assertEqual(p1, p2)
             self.assertTrue(os.path.exists(p1))
 
     def test_different_params_convert_separately(self):
-        import phase2_mos
+        from utils import get_cached_ref_wav
         with tempfile.TemporaryDirectory() as td:
             ref = os.path.join(td, "ref.wav")
             write_wav(ref, seconds=1, sr=48000, ch=2)
             cache_dir = os.path.join(td, "cache")
             os.makedirs(cache_dir)
 
-            p_stereo = phase2_mos.get_cached_ref_wav(cache_dir, ref, 48000, 2)
-            p_mono16k = phase2_mos.get_cached_ref_wav(cache_dir, ref, 16000, 1)
+            p_stereo = get_cached_ref_wav(cache_dir, ref, 48000, 2)
+            p_mono16k = get_cached_ref_wav(cache_dir, ref, 16000, 1)
 
             self.assertNotEqual(p_stereo, p_mono16k)
             self.assertTrue(os.path.exists(p_stereo))
