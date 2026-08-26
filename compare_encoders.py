@@ -72,18 +72,24 @@ def row_key(encoder):
     return f"{encoder.tool_id}_{encoder.profile}"
 
 class Encoder:
-    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None):
+    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None):
         self.name = name
         self.binary_path = binary_path
         self.tool_id = tool_id
         self.profile = profile
+        # An explicit --*-lib path overrides both what we measure and what we
+        # force the binary to actually load at run time (see get_run_env) --
+        # otherwise the dynamic linker would silently keep resolving whatever
+        # same-named system library sits on the default search path.
+        self.lib_override = lib_override
+
         # Footprint is the codec *library* size, not the CLI/host binary size.
         # If the codec is linked dynamically, measure the shared library on disk;
         # otherwise (static linking) fall back to the binary itself.
-        lib_path = find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None
+        lib_path = lib_override or (find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
-        if lib_path and is_system_library(lib_path):
+        if lib_path and not lib_override and is_system_library(lib_path):
             self.size = 0  # System library, don't count towards footprint
         elif lib_path:
             self.size = get_binary_size(lib_path)
@@ -104,6 +110,23 @@ class Encoder:
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
+
+    def get_run_env(self):
+        """Environment overrides needed so the binary actually loads
+        self.lib_override instead of whatever the linker would resolve
+        by default. No-op unless an explicit lib path was given."""
+        if not self.lib_override:
+            return {}
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(self.lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+        return env
 
 def use_he_aac(bitrate_kbps, channels, sample_rate):
     """
@@ -129,12 +152,12 @@ def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
     return 6 <= bitrate_per_ch <= 20
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id, profile="lc"):
-        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac")
+    def __init__(self, name, binary_path, tool_id, profile="lc", lib_override=None):
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         object_type = "he-aac-v1" if self.profile == "he" else "lc"
-        return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--object-type", object_type, "-o", output_path, input_path]
+        return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
@@ -165,13 +188,16 @@ class FDKAACEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        # fdkaac's -b takes bits/sec (no "k" suffix) and only applies in CBR
+        # mode (-m 0, the default). Channel count comes from the input WAV's
+        # own header -- fdkaac has no CLI flag for it.
         if self.profile == "hev2":
             profile = "29"
         elif self.profile == "he":
             profile = "5"
         else:
             profile = "2"
-        cmd = [self.binary_path, "-p", profile, "-b", f"{bitrate_kbps}k", "-m", str(channels)]
+        cmd = [self.binary_path, "-p", profile, "-b", str(bitrate_kbps * 1000), "-m", "0"]
         cmd.extend(["-o", output_path, input_path])
         return cmd
 
@@ -231,16 +257,8 @@ def detect_encoders(args):
     # 1. FAAC
     faac_path = args.faac_bin or shutil.which("faac")
     if faac_path:
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc"))
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he"))
-        if args.faac_lib:
-            sec_sizes = get_elf_section_sizes(args.faac_lib)
-            for enc in encoders[-2:]:
-                enc.size = get_binary_size(args.faac_lib)
-                enc.text_size = sec_sizes.get("text", 0)
-                enc.rodata_size = sec_sizes.get("rodata", 0)
-                enc.bss_size = sec_sizes.get("bss", 0)
-                enc.data_size = sec_sizes.get("data", 0)
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib))
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib))
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
@@ -316,7 +334,7 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
 
     try:
         t_start = time.perf_counter()
-        res = subprocess.run(cmd, capture_output=True, check=False)
+        res = subprocess.run(cmd, capture_output=True, check=False, env=encoder.get_run_env() or None)
 
         if res.returncode != 0:
             raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
