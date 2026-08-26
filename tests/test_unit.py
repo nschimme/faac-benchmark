@@ -338,21 +338,20 @@ class TestFaadWavConv(unittest.TestCase):
             self.assertEqual(sr, 16000)
             self.assertEqual(data.ndim, 1)
 
-    @patch("utils._wav_conv_faad", return_value=False)
-    def test_wav_conv_faad_fallback_to_ffmpeg(self, mock_faad):
+    @patch("utils._wav_conv_ffmpeg", return_value=False)
+    @patch("utils._wav_conv_faad")
+    def test_wav_conv_ffmpeg_fallback_to_faad(self, mock_faad, mock_ffmpeg):
         from utils import wav_conv
+        mock_faad.return_value = True
         with tempfile.TemporaryDirectory() as td:
-            ref_wav = os.path.join(td, "ref.wav")
-            write_wav(ref_wav, seconds=1, sr=48000, ch=2)
             m4a_path = os.path.join(td, "test.m4a")
             dec_wav = os.path.join(td, "dec.wav")
-
-            subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
-                           capture_output=True, check=True)
+            with open(m4a_path, "w") as f:
+                f.write("dummy")
 
             ok = wav_conv(m4a_path, dec_wav, rate=48000, channels=2)
             self.assertTrue(ok)
-            self.assertTrue(os.path.exists(dec_wav))
+            mock_ffmpeg.assert_called_once()
             mock_faad.assert_called_once()
 
 
