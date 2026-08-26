@@ -78,7 +78,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.m4a")
 
     # Determine encoding parameters
-    cmd = [faac_bin_path, "-w", "-o", output_path, input_path]
+    cmd = [faac_bin_path, "-w", "--overwrite", "-o", output_path, input_path]
     if rate_control == "vbr":
         cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
     else:
