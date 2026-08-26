@@ -15,7 +15,10 @@ Run everything below from the repo root (so `data/external/...` and `config`/
 ### `scripts/compare_clips.py`
 
 Ranked per-clip diff of two `run_benchmark.py` result JSONs — per-scenario MOS
-delta, wins/losses, worst/best clips. Also invoked automatically by
+delta, wins/losses, worst/best clips, and a **bits-adjusted MOS delta** that
+charges each result for the bitrate change that produced it (see
+[metrics.md](metrics.md#bits-adjusted-mos-delta) — this is what separates
+"allocates better" from "spent more"). Also invoked automatically by
 `run_benchmark.py --compare`/`--sweep` (after each additional run) and
 `run_benchmark.py --diff a.json b.json`.
 

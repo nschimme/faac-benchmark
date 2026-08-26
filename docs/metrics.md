@@ -83,6 +83,38 @@ cheapest encode is ~71 kbps at q=76 — there is no `-q` value that lands in the
 large but *unchanged* deviation on both sides is expected and not a
 regression.
 
+## Bits-adjusted MOS delta
+
+A candidate that simply spends more bits scores higher. Scenarios are compared
+at a fixed `-b`, but nothing holds the *actual* output bitrate equal, so a raw
+`avgMOSd` cannot distinguish **"allocates bits better"** from **"spent more of
+them"**. This has decided rate-control work the wrong way more than once: a
++1.3% bitrate increase is worth roughly +0.03 MOS at 64 kbps on its own, which
+is larger than most real wins.
+
+`compare_clips.py` therefore prints, for any scenario whose bitrate moved by
+≥0.1%:
+
+```
+48k_stereo_64k: n=49 avgMOSd=+0.0260 ... avg_br=67.4->68.2 (+1.26%) ...
+   bits-adjusted avgMOSd=-0.0056 (at +0.0251 MOS per +1% bits)   <-- the raw delta is explained by bit spend, not allocation
+```
+
+The exchange rate comes from the **baseline's own bitrate ladder**: within a
+family (`48k_stereo` at 24k…256k), the slope of MOS against bitrate is measured
+by central difference around each scenario. No constant is assumed, and the
+estimate is re-derived from whatever baseline you pass in.
+
+Treat it as an estimate, not a verdict — it is a corpus-average slope applied to
+a scenario mean. To settle a close call, **re-encode the candidate at a scaled
+`-b` so actual bytes match the baseline, then compare directly**. That test
+agreed with this adjustment to within 0.013 MOS on both cases it was checked
+against.
+
+Judge a rate-control change on the adjusted number. Judge a change that is meant
+to alter bitrate (rate-control accuracy work) on both, and report them
+separately.
+
 ## Decode errors
 
 Count of candidate clips whose encoded `.aac` ffmpeg could not decode cleanly
