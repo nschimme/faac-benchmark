@@ -52,13 +52,8 @@ import hashlib
 import numpy as np
 from scipy.signal import fftconvolve
 
-try:
-    import ffmpeg
-except ImportError:
-    ffmpeg = None
-
 from config import SCENARIOS
-from utils import get_aac_path
+from utils import get_aac_path, wav_conv, get_cached_ref_wav
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
@@ -67,26 +62,9 @@ FRAME = 2400
 def decode_stereo(path, tmpdir, tag, rate=48000):
     """Decode/transcode any audio file to 48 kHz 16-bit stereo wav."""
     out = os.path.join(tmpdir, f"{tag}.wav")
-    try:
-        if ffmpeg:
-            try:
-                ffmpeg.input(path).output(
-                    out, ar=rate, ac=2, sample_fmt='s16').run(
-                    quiet=True, overwrite_output=True)
-            except ffmpeg.Error as e:
-                print(f"ffmpeg-python failed for {path}:\n{e.stderr.decode() if e.stderr else str(e)}", file=sys.stderr)
-                return None
-        else:
-            r = subprocess.run(["ffmpeg", "-y", "-i", path, "-ar", str(rate), "-ac", "2",
-                               "-sample_fmt", "s16", out],
-                               capture_output=True, text=True)
-            if r.returncode != 0:
-                print(f"ffmpeg failed for {path}:\n{r.stderr}", file=sys.stderr)
-                return None
+    if wav_conv(path, out, rate=rate, channels=2):
         return out
-    except Exception as e:
-        print(f"ffmpeg failed for {path}: {e}", file=sys.stderr)
-        return None
+    return None
 
 
 def read_stereo(path):
@@ -162,10 +140,12 @@ def coherence_error(ref_path, deg_path):
     return float(np.mean(errs)) if errs.size > 0 else None
 
 
-def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None):
+def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None, ref_cache_dir=None):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
+        elif ref_cache_dir and ref_path and os.path.exists(ref_path):
+            ref_wav = get_cached_ref_wav(ref_cache_dir, ref_path, 48000, 2)
         else:
             if not ref_path or not os.path.exists(ref_path):
                 return key, None
@@ -236,8 +216,7 @@ def main():
                 for filename in unique_refs:
                     ref_path = os.path.join(args.external_data_dir, "audio", filename)
                     if os.path.exists(ref_path):
-                        tag = hashlib.md5(filename.encode()).hexdigest()
-                        ref_futs[pool.submit(decode_stereo, ref_path, ref_cache_dir, tag)] = filename
+                        ref_futs[pool.submit(get_cached_ref_wav, ref_cache_dir, ref_path, 48000, 2)] = filename
                 for fut in concurrent.futures.as_completed(ref_futs):
                     filename = ref_futs[fut]
                     wav_path = fut.result()
@@ -250,7 +229,8 @@ def main():
                     compute_single, k, aac_path,
                     ref_wav_map.get(entry.get("filename")),
                     args.external_data_dir,
-                    os.path.join(args.external_data_dir, "audio", entry.get("filename", ""))
+                    os.path.join(args.external_data_dir, "audio", entry.get("filename", "")),
+                    ref_cache_dir
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }

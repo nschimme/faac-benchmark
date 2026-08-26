@@ -9,7 +9,7 @@ reflect your code and the provenance hashing stays meaningful.
 
 ```bash
 # System (Ubuntu/Debian)
-sudo apt-get update && sudo apt-get install -y meson ninja-build bc ffmpeg
+sudo apt-get update && sudo apt-get install -y meson ninja-build bc faad ffmpeg
 
 # Python
 python3 -m venv .venv

@@ -30,7 +30,7 @@ import argparse
 
 import numpy as np
 
-from utils import wav_conv, get_aac_path, calculate_provenance_hash
+from utils import wav_conv, get_aac_path, calculate_provenance_hash, get_cached_ref_wav
 
 try:
     import ffmpeg
@@ -336,28 +336,6 @@ def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
 
     return None, "none"
 
-
-def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
-    """Converts ref_input_path to a (v_rate, v_channels) WAV under cache_dir,
-    reusing a prior conversion for the same (path, rate, channels) key.
-    The same source clip is typically scored against many bitrates/scenarios
-    that share identical conversion parameters (e.g. all 48k_stereo_* run the
-    same clips at 48kHz/2ch), so this avoids redundant ffmpeg decodes of the
-    reference audio. Safe under concurrent workers: the conversion is written
-    to a private temp file and atomically renamed into place, so a cache-miss
-    race just repeats the (idempotent) conversion rather than corrupting it."""
-    key = hashlib.sha1(f"{ref_input_path}|{v_rate}|{v_channels}".encode()).hexdigest()
-    cached_path = os.path.join(cache_dir, f"{key}.wav")
-    if os.path.exists(cached_path):
-        return cached_path
-
-    fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=cache_dir)
-    os.close(fd)
-    if not wav_conv(ref_input_path, tmp_path, v_rate, v_channels):
-        os.unlink(tmp_path)
-        return None
-    os.replace(tmp_path, cached_path)
-    return cached_path
 
 def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None, ref_wav_cache_dir=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)

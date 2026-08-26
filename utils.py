@@ -14,7 +14,12 @@ import hashlib
 import json
 import sys
 import re
+import shutil
+import tempfile
+import math
 from functools import lru_cache
+
+import numpy as np
 
 def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
     """Safe wrapper for subprocess.run."""
@@ -280,8 +285,14 @@ def get_git_tag():
         return None
 
 def get_ffmpeg_path():
-    import shutil
     return shutil.which("ffmpeg")
+
+def get_faad_path():
+    """Returns the path to faad binary if available, else None."""
+    env_faad = os.environ.get("FAAD_BIN")
+    if env_faad and os.path.exists(env_faad):
+        return env_faad
+    return shutil.which("faad")
 
 def ffmpeg_probe(path):
     """Basic probe using ffprobe."""
@@ -311,8 +322,62 @@ def decode_validate(path):
     except Exception as e:
         return False, str(e)
 
+def _wav_conv_faad(input_path, output_path, rate=None, channels=None):
+    faad_bin = get_faad_path()
+    if not faad_bin:
+        return False
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_wav = os.path.join(td, "faad_out.wav")
+        cmd = [faad_bin, "-q", "-o", tmp_wav, input_path]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0 or not os.path.exists(tmp_wav):
+                return False
+
+            try:
+                import soundfile as sf
+                import scipy.signal
+
+                data, sr = sf.read(tmp_wav, dtype='float32', always_2d=True)
+                needs_proc = False
+
+                if channels is not None and data.shape[1] != channels:
+                    needs_proc = True
+                    if channels == 1:
+                        data = data.mean(axis=1, keepdims=True)
+                    elif channels == 2 and data.shape[1] == 1:
+                        data = np.repeat(data, 2, axis=1)
+                    elif channels == 2 and data.shape[1] > 2:
+                        data = data[:, :2]
+
+                if rate is not None and sr != rate:
+                    needs_proc = True
+                    g = math.gcd(rate, sr)
+                    data = scipy.signal.resample_poly(data, rate // g, sr // g, axis=0)
+                    sr = rate
+
+                if needs_proc:
+                    sf.write(output_path, data, sr, subtype='PCM_16')
+                else:
+                    shutil.move(tmp_wav, output_path)
+                return True
+            except Exception:
+                if rate is None and channels is None:
+                    shutil.move(tmp_wav, output_path)
+                    return True
+                return False
+        except Exception:
+            return False
+
 def wav_conv(input_path, output_path, rate=None, channels=None):
-    """Converts audio to WAV using ffmpeg."""
+    """Converts audio to WAV using FAAD2 for AAC files (with FFmpeg fallback)
+    and FFmpeg for non-AAC formats."""
+    is_aac = input_path.lower().endswith(".aac")
+    if is_aac:
+        if _wav_conv_faad(input_path, output_path, rate, channels):
+            return True
+
     cmd = ["ffmpeg", "-y", "-i", input_path]
     if rate:
         cmd.extend(["-ar", str(rate)])
@@ -329,6 +394,24 @@ def wav_conv(input_path, output_path, rate=None, channels=None):
     except Exception as e:
         print(f"FFmpeg conversion failed for {input_path}: {e}", file=sys.stderr)
         return False
+
+def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
+    """Converts ref_input_path to a (v_rate, v_channels) WAV under cache_dir,
+    reusing a prior conversion for the same (path, rate, channels) key.
+    Safe under concurrent workers: conversion is written to a private temp
+    file and atomically renamed into place."""
+    key = hashlib.sha1(f"{ref_input_path}|{v_rate}|{v_channels}".encode()).hexdigest()
+    cached_path = os.path.join(cache_dir, f"{key}.wav")
+    if os.path.exists(cached_path):
+        return cached_path
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=cache_dir)
+    os.close(fd)
+    if not wav_conv(ref_input_path, tmp_path, v_rate, v_channels):
+        os.unlink(tmp_path)
+        return None
+    os.replace(tmp_path, cached_path)
+    return cached_path
 
 def encoder_env_signature(env=None):
     """Stable signature of the FAAC_*-prefixed env vars that can change the

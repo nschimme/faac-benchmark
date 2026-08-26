@@ -21,7 +21,7 @@ jobs:
       - name: Install Encoders
         run: |
           sudo apt-get update
-          sudo apt-get install -y faac fdkaac ffmpeg
+          sudo apt-get install -y faac faad fdkaac ffmpeg
 
       - name: Install dependencies
         run: |

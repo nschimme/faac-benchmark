@@ -33,6 +33,8 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils import wav_conv
 from visqol import VisqolApi
 
 _api = None
@@ -53,7 +55,8 @@ def sh(cmd, env_extra=None):
         raise RuntimeError(f"{cmd[0]} failed: {r.stderr.decode()[-300:]}")
 
 def to_48k_stereo(src, dst):
-    sh(["ffmpeg", "-y", "-i", src, "-ac", "2", "-ar", "48000", dst])
+    if not wav_conv(src, dst, rate=48000, channels=2):
+        raise RuntimeError(f"Audio conversion failed for {src}")
 
 def parse_env(spec):
     out = {}
