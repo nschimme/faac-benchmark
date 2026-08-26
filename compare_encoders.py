@@ -61,11 +61,22 @@ def is_system_library(path):
     # On Linux, we generally want to measure library size even if in /usr/lib
     return False
 
+PROFILE_LABELS = {"lc": "LC", "he": "HE-v1"}
+
+def profile_label(profile):
+    return PROFILE_LABELS[profile]
+
+def row_key(encoder):
+    """Stable identity key for a (tool, profile) combination -- used for
+    output filenames and cross-phase joins. Never used for display."""
+    return f"{encoder.tool_id}_{encoder.profile}"
+
 class Encoder:
-    def __init__(self, name, binary_path, encoder_type, lib_name_substr=None):
+    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None):
         self.name = name
         self.binary_path = binary_path
-        self.encoder_type = encoder_type
+        self.tool_id = tool_id
+        self.profile = profile
         # Footprint is the codec *library* size, not the CLI/host binary size.
         # If the codec is linked dynamically, measure the shared library on disk;
         # otherwise (static linking) fall back to the binary itself.
@@ -107,11 +118,12 @@ def use_he_aac(bitrate_kbps, channels, sample_rate):
     return 10 <= bitrate_per_ch <= 48
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, encoder_type):
-        super().__init__(name, binary_path, encoder_type, lib_name_substr="libfaac")
+    def __init__(self, name, binary_path, tool_id, profile="lc"):
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
+        object_type = "he-aac-v1" if self.profile == "he" else "lc"
+        return [self.binary_path, "-b", str(bitrate_kbps), "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
@@ -119,10 +131,9 @@ class FFmpegEncoder(Encoder):
             "libfdk_aac": "libfdk-aac",
             "vo_aacenc": "vo-aacenc",
         }.get(codec_name)
-        super().__init__(name, binary_path, "ffmpeg", lib_name_substr=lib_name_substr)
+        super().__init__(name, binary_path, f"ffmpeg_{codec_name}", profile, lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
         self.supports_nmr = supports_nmr
-        self.profile = profile
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
@@ -136,9 +147,8 @@ class FFmpegEncoder(Encoder):
         return cmd
 
 class FDKAACEncoder(Encoder):
-    def __init__(self, name, binary_path, encoder_type, profile="lc"):
-        super().__init__(name, binary_path, encoder_type, lib_name_substr="libfdk-aac")
-        self.profile = profile
+    def __init__(self, name, binary_path, tool_id, profile="lc"):
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         profile = "5" if self.profile == "he" else "2"
@@ -148,8 +158,7 @@ class FDKAACEncoder(Encoder):
 
 class AACEncEncoder(Encoder):
     def __init__(self, name, binary_path, profile="lc"):
-        super().__init__(name, binary_path, "fdkaac", lib_name_substr="libfdk-aac")
-        self.profile = profile
+        super().__init__(name, binary_path, "aac_enc", profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         aot = "5" if self.profile == "he" else "2"
@@ -157,8 +166,8 @@ class AACEncEncoder(Encoder):
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
 class FalabaacEncoder(Encoder):
-    def __init__(self, name, binary_path):
-        super().__init__(name, binary_path, "falabaac")
+    def __init__(self, name, binary_path, profile="lc"):
+        super().__init__(name, binary_path, "falabaac", profile)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         # falabaac's own --help/source comment describe -b as per-channel, but its
@@ -170,8 +179,7 @@ class FalabaacEncoder(Encoder):
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path, profile="lc"):
         # AudioToolbox is the framework providing the AAC codec on macOS
-        super().__init__(name, binary_path, "afconvert", lib_name_substr="AudioToolbox")
-        self.profile = profile
+        super().__init__(name, binary_path, "afconvert", profile, lib_name_substr="AudioToolbox")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         codec = "aach" if self.profile == "he" else "aac "
@@ -195,14 +203,16 @@ def detect_encoders(args):
     # 1. FAAC
     faac_path = args.faac_bin or shutil.which("faac")
     if faac_path:
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac"))
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc"))
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he"))
         if args.faac_lib:
-            encoders[-1].size = get_binary_size(args.faac_lib)
             sec_sizes = get_elf_section_sizes(args.faac_lib)
-            encoders[-1].text_size = sec_sizes.get("text", 0)
-            encoders[-1].rodata_size = sec_sizes.get("rodata", 0)
-            encoders[-1].bss_size = sec_sizes.get("bss", 0)
-            encoders[-1].data_size = sec_sizes.get("data", 0)
+            for enc in encoders[-2:]:
+                enc.size = get_binary_size(args.faac_lib)
+                enc.text_size = sec_sizes.get("text", 0)
+                enc.rodata_size = sec_sizes.get("rodata", 0)
+                enc.bss_size = sec_sizes.get("bss", 0)
+                enc.data_size = sec_sizes.get("data", 0)
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
@@ -220,8 +230,8 @@ def detect_encoders(args):
         try:
             res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
             if "libfdk_aac" in res.stdout:
-                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg) LC", ffmpeg_path, "libfdk_aac", profile="lc"))
-                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg) HE-v1", ffmpeg_path, "libfdk_aac", profile="he"))
+                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="lc"))
+                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="he"))
             if "vo_aacenc" in res.stdout:
                 encoders.append(FFmpegEncoder("VO-AAC (FFmpeg)", ffmpeg_path, "vo_aacenc"))
         except:
@@ -230,14 +240,14 @@ def detect_encoders(args):
     # 3. Standalone FDKAAC
     fdkaac_path = args.fdkaac_bin or shutil.which("fdkaac")
     if fdkaac_path:
-        encoders.append(FDKAACEncoder("fdkaac LC", fdkaac_path, "fdkaac", profile="lc"))
-        encoders.append(FDKAACEncoder("fdkaac HE-v1", fdkaac_path, "fdkaac", profile="he"))
+        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="lc"))
+        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="he"))
 
     # 3b. AAC-ENC (alternative FDK-AAC wrapper)
     aacenc_path = getattr(args, 'aac_enc_bin', None) or shutil.which("aac-enc")
     if aacenc_path:
-        encoders.append(AACEncEncoder("aac-enc LC", aacenc_path, profile="lc"))
-        encoders.append(AACEncEncoder("aac-enc HE-v1", aacenc_path, profile="he"))
+        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="lc"))
+        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="he"))
 
     # 3c. Falabaac (LC-only; no SBR/HE-AAC support)
     falabaac_path = getattr(args, 'falabaac_bin', None) or shutil.which("falabaac")
@@ -247,8 +257,8 @@ def detect_encoders(args):
     # 4. AFConvert (macOS)
     afconvert_path = getattr(args, 'afconvert_bin', None) or shutil.which("afconvert")
     if afconvert_path:
-        encoders.append(AFConvertEncoder("Apple AAC LC", afconvert_path, profile="lc"))
-        encoders.append(AFConvertEncoder("Apple AAC HE-v1", afconvert_path, profile="he"))
+        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="lc"))
+        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="he"))
 
     return encoders
 
@@ -265,7 +275,7 @@ def gate_filter(name, filtered_samples):
 
 def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     input_path = os.path.join(data_dir, sample)
-    output_filename = f"{encoder.name}_{scenario_name}_{sample}.aac".replace(" ", "_")
+    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}.aac".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
     channels = 1 if cfg["mode"] == "speech" else 2
@@ -298,7 +308,9 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             decode_err = f"Channels mismatch: {out_channels} vs {exp_channels}"
 
         return {
-            "encoder": encoder.name,
+            "tool": encoder.name,
+            "profile": encoder.profile,
+            "row_key": row_key(encoder),
             "scenario": scenario_name,
             "filename": sample,
             "duration": duration,
@@ -311,9 +323,11 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             "aac_path": output_path
         }
     except Exception as e:
-        print(f"Error encoding {sample} with {encoder.name}: {e}")
+        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {e}")
         return {
-            "encoder": encoder.name,
+            "tool": encoder.name,
+            "profile": encoder.profile,
+            "row_key": row_key(encoder),
             "scenario": scenario_name,
             "filename": sample,
             "duration": 0,
@@ -356,7 +370,7 @@ def main():
         print("No encoders detected!")
         sys.exit(1)
 
-    print(f"Detected encoders: {', '.join([e.name for e in encoders])}")
+    print(f"Detected encoders: {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
 
     all_results = []
 
@@ -392,7 +406,7 @@ def main():
         sample_rate = cfg.get("rate", 48000)
 
         for encoder in encoders:
-            if getattr(encoder, "profile", "lc") == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
+            if encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v1 range.")
                 continue
             print(f"  Encoding with {encoder.name}...")
@@ -416,8 +430,7 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            enc_clean = res["encoder"].replace(" ", "_")
-            key = f"res_{enc_clean}_{i}"
+            key = f"res_{res['row_key']}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
@@ -449,8 +462,7 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            enc_clean = res["encoder"].replace(" ", "_")
-            key = f"res_{enc_clean}_{i}"
+            key = f"res_{res['row_key']}_{i}"
             if key in updated_bridge["matrix"]:
                 res["mos"] = updated_bridge["matrix"][key].get("mos")
 
@@ -463,8 +475,7 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
-            enc_clean = res["encoder"].replace(" ", "_")
-            key = f"res_{enc_clean}_{i}"
+            key = f"res_{res['row_key']}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
@@ -498,8 +509,7 @@ def main():
             updated_bridge = json.load(f)
 
         for i, res in enumerate(all_results):
-            enc_clean = res["encoder"].replace(" ", "_")
-            key = f"res_{enc_clean}_{i}"
+            key = f"res_{res['row_key']}_{i}"
             if key in updated_bridge["matrix"]:
                 res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
 
@@ -521,11 +531,11 @@ def format_size(bytes_val):
     return f"{bytes_val / 1024:.1f} KB"
 
 def generate_leaderboard(encoders, results, output_path, scenario_list):
-    # Aggregation keyed by encoder name. Every encoder is compared at the
-    # same target bitrate (there is no cross-encoder VBR/quality mode here --
-    # each encoder's own quality knob isn't comparable to any other's, see
-    # compare_encoders.py's Encoder.get_encode_cmd), so there is nothing left
-    # to key on beyond the encoder itself.
+    # Aggregation keyed by row_key (tool, profile). Every encoder is compared
+    # at the same target bitrate (there is no cross-encoder VBR/quality mode
+    # here -- each encoder's own quality knob isn't comparable to any other's,
+    # see compare_encoders.py's Encoder.get_encode_cmd), so there is nothing
+    # left to key on beyond the (tool, profile) combination itself.
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "ic_sum": 0, "ic_count": 0,
@@ -537,13 +547,13 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     error_counts = defaultdict(int)
 
     for res in results:
-        e = res["encoder"]
+        e = res["row_key"]
         s = res["scenario"]
 
         if not res.get("decode_valid"):
             err_msg = res.get("decode_error") or "Unknown error"
             short_err = err_msg.split("\n")[0].split(":")[0].strip()
-            error_counts[f"{e}: {short_err}"] += 1
+            error_counts[(e, short_err)] += 1
 
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
@@ -568,11 +578,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         if res.get("decode_valid"):
             stats[e][s]["valid_count"] += 1
 
-    encoder_info = {e.name: e for e in encoders}
-    all_encoder_names = sorted(stats.keys())
+    encoder_info = {row_key(e): e for e in encoders}
+    all_row_keys = sorted(stats.keys())
 
     overall = {}
-    for e_name in all_encoder_names:
+    for e_name in all_row_keys:
         e_mos, e_speed, e_br_err, e_ic = [], [], [], []
         e_mos_min = 6.0
         e_total = e_valid = 0
@@ -606,7 +616,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
         enc_obj = encoder_info.get(e_name)
         overall[e_name] = {
-            "encoder": e_name,
+            "tool": enc_obj.name if enc_obj else e_name,
+            "profile": enc_obj.profile if enc_obj else "lc",
             "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
             "worst_mos": e_mos_min if e_mos else 0,
             "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
@@ -619,11 +630,86 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             "scenario_total": len(scenario_list)
         }
 
+    # Overall Rankings roll up to one row per tool: for each scenario, use
+    # whichever profile that tool actually produced the best (or only) result
+    # for. This is deliberate -- a tool that supports HE-AAC gets its
+    # low-bitrate efficiency counted as part of what it can achieve, the same
+    # way a real deployment would pick the better profile automatically. Tools
+    # without HE-AAC support are simply scored on the one profile they have.
+    # The LC/HE split is still fully visible in the per-scenario tables below.
+    tool_row_keys = defaultdict(list)
+    for e in encoders:
+        tool_row_keys[e.name].append(row_key(e))
+
+    def scenario_best_row_key(candidates, s_name):
+        available = [rk for rk in candidates if stats[rk][s_name]["total_count"] > 0]
+        if not available:
+            return None
+        def sort_key(rk):
+            st = stats[rk][s_name]
+            mos_avg = st["mos_sum"] / st["mos_count"] if st["mos_count"] > 0 else None
+            valid_rate = st["valid_count"] / st["total_count"] if st["total_count"] > 0 else 0
+            return (mos_avg is not None, mos_avg if mos_avg is not None else 0, valid_rate)
+        return max(available, key=sort_key)
+
+    tool_overall = {}
+    for tool_name, candidates in tool_row_keys.items():
+        e_mos, e_speed, e_br_err, e_ic = [], [], [], []
+        e_mos_min = 6.0
+        has_data = False
+        scenario_count = 0
+        tool_total = tool_valid = 0
+        for rk in candidates:
+            for s_name in scenario_list:
+                tool_total += stats[rk][s_name]["total_count"]
+                tool_valid += stats[rk][s_name]["valid_count"]
+
+        for s_name in scenario_list:
+            rk = scenario_best_row_key(candidates, s_name)
+            if rk is None:
+                continue
+            s_stats = stats[rk][s_name]
+            s_has_data = False
+            if s_stats["mos_count"] > 0:
+                e_mos.append(s_stats["mos_sum"] / s_stats["mos_count"])
+                e_mos_min = min(e_mos_min, s_stats["mos_min"])
+                s_has_data = True
+            if s_stats["speed_count"] > 0:
+                e_speed.append(s_stats["speed_sum"] / s_stats["speed_count"])
+                s_has_data = True
+            if s_stats["br_err_count"] > 0:
+                e_br_err.append(s_stats["br_err_sum"] / s_stats["br_err_count"])
+                s_has_data = True
+            if s_stats["ic_count"] > 0:
+                e_ic.append(s_stats["ic_sum"] / s_stats["ic_count"])
+                s_has_data = True
+            if s_has_data:
+                has_data = True
+                scenario_count += 1
+
+        if not has_data:
+            continue
+
+        enc_obj = next((e for e in encoders if e.name == tool_name), None)
+        tool_overall[tool_name] = {
+            "tool": tool_name,
+            "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
+            "worst_mos": e_mos_min if e_mos else 0,
+            "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
+            "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
+            "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
+            "text_size": enc_obj.text_size if enc_obj else 0,
+            "rodata_size": enc_obj.rodata_size if enc_obj else 0,
+            "valid_rate": (tool_valid / tool_total * 100) if tool_total > 0 else 0,
+            "scenario_count": scenario_count,
+            "scenario_total": len(scenario_list)
+        }
+
     # Rank by worst-case MOS first, overall (mean) MOS as tiebreaker -- a strong
     # mean can hide a bad worst-case scenario, and worst-case robustness is what
     # matters most in practice (see Metric Legend below).
-    has_mos = any(o["overall_mos"] > 0 for o in overall.values())
-    sorted_encoders = sorted(overall.keys(), key=lambda x: (overall[x]["worst_mos"], overall[x]["overall_mos"]), reverse=True) if has_mos else sorted(overall.keys())
+    has_mos = any(o["overall_mos"] > 0 for o in tool_overall.values())
+    sorted_tools = sorted(tool_overall.keys(), key=lambda x: (tool_overall[x]["worst_mos"], tool_overall[x]["overall_mos"]), reverse=True) if has_mos else sorted(tool_overall.keys())
 
     with open(output_path, "w") as f:
         f.write("# AAC Encoder Leaderboard\n\n")
@@ -632,22 +718,23 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
-        best_mos = max(o['overall_mos'] for o in overall.values()) if overall else 0
-        best_worst_mos = max(o['worst_mos'] for o in overall.values()) if overall else 0
-        best_speed = max(o['avg_speed'] for o in overall.values()) if overall else 0
-        has_ic = any(o['avg_ic'] > 0 for o in overall.values())
-        best_ic = max(1.0 - o['avg_ic'] for o in overall.values() if o['avg_ic'] > 0) if has_ic else None
-        valid_br = [o['avg_br_err'] for o in overall.values()]
+        best_mos = max(o['overall_mos'] for o in tool_overall.values()) if tool_overall else 0
+        best_worst_mos = max(o['worst_mos'] for o in tool_overall.values()) if tool_overall else 0
+        best_speed = max(o['avg_speed'] for o in tool_overall.values()) if tool_overall else 0
+        has_ic = any(o['avg_ic'] > 0 for o in tool_overall.values())
+        best_ic = max(1.0 - o['avg_ic'] for o in tool_overall.values() if o['avg_ic'] > 0) if has_ic else None
+        valid_br = [o['avg_br_err'] for o in tool_overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
-        for i, e_name in enumerate(sorted_encoders):
-            o = overall[e_name]
+        for i, tool_name in enumerate(sorted_tools):
+            o = tool_overall[tool_name]
             rank_str = f"🏆 {i+1}" if i == 0 and o['worst_mos'] > 0 else f"{i+1}"
 
             if o['valid_rate'] == 100:
                 status_str = "OK"
             else:
-                relevant_errors = {k.split(": ", 1)[1]: v for k, v in error_counts.items() if k.startswith(f"{e_name}:")}
+                candidates = tool_row_keys[tool_name]
+                relevant_errors = {err: v for (rk, err), v in error_counts.items() if rk in candidates}
                 top_err = max(relevant_errors, key=relevant_errors.get) if relevant_errors else "Err"
                 status_str = f"❌ {100-o['valid_rate']:.1f}% ({top_err})"
 
@@ -666,14 +753,21 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
             rom_str = format_size(o['text_size'] + o['rodata_size'])
 
-            f.write(f"| {rank_str} | {e_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
 
         # Per-Scenario Tables in Collapsible Section
         f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
 
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
         all_em_keys_sorted = sorted(overall.keys())
-        em_headers = all_em_keys_sorted
+        tool_profile_counts = defaultdict(set)
+        for em in all_em_keys_sorted:
+            tool_profile_counts[overall[em]['tool']].add(overall[em]['profile'])
+        em_headers = [
+            overall[em]['tool'] if len(tool_profile_counts[overall[em]['tool']]) == 1
+            else f"{overall[em]['tool']} {profile_label(overall[em]['profile'])}"
+            for em in all_em_keys_sorted
+        ]
 
         # 1. Perceptual Quality (MOS)
         f.write("\n### Per-Scenario Perceptual Quality (MOS)\n\n")
@@ -734,14 +828,17 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             f.write("\n## Failure Analysis\n\n")
             f.write("| Encoder: Error Type | Occurrences |\n")
             f.write("| :--- | :---: |\n")
-            for err_key in sorted(error_counts.keys(), key=lambda x: error_counts[x], reverse=True):
-                f.write(f"| {err_key} | {error_counts[err_key]} |\n")
+            for row_k, err in sorted(error_counts.keys(), key=lambda k: error_counts[k], reverse=True):
+                enc_obj = encoder_info.get(row_k)
+                label = f"{enc_obj.name} {profile_label(enc_obj.profile)}" if enc_obj else row_k
+                f.write(f"| {label}: {err} | {error_counts[(row_k, err)]} |\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
         f.write("- **Ranking**: sorted by **Worst MOS** (the single worst scenario score an encoder produced), not the mean -- a strong average can hide a bad worst case, and worst-case robustness is what matters most in practice. **Overall MOS** (the mean) is shown alongside as a tiebreaker/secondary signal.\n")
+        f.write("- **Overall Rankings & Profile Selection**: each row is one tool (binary/library), scored per scenario using whichever AAC profile (LC or HE-AAC v1) that tool actually produced the best result with -- a tool with HE-AAC support gets its low-bitrate efficiency counted here, the same way a real deployment would pick the better profile automatically. Tools without HE-AAC support are scored on their one available profile. See the Per-Scenario tables below for the raw LC vs HE-v1 breakdown per tool.\n")
         f.write("- **Quality (MOS)**: Perceptual audio quality via Zimtohrli or ViSQOL (1-5, **Higher is Better**)\n")
-        f.write("- **Scenarios**: how many of the run's scenarios this encoder/profile actually produced results for (e.g. HE-AAC v1 is only valid in a bitrate/sample-rate subset) -- a lower count means Overall MOS is averaged over fewer, not necessarily harder or easier, cases.\n")
+        f.write("- **Scenarios**: how many of the run's scenarios this encoder actually produced results for (e.g. HE-AAC v1 is only valid in a bitrate/sample-rate subset) -- a lower count means Overall MOS is averaged over fewer, not necessarily harder or easier, cases.\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
