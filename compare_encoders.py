@@ -123,7 +123,7 @@ class FAACEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         object_type = "he-aac-v1" if self.profile == "he" else "lc"
-        return [self.binary_path, "-b", str(bitrate_kbps), "--object-type", object_type, "-o", output_path, input_path]
+        return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
@@ -183,9 +183,8 @@ class AFConvertEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         codec = "aach" if self.profile == "he" else "aac "
-        # Use ADTS format to get a standard .aac file
-        # Add -c to force channel count if needed
-        return [self.binary_path, "-f", "adts", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
+        # Use m4af format for M4A container
+        return [self.binary_path, "-f", "m4af", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
 def get_audio_info(path):
     try:
@@ -275,7 +274,7 @@ def gate_filter(name, filtered_samples):
 
 def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     input_path = os.path.join(data_dir, sample)
-    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}.aac".replace(" ", "_")
+    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}.m4a".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
     channels = 1 if cfg["mode"] == "speech" else 2
@@ -434,10 +433,10 @@ def main():
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
-                "aac": f"{key}.aac",
+                "aac": f"{key}.m4a",
                 "mos": None
             }
-            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.aac"))
+            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.m4a"))
             valid_count += 1
 
         if valid_count == 0:
@@ -479,11 +478,11 @@ def main():
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
-                "aac": f"{key}.aac",
+                "aac": f"{key}.m4a",
                 "ic_err": None
             }
             # Ensure files exist in output_dir
-            target_path = os.path.join(output_dir, f"{key}.aac")
+            target_path = os.path.join(output_dir, f"{key}.m4a")
             if not os.path.exists(target_path):
                 shutil.copy(res["aac_path"], target_path)
             valid_count += 1

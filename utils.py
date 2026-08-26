@@ -371,9 +371,9 @@ def _wav_conv_faad(input_path, output_path, rate=None, channels=None):
             return False
 
 def wav_conv(input_path, output_path, rate=None, channels=None):
-    """Converts audio to WAV using FAAD2 for AAC files (with FFmpeg fallback)
-    and FFmpeg for non-AAC formats."""
-    is_aac = input_path.lower().endswith(".aac")
+    """Converts audio to WAV using FAAD2 for AAC/M4A/MP4 files (with FFmpeg fallback)
+    and FFmpeg for other formats."""
+    is_aac = input_path.lower().endswith((".aac", ".m4a", ".mp4"))
     if is_aac:
         if _wav_conv_faad(input_path, output_path, rate, channels):
             return True
@@ -505,8 +505,8 @@ def get_scenario_sort_key(name):
 
 
 def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
-    # Preferred: the matrix entry records the exact .aac file phase1 produced for
-    # this run/tag (phase1 writes "{key}_{precision}.aac", precision == the run
+    # Preferred: the matrix entry records the exact .m4a/.mp4/.aac file phase1 produced for
+    # this run/tag (phase1 writes "{key}_{precision}.m4a", precision == the run
     # tag). This is unambiguous and is essential for --compare/--sweep, where
     # every tag shares aac_dir: a bare key-prefix match below would return the
     # first matching file regardless of tag, silently scoring another variant's
@@ -525,17 +525,18 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
     elif "_cand.json" in results_filename:
         precision_suffix = "_cand"
 
-    # Try exact match first
-    target_filename = f"{key}{precision_suffix}.aac"
-    aac_path = os.path.join(aac_dir, target_filename)
-    if os.path.exists(aac_path):
-        return aac_path
+    # Try exact match with preferred extensions (.m4a, .mp4, .aac)
+    for ext in [".m4a", ".mp4", ".aac"]:
+        target_filename = f"{key}{precision_suffix}{ext}"
+        aac_path = os.path.join(aac_dir, target_filename)
+        if os.path.exists(aac_path):
+            return aac_path
 
     # Fallback to prefix matching (legacy results lacking a recorded "aac").
     # Sort for determinism so repeated runs at least resolve identically.
     if aac_files is None:
         try:
-            aac_files = [f for f in os.listdir(aac_dir) if f.endswith(".aac")]
+            aac_files = [f for f in os.listdir(aac_dir) if f.endswith((".m4a", ".mp4", ".aac"))]
         except FileNotFoundError:
             return None
 

@@ -75,10 +75,10 @@ def worker_init(cpu_id_queue):
 def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None, rate_control="abr"):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
-    output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.aac")
+    output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.m4a")
 
     # Determine encoding parameters
-    cmd = [faac_bin_path, "-o", output_path, input_path]
+    cmd = [faac_bin_path, "-w", "-o", output_path, input_path]
     if rate_control == "vbr":
         cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
     else:
@@ -315,12 +315,13 @@ def run_benchmark(
             for sample in tp_samples:
                 input_path = os.path.join(tp_dir, sample)
                 output_path = os.path.join(
-                    OUTPUT_DIR, f"tp_{sample}_{precision}.aac")
+                    OUTPUT_DIR, f"tp_{sample}_{precision}.m4a")
 
                 print(f"  Benchmarking throughput with {sample}...")
                 try:
                     # Warmup
                     subprocess.run([faac_bin_path,
+                                    "-w",
                                     "-o",
                                     output_path,
                                     input_path],
@@ -336,6 +337,7 @@ def run_benchmark(
                     for _ in range(TP_REPS):
                         start_time = time.perf_counter()
                         subprocess.run([faac_bin_path,
+                                        "-w",
                                         "-o",
                                         output_path,
                                         input_path],

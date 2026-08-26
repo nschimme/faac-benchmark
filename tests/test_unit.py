@@ -23,7 +23,7 @@ class TestDecodeValidate(unittest.TestCase):
     def test_corrupt_file_fails(self):
         from utils import decode_validate
         with tempfile.TemporaryDirectory() as td:
-            bad = os.path.join(td, "bad.aac")
+            bad = os.path.join(td, "bad.m4a")
             with open(bad, "wb") as f:
                 f.write(b"\xff\xf1" + os.urandom(64))
             ok, err = decode_validate(bad)
@@ -296,14 +296,14 @@ class TestFaadWavConv(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ref_wav = os.path.join(td, "ref.wav")
             write_wav(ref_wav, seconds=1, sr=48000, ch=2)
-            aac_path = os.path.join(td, "test.aac")
+            m4a_path = os.path.join(td, "test.m4a")
             dec_wav = os.path.join(td, "dec.wav")
 
-            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", aac_path],
+            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 
-            ok = wav_conv(aac_path, dec_wav, rate=48000, channels=2)
+            ok = wav_conv(m4a_path, dec_wav, rate=48000, channels=2)
             self.assertTrue(ok)
             self.assertTrue(os.path.exists(dec_wav))
 
@@ -318,14 +318,14 @@ class TestFaadWavConv(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ref_wav = os.path.join(td, "ref.wav")
             write_wav(ref_wav, seconds=1, sr=48000, ch=2)
-            aac_path = os.path.join(td, "test.aac")
+            m4a_path = os.path.join(td, "test.m4a")
             dec_wav = os.path.join(td, "dec_16k_mono.wav")
 
-            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", aac_path],
+            r = subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 
-            ok = wav_conv(aac_path, dec_wav, rate=16000, channels=1)
+            ok = wav_conv(m4a_path, dec_wav, rate=16000, channels=1)
             self.assertTrue(ok)
             self.assertTrue(os.path.exists(dec_wav))
 
@@ -339,13 +339,13 @@ class TestFaadWavConv(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ref_wav = os.path.join(td, "ref.wav")
             write_wav(ref_wav, seconds=1, sr=48000, ch=2)
-            aac_path = os.path.join(td, "test.aac")
+            m4a_path = os.path.join(td, "test.m4a")
             dec_wav = os.path.join(td, "dec.wav")
 
-            subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", aac_path],
+            subprocess.run(["ffmpeg", "-y", "-i", ref_wav, "-c:a", "aac", m4a_path],
                            capture_output=True, check=True)
 
-            ok = wav_conv(aac_path, dec_wav, rate=48000, channels=2)
+            ok = wav_conv(m4a_path, dec_wav, rate=48000, channels=2)
             self.assertTrue(ok)
             self.assertTrue(os.path.exists(dec_wav))
             mock_faad.assert_called_once()

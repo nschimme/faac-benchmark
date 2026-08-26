@@ -56,7 +56,7 @@ def get_dur(path, cache={}):
 def avg_kbps_for_q(q, samples, tmp):
     total_bits, total_dur = 0, 0
     for s in samples:
-        subprocess.run(["faac", "-q", str(q), "-o", tmp, s, "-X", "--overwrite"],
+        subprocess.run(["faac", "-w", "-q", str(q), "-o", tmp, s, "-X", "--overwrite"],
                         capture_output=True)
         total_bits += os.path.getsize(tmp) * 8
         total_dur += get_dur(s)
@@ -94,7 +94,7 @@ def main():
     args = parser.parse_args()
 
     names = [s.strip() for s in args.scenarios.split(",")] if args.scenarios else list(SCENARIOS.keys())
-    tmp = "/tmp/_calibrate_vbr_q.aac"
+    tmp = "/tmp/_calibrate_vbr_q.m4a"
 
     print(f"{'scenario':<18}{'target':>8}{'chosen_q':>10}{'actual':>10}{'err%':>8}")
     results = {}

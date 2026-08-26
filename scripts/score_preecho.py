@@ -63,8 +63,8 @@ def decode_aac(aac_path, wav_path, sr=48000, channels=1):
 
 
 def encode_aac(faac_bin, wav_path, aac_path, bitrate, extra_args=None, env_extra=None):
-    """Encode WAV to AAC via FAAC at the given total bitrate (kbps)."""
-    cmd = [faac_bin, '-b', str(bitrate), '-o', aac_path, wav_path]
+    """Encode WAV to AAC/M4A via FAAC at the given total bitrate (kbps)."""
+    cmd = [faac_bin, '-w', '-b', str(bitrate), '-o', aac_path, wav_path]
     if extra_args:
         cmd.extend(extra_args)
     env = dict(os.environ)
@@ -93,7 +93,7 @@ def require_tuning_build(faac_bin):
         subprocess.run(['ffmpeg', '-y', '-f', 'lavfi', '-i',
                         'sine=frequency=1000:duration=0.2', '-ar', '48000',
                         '-ac', '1', wav], capture_output=True, check=True)
-        out = subprocess.run([faac_bin, '-b', '64', '-o', os.path.join(tmp, 'probe.aac'), wav],
+        out = subprocess.run([faac_bin, '-w', '-b', '64', '-o', os.path.join(tmp, 'probe.m4a'), wav],
                              capture_output=True)
         banner = 'FAAC_TUNING build' in out.stderr.decode(errors='replace')
     if not banner:
@@ -489,7 +489,7 @@ def tns_ab_one(encoder, enc_bin, ref_wav, bitrates, tmp, force_long=False,
     ref, sr = load_mono(ref_wav)
     onsets = detect_onsets(ref, sr)
     result = {}
-    ext = 'aac' if encoder == 'faac' else 'm4a'
+    ext = 'm4a'
     for br in bitrates:
         entry = {'nper': [], 'zim': None}
         try:
