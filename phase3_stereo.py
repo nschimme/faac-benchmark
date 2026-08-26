@@ -37,6 +37,14 @@
  for stereo coding remains a subjective MUSHRA/ABX listening test. Use this to
  ensure stereo changes do not silently degrade the image, and to detect when a
  change trades real stereo fidelity (higher is better) for a higher (monaural) MOS.
+
+ This phase also computes attack-centroid-shift (see transient.py), a
+ transient-fidelity diagnostic unrelated to the stereo image but folded in
+ here rather than given its own phase: both metrics need the same
+ reference/decoded audio decoded once, and a fourth full decode pass over
+ the matrix (after phase1 encode and phase2 MOS) would be pure added cost
+ for no benefit. mono-mixed from the same decoded stereo WAVs this phase
+ already produces, so it costs no extra decode.
 """
 
 import os
@@ -54,6 +62,7 @@ from scipy.signal import fftconvolve
 
 from config import SCENARIOS
 from utils import get_aac_path, wav_conv, get_cached_ref_wav
+from transient import attack_centroid_deltas
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
@@ -140,7 +149,8 @@ def coherence_error(ref_path, deg_path):
     return float(np.mean(errs)) if errs.size > 0 else None
 
 
-def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None, ref_cache_dir=None):
+def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None,
+                    ref_cache_dir=None, want_ic=True, want_transient=True):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
@@ -148,26 +158,52 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
             ref_wav = get_cached_ref_wav(ref_cache_dir, ref_path, 48000, 2)
         else:
             if not ref_path or not os.path.exists(ref_path):
-                return key, None
+                return key, None, None
             ref_wav = decode_stereo(ref_path, td, "ref")
 
         deg_wav = decode_stereo(aac_path, td, "deg")
         if not ref_wav or not deg_wav:
-            return key, None
-        try:
-            return key, coherence_error(ref_wav, deg_wav)
-        except Exception as e:
-            print(f"  coherence error for {key}: {e}")
-            return key, None
+            return key, None, None
+
+        ic = None
+        if want_ic:
+            try:
+                ic = coherence_error(ref_wav, deg_wav)
+            except Exception as e:
+                print(f"  coherence error for {key}: {e}")
+
+        centroid_ms = None
+        if want_transient:
+            try:
+                rL, rR = read_stereo(ref_wav)
+                dL, dR = read_stereo(deg_wav)
+                ref_mono = (rL + rR) / 2.0
+                dec_mono = (dL + dR) / 2.0
+                centroid_ms = attack_centroid_deltas(ref_mono, dec_mono, 48000)
+            except Exception as e:
+                print(f"  attack-centroid-shift error for {key}: {e}")
+
+        return key, ic, centroid_ms
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Stereo image fidelity — inter-channel coherence error (Phase 3)")
+        description="Stereo image fidelity (inter-channel coherence) and "
+                     "transient fidelity (attack-centroid-shift) — Phase 3")
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
+    parser.add_argument("--skip-stereo", action="store_true",
+                        help="Skip inter-channel coherence (stereo image) scoring")
+    parser.add_argument("--skip-transient", action="store_true",
+                        help="Skip attack-centroid-shift (transient fidelity) scoring")
     args = parser.parse_args()
+
+    want_ic = not args.skip_stereo
+    want_transient = not args.skip_transient
+    if not want_ic and not want_transient:
+        print("Both --skip-stereo and --skip-transient given; nothing to do.")
+        return
 
     with open(args.results_json) as f:
         data = json.load(f)
@@ -178,21 +214,27 @@ def main():
     except FileNotFoundError:
         aac_files = []
 
-    # Only stereo scenarios, and only entries not already scored.
-    pending = {
-        k: v for k, v in matrix.items()
-        if v.get("ic_err") is None
-        and SCENARIOS.get(v.get("scenario"), {}).get("mode") != "speech"
-    }
+    # Only non-speech scenarios, and only entries missing a metric this
+    # invocation was asked to compute.
+    def is_pending(v):
+        if SCENARIOS.get(v.get("scenario"), {}).get("mode") == "speech":
+            return False
+        if want_ic and v.get("ic_err") is None:
+            return True
+        if want_transient and v.get("attack_centroid_ms") is None:
+            return True
+        return False
+
+    pending = {k: v for k, v in matrix.items() if is_pending(v)}
     if not pending:
-        print("No pending stereo computations.")
+        print("No pending stereo/transient computations.")
         return
 
     # Identify unique reference files for caching
     unique_refs = sorted(list(set(v.get("filename") for v in pending.values())))
 
     num_cpus = os.cpu_count() or 1
-    print(f"Computing inter-channel coherence error for {len(pending)} stereo samples "
+    print(f"Computing stereo/transient fidelity for {len(pending)} samples "
           f"({num_cpus} cores)...")
 
     # Pre-resolve AAC paths in the main process so workers don't touch the filesystem.
@@ -203,10 +245,11 @@ def main():
             resolved[k] = (v, p)
 
     if not resolved:
-        print("No resolvable AAC paths for pending stereo samples.")
+        print("No resolvable AAC paths for pending samples.")
         return
 
-    results = {}
+    ic_results = {}
+    centroid_results = {}
     with tempfile.TemporaryDirectory() as ref_cache_dir:
         ref_wav_map = {}
         if len(unique_refs) < len(resolved):
@@ -230,25 +273,33 @@ def main():
                     ref_wav_map.get(entry.get("filename")),
                     args.external_data_dir,
                     os.path.join(args.external_data_dir, "audio", entry.get("filename", "")),
-                    ref_cache_dir
+                    ref_cache_dir,
+                    want_ic and entry.get("ic_err") is None,
+                    want_transient and entry.get("attack_centroid_ms") is None,
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }
             total = len(futures)
             for i, fut in enumerate(concurrent.futures.as_completed(futures)):
-                key, ic = fut.result()
+                key, ic, centroid_ms = fut.result()
                 if ic is not None:
-                    results[key] = ic
+                    ic_results[key] = ic
+                if centroid_ms is not None:
+                    centroid_results[key] = centroid_ms
                 ic_str = f"{ic:.4f}" if ic is not None else "N/A"
-                print(f"  ({i+1}/{total}) {key}: {ic_str}")
+                n_onsets = len(centroid_ms) if centroid_ms is not None else "N/A"
+                print(f"  ({i+1}/{total}) {key}: ic_err={ic_str}  centroid_onsets={n_onsets}")
 
-    for key, ic in results.items():
+    for key, ic in ic_results.items():
         if key in matrix:
             matrix[key]["ic_err"] = ic
+    for key, centroid_ms in centroid_results.items():
+        if key in matrix:
+            matrix[key]["attack_centroid_ms"] = centroid_ms
 
     with open(args.results_json, "w") as f:
         json.dump(data, f, indent=2)
-    print("Phase 3 (stereo image) complete.")
+    print("Phase 3 (stereo image / transient fidelity) complete.")
 
 
 if __name__ == "__main__":

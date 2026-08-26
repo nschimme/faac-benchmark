@@ -19,6 +19,42 @@ damage; this metric tracks inter-channel coherence fidelity.
 - **Leaderboard**: Reports the raw fidelity value (**higher is truer**).
 - **A/B Report**: Reports the signed delta where **positive = candidate improved the fidelity (truer stereo image)**.
 
+## Transient Fidelity (Attack-Centroid-Shift)
+
+From phase 3 (`phase3_stereo.py`, sharing its decode pass; logic in
+`transient.py`). Complements MOS/NPER by looking specifically at whether an
+attack, once it starts, is preserved or blurred — NPER
+(`scripts/score_transient.py`, not yet wired into CI) only looks *backward*
+from an onset for pre-echo.
+
+- **Formula**: at each onset, within `[onset, onset+12ms)` (capped at the
+  next onset), compute each side's energy-weighted temporal centroid
+  ($\sum t \cdot e / \sum e$, $e$ = RMS envelope$^2$) independently, then
+  `delta_ms = dec_centroid - ref_centroid`. Positive = decoded energy
+  arrives later (smeared).
+- **A/B sign convention**: per onset, `|candidate_delta| - |base_delta|`;
+  negative = candidate moved closer to the reference (improved).
+- **Reported as a verdict, not a number**: pooled at the onset level (not
+  per-clip means), via a paired bootstrap 95% CI **and** an exact sign test
+  — both must agree or it reads "inconclusive"
+  (`transient.ci_signtest_verdict`). Below `MIN_CENTROID_ONSETS` (30) pooled
+  onsets the row is omitted rather than shown as false precision.
+- **Resolving power (measured, not assumed)**: a 128k-vs-96k bitrate-ladder
+  check (~25% bitrate cut) was mostly "inconclusive" at single-clip scale
+  (n=28-57 onsets, 3 of 4 clips) but resolved cleanly once pooled across all
+  4 gate clips of that one scenario pair (n=148, CI [+0.013, +0.045]ms,
+  sign-test p=0.006). This is why the top-line verdict pools at the
+  **whole-suite** level, not per clip or per scenario — a default `--gate`
+  run (all scenarios) comfortably clears the onset count this needed. A run
+  narrowed with `--scenarios` to very few clips may read "inconclusive" on a
+  real but modest change; that's the metric being honest about its own
+  power, not a bug.
+- **Gating**: diagnostic-only, same tier as Stereo Fidelity above.
+- **Not the same design as `--metric attack_smear`** in
+  `scripts/score_transient.py`, a crossing-based rise-time estimator kept
+  there only as a documented negative result (it needs a quiet pre-onset gap
+  that dense percussive material doesn't have).
+
 ## Throughput Δ
 
 Encode-time change vs base (positive = faster). Measured single-core on the

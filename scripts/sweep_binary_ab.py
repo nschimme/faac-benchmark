@@ -5,16 +5,16 @@ Two-binary mode (bin_a vs bin_b, same env, zimtohrli MOS per clip/bitrate):
   python3 sweep_binary_ab.py BIN_A BIN_B [clip.wav ...] [--bitrates B1,B2,...]
 
 Env-var sweep mode (one binary, each --values entry vs the first as baseline,
-via score_preecho.cmd_env_ab: paired A/B, bootstrap CI, byte delta, short%):
+via score_transient.cmd_env_ab: paired A/B, bootstrap CI, byte delta, short%):
   python3 sweep_binary_ab.py BIN --env-var NAME --values V0,V1,... \\
-      [clip.wav ...] [--bitrates B1,B2,...] [--metric nper|zimtohrli|both]
+      [clip.wav ...] [--bitrates B1,B2,...] [--metric nper|zimtohrli|both|attack_smear]
 
   An empty entry (or the literal "unset") in --values means "don't set NAME at
   all" (e.g. --values unset,0 tests NAME unset as baseline vs NAME=0).
 
 Both modes force --object-type=lc so low-bitrate mono clips don't
 auto-select HE-AAC v1 and skip the core TNS path, and bypass
-score_preecho's -Dtuning-build gate: two-binary mode never needs it; env-var
+score_transient's -Dtuning-build gate: two-binary mode never needs it; env-var
 mode assumes a plain getenv() knob (FAAC_TD_THRESH, FAAC_TNS_DIR, ...) that
 doesn't require a tuning build either.
 """
@@ -23,7 +23,7 @@ import os
 import sys
 import tempfile
 
-import score_preecho as sp
+import score_transient as sp
 
 DEFAULT_CLIPS = [
     'data/external/audio/cst.wav',
@@ -111,7 +111,8 @@ def main():
     parser.add_argument('--env-var', dest='env_var', metavar='NAME',
                         help='Switch to env-var sweep mode; NAME is the env var to sweep')
     parser.add_argument('--values', help='Comma-separated values for --env-var (first is baseline)')
-    parser.add_argument('--metric', choices=['nper', 'zimtohrli', 'both'], default='zimtohrli',
+    parser.add_argument('--metric', choices=['nper', 'zimtohrli', 'both', 'attack_smear'],
+                        default='zimtohrli',
                         help='Metric(s) for --env-var mode (default: zimtohrli)')
     args = parser.parse_args()
 

@@ -47,22 +47,50 @@ python3 scripts/score_clip.py reference.wav encoded.aac --mode audio|speech \
     [--backend auto|zimtohrli|visqol|visqol-py|visqol-python]
 ```
 
-## Pre-echo / TNS tooling
+## Transient fidelity / TNS tooling
 
-### `scripts/score_preecho.py`
+### `scripts/score_transient.py`
 
-Pre-echo metric (NPER) for TNS evaluation, and the shared A/B/sweep helper
-library (`encode_aac`, `decode_aac`, `load_mono`, `find_lag`, `align_signals`,
-`zimtohrli_mos`, `bootstrap_ci`, `cmd_env_ab`, `require_tuning_build`, ...)
-that `scripts/sweep_binary_ab.py` and `scripts/visqol_env_ab.py` build on.
+Three complementary transient-fidelity metrics for TNS/block-switch
+evaluation, and the shared A/B/sweep helper library (`encode_aac`,
+`decode_aac`, `load_mono`, `find_lag`, `align_signals`, `zimtohrli_mos`,
+`bootstrap_ci`, `cmd_env_ab`, `require_tuning_build`, ...) that
+`scripts/sweep_binary_ab.py` and `scripts/visqol_env_ab.py` build on:
+
+- **NPER** — looks *backward* from a detected onset: energy leaking into
+  the silence before a transient (pre-echo).
+- **attack-centroid-shift** — looks *forward* from the same onset: the shift
+  in energy-weighted temporal centroid within a fixed post-onset window,
+  decoded vs. reference (positive ⇒ decoded energy arrives later, i.e.
+  smeared). Validated: exact ref-vs-ref self-consistency, near-total yield
+  on real transient-heavy material, and per-bitrate |r| vs NPER mostly
+  under 0.3 across four clips — see the module comment above
+  `compute_attack_centroid_shift()`. Exposed via `--metric attack_centroid`
+  for `--tns-ab`; not yet wired into `env_ab_one`/`--env-ab`.
+- **attack-smear** — an earlier, *crossing*-based attempt at the same
+  forward-looking question (rise time from 10% to 90% of local peak, in the
+  spirit of the MPEG-7 "Log Attack Time" descriptor). **Documented NO-GO,
+  kept only as a negative result**: it requires a quiet gap before the
+  onset to locate a clean 10% start point, which real percussive/dense
+  material routinely doesn't have — real yield was 0-2/18 onsets on
+  glockenspiel and 0/28-29 on sandman even after fixing an unrelated
+  windowing bug. See the module comment above `compute_attack_smear()` for
+  the full investigation. Still exposed via `--metric attack_smear` for
+  reference, but do not build on it.
 
 ```bash
-scripts/score_preecho.py REF.wav DEC.wav [--verbose]        # score a pair
-scripts/score_preecho.py --validate FAAC_BIN                # synthetic click self-test
-scripts/score_preecho.py --sweep FAAC_BIN REF.wav            # NPER across bitrates
-scripts/score_preecho.py --tns-ab FAAC_BIN REF.wav [REF2...] # paired TNS on/off proof
-scripts/score_preecho.py --env-ab FAAC_BIN --env-a "K=V" --env-b "K=V" REF.wav [...]
+scripts/score_transient.py REF.wav DEC.wav [--verbose]        # score a pair (all three metrics)
+scripts/score_transient.py --validate FAAC_BIN                # synthetic self-tests (all three metrics)
+scripts/score_transient.py --sweep FAAC_BIN REF.wav            # all three metrics across bitrates + correlation
+scripts/score_transient.py --tns-ab FAAC_BIN REF.wav [REF2...] # paired TNS on/off proof
+scripts/score_transient.py --env-ab FAAC_BIN --env-a "K=V" --env-b "K=V" REF.wav [...]
 ```
+
+Note: `faac` builds encountered during this work produced byte-identical
+TNS on/off output at every tested bitrate (confirmed outside the harness) —
+per repo maintainer, TNS doesn't reliably engage in `faac`. Use
+`--tns-ab --encoder ffmpeg` (ffmpeg's AAC encoder does toggle TNS) for a
+real TNS A/B proof.
 
 ### `scripts/sweep_binary_ab.py`
 
@@ -76,7 +104,7 @@ Local A/B sweep tool, two modes:
   ```
 - **Env-var sweep** (`--env-var`): one binary, sweeps a plain-`getenv()` knob
   (e.g. `FAAC_TD_THRESH`, `FAAC_TNS_DIR`) across `--values`, each vs the first
-  value as baseline, via `score_preecho.cmd_env_ab` (bootstrap CI, byte delta,
+  value as baseline, via `score_transient.cmd_env_ab` (bootstrap CI, byte delta,
   short-block %). An empty/`unset` value means "don't set the var at all".
   ```bash
   python3 scripts/sweep_binary_ab.py path/to/faac --env-var FAAC_TD_THRESH \
@@ -104,7 +132,7 @@ the CI's own metric on specific clips instead of running the full gate.
 ### `scripts/cmp_sweep.py`
 
 Compares a set of sweep-output JSONs (e.g. from repeated
-`run_benchmark.py --sweep "KEY=V"` runs, or hand-run `score_preecho.py`/
+`run_benchmark.py --sweep "KEY=V"` runs, or hand-run `score_transient.py`/
 `sweep_binary_ab.py --env-var` dumps) against the first value as baseline:
 per-scenario net MOS delta, bitrate delta, changed-md5 count, and the worst
 clip per scenario.

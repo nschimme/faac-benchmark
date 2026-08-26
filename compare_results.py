@@ -23,6 +23,22 @@ import os
 import argparse
 from collections import defaultdict
 from utils import get_scenario_sort_key
+import transient
+
+
+# Minimum pooled onset count before the transient-fidelity (attack-centroid-
+# shift) row is even shown -- a sanity floor, not a promise of resolving
+# power. A 128k-vs-96k bitrate-ladder sensitivity check (a ~25% bitrate cut,
+# a plausibly PR-sized effect) found the metric mostly INCONCLUSIVE at
+# single-clip scale (n=28-57 onsets, 3 of 4 clips) but resolved cleanly once
+# pooled across all 4 gate clips of that one scenario pair (n=148, CI
+# [+0.013, +0.045]ms, sign-test p=0.006) -- see docs/metrics.md. So this
+# floor alone does not guarantee a real effect resolves; what does is
+# pooling at the whole-suite level (this row, not the per-scenario table
+# cells), which a default `--gate` run (all scenarios, not `--scenarios`-
+# narrowed) comfortably exceeds. Below this floor the row is omitted
+# entirely rather than shown as a number the data can't support.
+MIN_CENTROID_ONSETS = 30
 
 
 # Set from main()'s --strict-decode. When False (default), a candidate that
@@ -292,6 +308,10 @@ def analyze_pair(base_file, cand_file):
         "ic_delta_sum": 0,
         "ic_count": 0,
         "worst_ic_regression": (0, "N/A"),
+        "centroid_deltas": [],
+        "centroid_o_abs": [],
+        "centroid_b_abs": [],
+        "worst_centroid_regression": (0, "N/A"),
         "tp_reduction": 0,
         "lib_size_chg": 0,
         "lib_text_chg": 0,
@@ -324,6 +344,7 @@ def analyze_pair(base_file, cand_file):
                 "bitrate_acc_sum": 0,
                 "bitrate_acc_count": 0,
                 "mos_deltas": [],
+                "centroid_deltas": [],
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
@@ -399,6 +420,32 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["ic_count"] += 1
                 if ic_delta < suite_results["worst_ic_regression"][0]:
                     suite_results["worst_ic_regression"] = (ic_delta, display_name)
+
+            # Transient fidelity (Phase 3 fold-in, see phase3_stereo.py).
+            # attack_centroid_ms is itself a per-onset "decoded vs reference"
+            # delta (ms); comparing |cand| against |base| per onset shows
+            # whether the candidate smears attacks more or less than
+            # baseline. Sign convention: negative == the candidate's onset
+            # moved closer to 0 (the reference) == improvement, matching
+            # docs/metrics.md. Paired positionally per onset -- lengths
+            # match in the near-100% yield case Stage 1 validated; a clip
+            # where they don't (a dropped onset on one side) is skipped
+            # rather than guessed at.
+            o_centroid = o.get("attack_centroid_ms")
+            b_centroid = b.get("attack_centroid_ms")
+            if o_centroid and b_centroid and len(o_centroid) == len(b_centroid):
+                clip_deltas = [abs(ov) - abs(bv) for ov, bv in zip(o_centroid, b_centroid)]
+                suite_results["centroid_deltas"].extend(clip_deltas)
+                suite_results["scenario_stats"][scenario]["centroid_deltas"].extend(clip_deltas)
+                # Raw |ms| pooled separately (not just the paired delta) so a
+                # significant verdict can be paired with the same 0-1
+                # fidelity number compare_encoders.py's leaderboard reports
+                # (1 / (1 + mean|ms|)), for a maintainer to read as "how much".
+                suite_results["centroid_o_abs"].extend(abs(v) for v in o_centroid)
+                suite_results["centroid_b_abs"].extend(abs(v) for v in b_centroid)
+                clip_mean = sum(clip_deltas) / len(clip_deltas)
+                if clip_mean > suite_results["worst_centroid_regression"][0]:
+                    suite_results["worst_centroid_regression"] = (clip_mean, display_name)
 
             o_md5 = o.get("md5", "")
             b_md5 = b.get("md5", "")
@@ -607,6 +654,10 @@ def aggregate_suite_metrics(items):
     total_clip_wins = total_clip_losses = 0
     total_ic_delta = total_ic_count = 0
     worst_ic_regression = (0, "N/A")
+    total_centroid_deltas = []
+    total_centroid_o_abs = []
+    total_centroid_b_abs = []
+    worst_centroid_regression = (0, "N/A")
     total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
     total_bitrate_chg = total_bitrate_count = 0
     total_bitrate_acc_sum = total_bitrate_acc_count = total_bitrate_bias_sum = 0
@@ -630,6 +681,11 @@ def aggregate_suite_metrics(items):
         total_ic_count += data["ic_count"]
         if data["worst_ic_regression"][0] < worst_ic_regression[0]:
             worst_ic_regression = data["worst_ic_regression"]
+        total_centroid_deltas.extend(data.get("centroid_deltas", []))
+        total_centroid_o_abs.extend(data.get("centroid_o_abs", []))
+        total_centroid_b_abs.extend(data.get("centroid_b_abs", []))
+        if data.get("worst_centroid_regression", (0, "N/A"))[0] > worst_centroid_regression[0]:
+            worst_centroid_regression = data["worst_centroid_regression"]
         total_tp_reduction += data["tp_reduction"]
         total_lib_chg += data["lib_size_chg"]
         total_lib_text_chg += data.get("lib_text_chg", 0)
@@ -683,6 +739,10 @@ def aggregate_suite_metrics(items):
         "total_decode_errors": total_decode_errors,
         "total_ic_delta": total_ic_delta, "total_ic_count": total_ic_count,
         "worst_ic_regression": worst_ic_regression,
+        "centroid_deltas": total_centroid_deltas,
+        "centroid_o_abs": total_centroid_o_abs,
+        "centroid_b_abs": total_centroid_b_abs,
+        "worst_centroid_regression": worst_centroid_regression,
         "avg_tp_reduction": avg_tp_reduction,
         "avg_lib_chg": avg_lib_chg, "avg_lib_text_chg": avg_lib_text_chg,
         "avg_lib_rodata_chg": avg_lib_rodata_chg,
@@ -822,6 +882,36 @@ def render_summary_table(metrics, mos_label, rc_mode):
             lines.append(f"| **Stereo Fidelity Δ** | {avg_ic_delta:+.4f} {ic_icon} |")
         if metrics["worst_ic_regression"][0] < -0.005:
             lines.append(f"| **Worst Stereo Drop** | {metrics['worst_ic_regression'][0]:+.4f} ({metrics['worst_ic_regression'][1]}) |")
+
+    # Transient fidelity (attack-centroid-shift). Diagnostic-only, no gate --
+    # report a verdict, never a bare number, and omit the row entirely below
+    # MIN_CENTROID_ONSETS (see its comment for why).
+    centroid_deltas = metrics.get("centroid_deltas", [])
+    if len(centroid_deltas) >= MIN_CENTROID_ONSETS:
+        lo, hi = transient.bootstrap_ci(centroid_deltas)
+        p, _neg, n = transient.sign_test_p(centroid_deltas)
+        verdict = transient.ci_signtest_verdict(
+            lo, hi, p, label_decrease="improved", label_increase="regression")
+        icon = "📉" if verdict == "regression" else "📈" if verdict == "improved" else "➖"
+        fid_str = ""
+        if verdict in ("regression", "improved"):
+            # Only surface the actual fidelity numbers (same 1/(1+mean|ms|)
+            # formula as compare_encoders.py's leaderboard, for a maintainer
+            # to read as "how much") once the change has cleared the CI +
+            # sign-test bar above -- a magnitude next to an inconclusive
+            # result would read as more certain than it is.
+            o_abs = metrics.get("centroid_o_abs", [])
+            b_abs = metrics.get("centroid_b_abs", [])
+            if o_abs and b_abs:
+                fid_o = 1.0 / (1.0 + sum(o_abs) / len(o_abs))
+                fid_b = 1.0 / (1.0 + sum(b_abs) / len(b_abs))
+                fid_str = f", fidelity {fid_b:.3f} → {fid_o:.3f}"
+        lines.append(f"| **Transient Fidelity (attack-centroid)** | {icon} (n={n}{fid_str}) |")
+        if metrics["worst_centroid_regression"][0] > 0.5:
+            lines.append(
+                f"| **Worst Transient Regression** | "
+                f"{metrics['worst_centroid_regression'][0]:+.3f}ms "
+                f"({metrics['worst_centroid_regression'][1]}) |")
 
     if metrics["total_decode_errors"] > 0:
         gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
@@ -995,15 +1085,15 @@ def main():
         multi_mode = len(modes_present) > 1
         report.append("\n### Scenario Performance")
         if multi_mode:
-            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
-            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | Bitrate Acc |")
+            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
         else:
-            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Throughput Δ | Bitrate Acc |")
-            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | Bitrate Acc |")
+            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
         # Aggregating across all suites for scenarios, keyed by mode too when
         # more than one mode is present.
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": []})
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": [], "centroid_deltas": []})
         for suite_data in all_suite_data.values():
             mode = suite_data.get("rate_control_mode", "abr")
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
@@ -1017,6 +1107,7 @@ def main():
                 global_scenario_stats[key]["acc_sum"] += sc_stats["bitrate_acc_sum"]
                 global_scenario_stats[key]["acc_count"] += sc_stats["bitrate_acc_count"]
                 global_scenario_stats[key]["mos_deltas"] += sc_stats.get("mos_deltas", [])
+                global_scenario_stats[key]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
 
         has_sig_mark = False
         sort_key = (lambda k: (get_scenario_sort_key(k[0]), k[1])) if multi_mode else get_scenario_sort_key
@@ -1027,6 +1118,25 @@ def main():
             sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
             sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
             sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
+
+            # Same three-state verdict discipline as the summary row, at
+            # scenario granularity: never a bare number, and below
+            # MIN_CENTROID_ONSETS the cell just says how far short it fell
+            # rather than guessing.
+            sc_centroid_deltas = gs.get("centroid_deltas", [])
+            if len(sc_centroid_deltas) >= MIN_CENTROID_ONSETS:
+                lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
+                p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
+                v_c = transient.ci_signtest_verdict(
+                    lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
+                if v_c == "regression":
+                    sc_transient = f"📉 (n={n_c})"
+                elif v_c == "improved":
+                    sc_transient = f"📈 (n={n_c})"
+                else:
+                    sc_transient = f"➖ (n={n_c})"
+            else:
+                sc_transient = f"n={len(sc_centroid_deltas)}<{MIN_CENTROID_ONSETS}"
 
             # Report-only: a scenario mean is small by nature, so say whether
             # it is a consistent shift or a couple of clips carrying the rest.
@@ -1045,11 +1155,11 @@ def main():
             if multi_mode:
                 report.append(
                     f"| {sc_name} | {key[1].upper()} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                    f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_acc} |")
             else:
                 report.append(
                     f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                    f"{sc_ic_delta} | {sc_tp_delta} | {sc_acc} |")
+                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_acc} |")
 
         if has_sig_mark:
             report.append("\n_✳ Statistically significant change (95% confidence interval excludes 0)_")

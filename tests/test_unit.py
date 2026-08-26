@@ -547,5 +547,88 @@ class TestCompareResultsRendering(unittest.TestCase):
         self.assertIsNone(avg_line, "Avg Zimtohrli Δ row should be omitted for identical runs to avoid noise")
 
 
+class TestAttackCentroidShift(unittest.TestCase):
+    """Ground-truth checks for transient.py's attack-centroid-shift metric,
+    ported from scripts/score_transient.py's cmd_validate_centroid (ref-vs-ref
+    exactness, near-total yield) plus a directional sanity check. Uses a
+    synthetic click train rather than the external audio corpus so it stays
+    hermetic and fast."""
+
+    @staticmethod
+    def _click_train(sr=48000, seconds=2.0, click_times_ms=(200, 500, 800, 1100, 1400, 1700)):
+        import numpy as np
+        n = int(sr * seconds)
+        rng = np.random.default_rng(0)
+        audio = rng.normal(0, 1e-4, n)
+        decay = np.exp(-np.arange(500) / 50.0) * 0.9
+        for t_ms in click_times_ms:
+            idx = int(t_ms * 1e-3 * sr)
+            audio[idx:idx + len(decay)] += decay
+        return audio.astype(np.float64), sr, click_times_ms
+
+    def test_ref_vs_ref_exact_and_full_yield(self):
+        import transient
+        ref, sr, click_times_ms = self._click_train()
+        onsets = transient.detect_onsets(ref, sr)
+        self.assertEqual(len(onsets), len(click_times_ms), "should detect every synthetic click")
+
+        result = transient.compute_attack_centroid_shift(ref, ref, onsets, sr)
+        self.assertEqual(len(result), len(onsets), "ref-vs-ref should score every onset (full yield)")
+        for _, delta_ms in result:
+            self.assertEqual(delta_ms, 0.0, "ref-vs-ref must read exactly 0.0 by construction")
+
+    def test_delayed_energy_reads_positive(self):
+        """A decoded copy whose post-onset energy arrives later than the
+        reference should read a positive (smeared) delta at every onset."""
+        import numpy as np
+        import transient
+        ref, sr, click_times_ms = self._click_train()
+        shift = int(0.002 * sr)  # 2ms
+        dec = ref.copy()
+        decay = np.exp(-np.arange(500) / 50.0) * 0.9
+        for t_ms in click_times_ms:
+            idx = int(t_ms * 1e-3 * sr)
+            dec[idx:idx + len(decay)] -= decay  # remove the on-time energy
+            dec[idx + shift:idx + shift + len(decay)] += decay  # re-add it shifted later
+
+        onsets = transient.detect_onsets(ref, sr)
+        result = transient.compute_attack_centroid_shift(ref, dec, onsets, sr)
+        self.assertEqual(len(result), len(onsets))
+        for _, delta_ms in result:
+            self.assertGreater(delta_ms, 0.0, "delayed post-onset energy should read positive (smeared)")
+
+    def test_end_to_end_wrapper_matches_direct_call(self):
+        """attack_centroid_deltas() (find_lag + align + detect + compute) on
+        an unshifted ref-vs-ref pair should agree with the direct call."""
+        import transient
+        ref, sr, _ = self._click_train()
+        deltas = transient.attack_centroid_deltas(ref, ref, sr)
+        self.assertGreater(len(deltas), 0)
+        for d in deltas:
+            self.assertEqual(d, 0.0)
+
+
+class TestCiSigntestVerdict(unittest.TestCase):
+    def test_consistent_negative_deltas_verdict_decrease(self):
+        import transient
+        deltas = [-0.5] * 40
+        lo, hi = transient.bootstrap_ci(deltas)
+        p, _neg, _n = transient.sign_test_p(deltas)
+        verdict = transient.ci_signtest_verdict(lo, hi, p, "decreased", "increased")
+        self.assertEqual(verdict, "decreased")
+
+    def test_noisy_mixed_deltas_are_inconclusive(self):
+        """A CI that barely excludes zero but with no consistent per-onset
+        direction must not print a confident verdict -- this is the exact
+        failure mode found during Stage 1 (an ffmpeg TNS A/B run with CI
+        [+0.005, +0.243] but sign-test p=0.458)."""
+        import transient
+        rng_deltas = ([0.6, -0.5] * 20) + [0.01]  # near 50/50 sign split
+        p, _neg, _n = transient.sign_test_p(rng_deltas)
+        lo, hi = 0.005, 0.243  # CI that barely excludes zero
+        verdict = transient.ci_signtest_verdict(lo, hi, p, "decreased", "increased")
+        self.assertIn("inconclusive", verdict)
+
+
 if __name__ == "__main__":
     unittest.main()

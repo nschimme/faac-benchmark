@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
+    parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) computation")
     parser.add_argument("--visqol-image", help="Override the ViSQOL Docker image to use")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -318,16 +319,24 @@ def main():
                     print(f">>> ERROR: {container_tool} execution failed: {e}")
                     sys.exit(1)
 
-        # Phase 3: Stereo image fidelity. Nothing to score without a matrix,
-        # and a throughput refresh deliberately has none.
-        if not args.skip_stereo and not args.skip_encode:
-            print(">>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
-            subprocess.run([
+        # Phase 3: Stereo image fidelity + transient fidelity. Nothing to
+        # score without a matrix, and a throughput refresh deliberately has
+        # none. The two metrics share a decode pass (see phase3_stereo.py's
+        # module docstring), so they ride the same phase; each can still be
+        # skipped independently via --skip-stereo / --skip-transient.
+        if not args.skip_encode and not (args.skip_stereo and args.skip_transient):
+            print(">>> Phase 3: Stereo Image Fidelity + Transient Fidelity")
+            cmd_phase3 = [
                 sys.executable, phase3_script,
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
-            ], check=True)
+            ]
+            if args.skip_stereo:
+                cmd_phase3.append("--skip-stereo")
+            if args.skip_transient:
+                cmd_phase3.append("--skip-transient")
+            subprocess.run(cmd_phase3, check=True)
 
 
         print(f">>> Benchmark run {run['tag']} complete.")

@@ -9,7 +9,7 @@ Usage (from repo root):
   python3 scripts/cmp_sweep.py PREFIX KEY V0,V1,V2,...
 
 Loads `{PREFIX}_{KEY}{V}.json` for each V (produced by, e.g., repeated
-`run_benchmark.py --sweep "KEY=V"` runs, or score_preecho.py --env-ab /
+`run_benchmark.py --sweep "KEY=V"` runs, or score_transient.py --env-ab /
 sweep_binary_ab.py --env-var dumping one JSON per value), and diffs every
 non-baseline value V1... against the first value V0.
 """

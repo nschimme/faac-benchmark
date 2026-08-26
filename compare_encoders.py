@@ -355,6 +355,7 @@ def main():
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
+    parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) calculation")
     parser.add_argument("--backend", default="auto", help="Perceptual MOS backend")
 
     args = parser.parse_args()
@@ -465,9 +466,10 @@ def main():
             if key in updated_bridge["matrix"]:
                 res["mos"] = updated_bridge["matrix"][key].get("mos")
 
-    # Stereo Coherence Phase
-    if not args.skip_stereo:
-        print("\n>>> Phase 3: Stereo Image Fidelity (inter-channel coherence)")
+    # Stereo Coherence + Transient Fidelity Phase (phase3_stereo.py computes
+    # both from the same decode pass; see its module docstring).
+    if not args.skip_stereo or not args.skip_transient:
+        print("\n>>> Phase 3: Stereo Image Fidelity + Transient Fidelity")
         bridge_data = {"matrix": {}}
         valid_count = 0
         for i, res in enumerate(all_results):
@@ -479,7 +481,8 @@ def main():
                 "scenario": res["scenario"],
                 "filename": res["filename"],
                 "aac": f"{key}.m4a",
-                "ic_err": None
+                "ic_err": None,
+                "attack_centroid_ms": None
             }
             # Ensure files exist in output_dir
             target_path = os.path.join(output_dir, f"{key}.m4a")
@@ -488,7 +491,7 @@ def main():
             valid_count += 1
 
         if valid_count == 0:
-            print("No valid AAC files to analyze for stereo fidelity.")
+            print("No valid AAC files to analyze for stereo/transient fidelity.")
             return
 
         bridge_json_stereo = "bridge_results_stereo.json"
@@ -502,6 +505,10 @@ def main():
             output_dir,
             external_data_dir
         ]
+        if args.skip_stereo:
+            cmd_phase3.append("--skip-stereo")
+        if args.skip_transient:
+            cmd_phase3.append("--skip-transient")
         subprocess.run(cmd_phase3, check=True)
 
         with open(bridge_json_stereo, "r") as f:
@@ -511,6 +518,7 @@ def main():
             key = f"res_{res['row_key']}_{i}"
             if key in updated_bridge["matrix"]:
                 res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
+                res["attack_centroid_ms"] = updated_bridge["matrix"][key].get("attack_centroid_ms")
 
         if os.path.exists(bridge_json_stereo):
             os.remove(bridge_json_stereo)
@@ -538,6 +546,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "ic_sum": 0, "ic_count": 0,
+        "centroid_sum": 0, "centroid_count": 0,
         "speed_sum": 0, "speed_count": 0,
         "br_err_sum": 0, "br_err_count": 0,
         "valid_count": 0, "total_count": 0
@@ -563,6 +572,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             stats[e][s]["ic_sum"] += res["ic_err"]
             stats[e][s]["ic_count"] += 1
 
+        # Transient fidelity: mean |attack-centroid-shift| in ms across this
+        # clip's onsets (lower is better), unlike Stereo Fidelity above which
+        # is reported as 1 - error (higher is better).
+        if res.get("attack_centroid_ms"):
+            for d in res["attack_centroid_ms"]:
+                stats[e][s]["centroid_sum"] += abs(d)
+                stats[e][s]["centroid_count"] += 1
+
         if res["duration"] > 0 and res["audio_duration"]:
             speed = res["audio_duration"] / res["duration"]
             stats[e][s]["speed_sum"] += speed
@@ -582,7 +599,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
     overall = {}
     for e_name in all_row_keys:
-        e_mos, e_speed, e_br_err, e_ic = [], [], [], []
+        e_mos, e_speed, e_br_err, e_ic, e_centroid = [], [], [], [], []
         e_mos_min = 6.0
         e_total = e_valid = 0
 
@@ -606,6 +623,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             if s_stats["ic_count"] > 0:
                 e_ic.append(s_stats["ic_sum"] / s_stats["ic_count"])
                 s_has_data = True
+            if s_stats["centroid_count"] > 0:
+                e_centroid.append(s_stats["centroid_sum"] / s_stats["centroid_count"])
+                s_has_data = True
             if s_has_data:
                 has_data = True
                 scenario_count += 1
@@ -620,6 +640,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
             "worst_mos": e_mos_min if e_mos else 0,
             "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
+            "avg_centroid_ms": sum(e_centroid) / len(e_centroid) if e_centroid else 0,
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
             "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
             "text_size": enc_obj.text_size if enc_obj else 0,
@@ -653,7 +674,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
     tool_overall = {}
     for tool_name, candidates in tool_row_keys.items():
-        e_mos, e_speed, e_br_err, e_ic = [], [], [], []
+        e_mos, e_speed, e_br_err, e_ic, e_centroid = [], [], [], [], []
         e_mos_min = 6.0
         has_data = False
         scenario_count = 0
@@ -682,6 +703,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             if s_stats["ic_count"] > 0:
                 e_ic.append(s_stats["ic_sum"] / s_stats["ic_count"])
                 s_has_data = True
+            if s_stats["centroid_count"] > 0:
+                e_centroid.append(s_stats["centroid_sum"] / s_stats["centroid_count"])
+                s_has_data = True
             if s_has_data:
                 has_data = True
                 scenario_count += 1
@@ -695,6 +719,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
             "worst_mos": e_mos_min if e_mos else 0,
             "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
+            "avg_centroid_ms": sum(e_centroid) / len(e_centroid) if e_centroid else 0,
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
             "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
             "text_size": enc_obj.text_size if enc_obj else 0,
@@ -714,14 +739,16 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
         f.write("# AAC Encoder Leaderboard\n\n")
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("## Overall Rankings\n\n")
-        f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['overall_mos'] for o in tool_overall.values()) if tool_overall else 0
         best_worst_mos = max(o['worst_mos'] for o in tool_overall.values()) if tool_overall else 0
         best_speed = max(o['avg_speed'] for o in tool_overall.values()) if tool_overall else 0
         has_ic = any(o['avg_ic'] > 0 for o in tool_overall.values())
         best_ic = max(1.0 - o['avg_ic'] for o in tool_overall.values() if o['avg_ic'] > 0) if has_ic else None
+        has_centroid = any(o['avg_centroid_ms'] > 0 for o in tool_overall.values())
+        best_centroid_fid = max(1.0 / (1.0 + o['avg_centroid_ms']) for o in tool_overall.values() if o['avg_centroid_ms'] > 0) if has_centroid else None
         valid_br = [o['avg_br_err'] for o in tool_overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
@@ -748,11 +775,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
             else:
                 ic_str = "N/A"
 
+            centroid_val = o['avg_centroid_ms']
+            if centroid_val > 0:
+                centroid_fid = 1.0 / (1.0 + centroid_val)
+                centroid_str = f"**{centroid_fid:.4f}**" if centroid_fid == best_centroid_fid else f"{centroid_fid:.4f}"
+            else:
+                centroid_str = "N/A"
+
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
             rom_str = format_size(o['text_size'] + o['rodata_size'])
 
-            f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {s_str} | {br_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {rom_str} |\n")
 
         # Per-Scenario Tables in Collapsible Section
         f.write("\n<details><summary><b>View Per-Scenario Quality, Stereo & Efficiency Breakdown</b></summary>\n")
@@ -797,6 +831,23 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
                     line += " N/A |"
             f.write(line + "\n")
 
+        # 2b. Transient Fidelity
+        f.write("\n### Per-Scenario Transient Fidelity\n\n")
+        f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
+        f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(em_headers)) + " |\n")
+        for s in scenarios:
+            fids = [1.0 / (1.0 + stats[em][s]["centroid_sum"]/stats[em][s]["centroid_count"]) for em in all_em_keys_sorted if stats[em][s]["centroid_count"] > 0]
+            best_val = max(fids) if fids else None
+            line = f"| {s} |"
+            for em in all_em_keys_sorted:
+                val = 1.0 / (1.0 + stats[em][s]["centroid_sum"]/stats[em][s]["centroid_count"]) if stats[em][s]["centroid_count"] > 0 else None
+                if val is not None:
+                    line += f" **{val:.4f}** |" if val == best_val else f" {val:.4f} |"
+                else:
+                    line += " N/A |"
+            f.write(line + "\n")
+
         # 3. Bitrate Error
         f.write("\n### Per-Scenario Bitrate Accuracy (Error %)\n\n")
         f.write("| Scenario | " + " | ".join(em_headers) + " |\n")
@@ -834,14 +885,13 @@ def generate_leaderboard(encoders, results, output_path, scenario_list):
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
-        f.write("- **Ranking**: sorted by **Worst MOS** (the single worst scenario score an encoder produced), not the mean -- a strong average can hide a bad worst case, and worst-case robustness is what matters most in practice. **Overall MOS** (the mean) is shown alongside as a tiebreaker/secondary signal.\n")
-        f.write("- **Overall Rankings & Profile Selection**: each row is one tool (binary/library), scored per scenario using whichever AAC profile (LC or HE-AAC v1) that tool actually produced the best result with -- a tool with HE-AAC support gets its low-bitrate efficiency counted here, the same way a real deployment would pick the better profile automatically. Tools without HE-AAC support are scored on their one available profile. See the Per-Scenario tables below for the raw LC vs HE-v1 breakdown per tool.\n")
-        f.write("- **Quality (MOS)**: Perceptual audio quality via Zimtohrli or ViSQOL (1-5, **Higher is Better**)\n")
-        f.write("- **Scenarios**: how many of the run's scenarios this encoder actually produced results for (e.g. HE-AAC v1 is only valid in a bitrate/sample-rate subset) -- a lower count means Overall MOS is averaged over fewer, not necessarily harder or easier, cases.\n")
+        f.write("- **Ranking**: by Worst MOS, then Overall MOS as tiebreaker.\n")
+        f.write("- **Quality (MOS)**: Perceptual audio quality (1-5, **Higher is Better**)\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
+        f.write("- **Transient Fidelity**: How little attacks are smeared/delayed (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
-        f.write("- **Bitrate Error**: Absolute deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **ROM (Flash)**: Exact compiled executable code and read-only data size (.text + .rodata) inside the codec library/binary (**Lower is Better**)\n")
+        f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Codec code + read-only data size (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
