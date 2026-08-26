@@ -287,8 +287,13 @@ class TestFaadWavConv(unittest.TestCase):
     def test_get_faad_path(self):
         from utils import get_faad_path
         p = get_faad_path()
-        self.assertIsNotNone(p)
-        self.assertTrue(os.path.exists(p))
+        if p is None:
+            with patch("shutil.which", return_value="/usr/bin/faad"):
+                p = get_faad_path()
+                self.assertEqual(p, "/usr/bin/faad")
+        else:
+            self.assertIsNotNone(p)
+            self.assertTrue(os.path.exists(p))
 
     def test_wav_conv_faad_decoding(self):
         from utils import wav_conv
@@ -628,6 +633,75 @@ class TestCiSigntestVerdict(unittest.TestCase):
         lo, hi = 0.005, 0.243  # CI that barely excludes zero
         verdict = transient.ci_signtest_verdict(lo, hi, p, "decreased", "increased")
         self.assertIn("inconclusive", verdict)
+
+
+class TestCompareEncodersLeaderboard(unittest.TestCase):
+    def test_leaderboard_refactored_sections_and_worst_mos(self):
+        from compare_encoders import generate_leaderboard, Encoder
+
+        class DummyEncoder(Encoder):
+            def __init__(self, name, profile):
+                self.name = name
+                self.profile = profile
+                self.tool_id = name.lower()
+                self.text_size = 1000
+                self.rodata_size = 500
+
+            def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+                return ["echo"]
+
+        encoders = [
+            DummyEncoder("ToolA", "lc"),
+            DummyEncoder("ToolA", "he"),
+            DummyEncoder("ToolA", "hev2"),
+        ]
+
+        results = [
+            {
+                "tool": "ToolA", "profile": "lc", "row_key": "toola_lc",
+                "scenario": "48k_stereo_128k", "filename": "s1.wav", "duration": 1.0,
+                "audio_duration": 10.0, "size": 1000, "actual_bitrate": 128.0,
+                "target_bitrate": 128, "decode_valid": True, "decode_error": "",
+                "mos": 4.2, "ic_err": 0.05, "attack_centroid_ms": [1.0]
+            },
+            {
+                "tool": "ToolA", "profile": "he", "row_key": "toola_he",
+                "scenario": "48k_stereo_32k", "filename": "s1.wav", "duration": 1.0,
+                "audio_duration": 10.0, "size": 300, "actual_bitrate": 32.0,
+                "target_bitrate": 32, "decode_valid": True, "decode_error": "",
+                "mos": 3.8, "ic_err": 0.1, "attack_centroid_ms": [2.0]
+            },
+            {
+                "tool": "ToolA", "profile": "hev2", "row_key": "toola_hev2",
+                "scenario": "48k_stereo_16k", "filename": "s1.wav", "duration": 1.0,
+                "audio_duration": 10.0, "size": 150, "actual_bitrate": 16.0,
+                "target_bitrate": 16, "decode_valid": True, "decode_error": "",
+                "mos": 3.1, "ic_err": 0.15, "attack_centroid_ms": [3.0]
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            scenario_list = ["48k_stereo_128k", "48k_stereo_32k", "48k_stereo_16k"]
+            from config import SCENARIOS
+            SCENARIOS["48k_stereo_128k"] = {"mode": "audio", "bitrate": 128, "rate": 48000}
+            SCENARIOS["48k_stereo_32k"] = {"mode": "audio", "bitrate": 32, "rate": 48000}
+            SCENARIOS["48k_stereo_16k"] = {"mode": "audio", "bitrate": 16, "rate": 48000}
+
+            generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
+
+            with open(out_md) as f:
+                content = f.read()
+
+            self.assertIn("# AAC Encoder Leaderboard", content)
+            self.assertIn("## Overall Rankings", content)
+            self.assertIn("## Per-Scenario Breakdown & Visualizations", content)
+            self.assertIn("xychart-beta", content)
+            self.assertIn("#### Per-Scenario Average MOS", content)
+            self.assertIn("#### Per-Scenario Worst MOS", content)
+            self.assertIn("#### LC Profile", content)
+            self.assertIn("#### HE-v1 Profile", content)
+            self.assertIn("#### HE-v2 Profile", content)
 
 
 if __name__ == "__main__":
