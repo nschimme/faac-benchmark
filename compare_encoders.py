@@ -867,12 +867,22 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
         top_tools = chart_tools[:5]      # Top 5 for clean line display
-        legend_str = ", ".join([f"**Line {idx+1}**: {t}" for idx, t in enumerate(top_tools)]) if top_tools else ""
+        COLOR_BADGES = ["🟠", "🔵", "🟣", "🟢", "🔴", "🟡", "⚪"]
+        legend_str = " &nbsp;&nbsp;|&nbsp;&nbsp; ".join([f"{COLOR_BADGES[idx % len(COLOR_BADGES)]} **{t}**" for idx, t in enumerate(top_tools)]) if top_tools else ""
 
         audio_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "audio"]
         speech_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "speech"]
 
-        def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None):
+        def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
+            if val is None or max_val <= 0:
+                return ""
+            ratio = max(0.0, min(1.0, val / max_val))
+            if lower_is_better:
+                ratio = 1.0 - ratio
+            filled = int(round(ratio * width))
+            return " " + "█" * filled + "░" * (width - filled)
+
+        def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None):
             scen_list = filter_scenarios if filter_scenarios is not None else scenarios
             for p in profile_order:
                 keys = profile_keys[p]
@@ -898,8 +908,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                             line += " N/A |"
                         else:
                             formatted = fmt_fn(val)
+                            bar_str = make_progress_bar(val, max_scale, lower_is_better=lower_is_better) if max_scale else ""
                             is_best = (val == best_val)
-                            line += f" **{formatted}** |" if is_best else f" {formatted} |"
+                            line += f" **{formatted}**{bar_str} |" if is_best else f" {formatted}{bar_str} |"
                     f.write(line + "\n")
 
                 f.write("\n")
@@ -935,14 +946,16 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             render_metric_tables(
                 lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
                 lambda v: f"{v:.3f}",
-                filter_scenarios=audio_scenarios
+                filter_scenarios=audio_scenarios,
+                max_scale=5.0
             )
             f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Stereo Audio)\n\n")
             f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
             render_metric_tables(
                 lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
                 lambda v: f"{v:.3f}",
-                filter_scenarios=audio_scenarios
+                filter_scenarios=audio_scenarios,
+                max_scale=5.0
             )
             f.write("</details>\n\n")
 
@@ -975,14 +988,16 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             render_metric_tables(
                 lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
                 lambda v: f"{v:.3f}",
-                filter_scenarios=speech_scenarios
+                filter_scenarios=speech_scenarios,
+                max_scale=5.0
             )
             f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Mono Speech)\n\n")
             f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
             render_metric_tables(
                 lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
                 lambda v: f"{v:.3f}",
-                filter_scenarios=speech_scenarios
+                filter_scenarios=speech_scenarios,
+                max_scale=5.0
             )
             f.write("</details>\n\n")
 
@@ -1015,7 +1030,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             render_metric_tables(
                 lambda rk, s: 1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None,
                 lambda v: f"{v:.4f}",
-                filter_scenarios=audio_scenarios
+                filter_scenarios=audio_scenarios,
+                max_scale=1.0
             )
             f.write("</details>\n\n")
 
@@ -1025,7 +1041,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("<details><summary><b>View Detailed Transient Fidelity Table</b></summary>\n\n")
         render_metric_tables(
             lambda rk, s: 1.0 / (1.0 + (stats[rk][s]["centroid_sum"] / stats[rk][s]["centroid_count"])) if stats[rk][s]["centroid_count"] > 0 else None,
-            lambda v: f"{v:.4f}"
+            lambda v: f"{v:.4f}",
+            max_scale=1.0
         )
         f.write("</details>\n\n")
 
