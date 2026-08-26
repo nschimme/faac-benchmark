@@ -683,6 +683,11 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "leaderboard.md")
             scenario_list = ["48k_stereo_128k", "48k_stereo_32k", "48k_stereo_16k"]
+            from config import SCENARIOS
+            SCENARIOS["48k_stereo_128k"] = {"mode": "audio", "bitrate": 128, "rate": 48000}
+            SCENARIOS["48k_stereo_32k"] = {"mode": "audio", "bitrate": 32, "rate": 48000}
+            SCENARIOS["48k_stereo_16k"] = {"mode": "audio", "bitrate": 16, "rate": 48000}
+
             generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
 
             with open(out_md) as f:
