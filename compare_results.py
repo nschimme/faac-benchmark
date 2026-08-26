@@ -1129,9 +1129,9 @@ def main():
                 elif v_c == "improved":
                     sc_transient = f"📈 (n={n_c})"
                 else:
-                    sc_transient = "N/A"
+                    sc_transient = f"➖ (n={n_c})"
             else:
-                sc_transient = "N/A"
+                sc_transient = f"n={len(sc_centroid_deltas)}<{MIN_CENTROID_ONSETS}"
 
             # Report-only: a scenario mean is small by nature, so say whether
             # it is a consistent shift or a couple of clips carrying the rest.
