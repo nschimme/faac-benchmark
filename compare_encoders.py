@@ -867,8 +867,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
         top_tools = chart_tools[:5]      # Top 5 for clean line display
-        COLOR_BADGES = ["🟠", "🔵", "🟣", "🟢", "🔴", "🟡", "⚪"]
-        legend_str = " &nbsp;&nbsp;|&nbsp;&nbsp; ".join([f"{COLOR_BADGES[idx % len(COLOR_BADGES)]} **{t}**" for idx, t in enumerate(top_tools)]) if top_tools else ""
 
         audio_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "audio"]
         speech_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "speech"]
@@ -885,11 +883,19 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None):
             scen_list = filter_scenarios if filter_scenarios is not None else scenarios
             for p in profile_order:
-                keys = profile_keys[p]
+                # Filter out encoder keys that have no valid data for this scenario subset
+                keys = [rk for rk in profile_keys[p] if any(extract_val_fn(rk, s) is not None for s in scen_list)]
                 if not keys:
                     continue
 
                 headers = [overall[rk]["tool"] for rk in keys]
+
+                # Determine max_scale automatically if not explicitly provided
+                table_max_scale = max_scale
+                if table_max_scale is None:
+                    vals = [extract_val_fn(rk, s) for rk in keys for s in scen_list if extract_val_fn(rk, s) is not None]
+                    table_max_scale = max(vals) if vals else 1.0
+
                 f.write(f"#### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(headers) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(headers)) + " |\n")
@@ -908,7 +914,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                             line += " N/A |"
                         else:
                             formatted = fmt_fn(val)
-                            bar_str = make_progress_bar(val, max_scale, lower_is_better=lower_is_better) if max_scale else ""
+                            bar_str = make_progress_bar(val, table_max_scale, lower_is_better=lower_is_better)
                             is_best = (val == best_val)
                             line += f" **{formatted}**{bar_str} |" if is_best else f" {formatted}{bar_str} |"
                     f.write(line + "\n")
@@ -922,8 +928,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write("### Stereo Audio Quality Across Bitrates\n\n")
             if not skip_graphs and top_tools:
                 scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write('    title "Stereo Audio Quality across Bitrates (Average MOS)"\n')
@@ -964,8 +968,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write("### Mono Speech Quality Across Bitrates\n\n")
             if not skip_graphs and top_tools:
                 scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in speech_scenarios]
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write('    title "Mono Speech Quality across Bitrates (Average MOS)"\n')
@@ -1007,8 +1009,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
             if not skip_graphs and top_tools:
                 scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                if legend_str:
-                    f.write(f"{legend_str}\n\n")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write('    title "Stereo Image Fidelity across Bitrates (Higher is Better)"\n')
