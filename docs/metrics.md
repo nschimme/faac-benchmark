@@ -2,9 +2,7 @@
 
 ## Perceptual Quality (MOS)
 
-Computed in Phase 2 (`phase2_mos.py`). By default, Phase 2 uses **Zimtohrli** (`zimtohrli.Pyohrli()`) as the primary perceptual engine, mapping psychoacoustic distance deterministically to a 1.0–5.0 MOS scale (`zimtohrli.mos_from_zimtohrli()`). Zimtohrli is particularly sensitive to transient preservation, temporal smearing, and pre-echo artifacts.
-
-ViSQOL is also supported as an explicit or fallback backend (`--backend visqol-python` / `--backend visqol`).
+Computed in Phase 2 (`phase2_mos.py`). Phase 2 automatically selects the perceptual engine based on scenario mode and sample rate: **visqol-python** is used for speech scenarios and 16kHz audio, while **Zimtohrli** (`zimtohrli.Pyohrli()`) is used for all other audio scenarios, mapping psychoacoustic distance deterministically to a 1.0–5.0 MOS scale (`zimtohrli.mos_from_zimtohrli()`). Zimtohrli is particularly sensitive to transient preservation, temporal smearing, and pre-echo artifacts.
 
 - **Scale**: 1.0 to 5.0 MOS scale (higher is better).
 - **Reported Delta**: **Avg MOS Δ** (candidate − base); positive indicates improvement.

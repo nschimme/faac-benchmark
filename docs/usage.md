@@ -48,38 +48,15 @@ Common options:
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
 | `--extra-args "--tns"` | Pass extra flags through to the faac encoder |
 | `--skip-mos` / `--skip-stereo` | Skip the perceptual MOS / stereo-image phases |
-| `--backend auto\|zimtohrli\|visqol-python\|visqol\|docker` | Choose the perceptual MOS backend |
 | `--sha $(git rev-parse HEAD)` | Stamp results with a commit SHA |
 
 The script runs three phases:
 
 1. **Phase 1** — encodes samples, measures throughput, library size, and
    decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
-2. **Phase 2** — perceptual quality (MOS) via Zimtohrli (default) or ViSQOL.
+2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for speech/16kHz scenarios) or `Zimtohrli` (for audio scenarios).
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
-
-### Selecting the perceptual MOS backend
-
-In `auto` mode (default) the suite tries, in order: `zimtohrli` (preferred), `visqol-python`,
-the `visqol` binary (PATH or `VISQOL_BIN`), Docker/Podman container, then the
-legacy `visqol_py`. Force one explicitly:
-
-```bash
-python3 run_benchmark.py ... --backend docker   # containerized
-python3 run_benchmark.py ... --backend visqol    # local binary
-```
-
-### Docker image discovery
-
-When using the container backend, the image
-`ghcr.io/nschimme/faac-benchmark-visqol` is resolved deterministically:
-1. **Search** locally for the tag matching the current git tag, else a short
-   hash of the build files (`Dockerfile.visqol`, etc.).
-2. **Pull** that tag from GHCR if not present locally.
-3. **Build** locally as a last resort.
-
-Override with `--visqol-image <image>`.
 
 ### Filtering tests and scenarios
 

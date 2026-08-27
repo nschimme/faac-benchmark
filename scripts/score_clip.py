@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import wav_conv
 from phase2_mos import score_wav_pair
 
-def score_clip(ref, deg, mode="audio", backend="auto"):
+def score_clip(ref, deg, mode="audio"):
     if not os.path.exists(ref):
         print(f"Error: Reference file {ref} not found.")
         return None, None
@@ -38,19 +38,17 @@ def score_clip(ref, deg, mode="audio", backend="auto"):
         if not wav_conv(deg, deg_wav, rate, channels):
             return None, None
 
-        print(f"Computing MOS (mode: {mode}, backend: {backend})...")
-        return score_wav_pair(ref_wav, deg_wav, mode, backend)
+        print(f"Computing MOS (mode: {mode})...")
+        return score_wav_pair(ref_wav, deg_wav, mode_str=mode, sample_rate=rate)
 
 def main():
     parser = argparse.ArgumentParser(description="One-shot perceptual quality (MOS) scorer.")
     parser.add_argument("reference", help="Original WAV file")
     parser.add_argument("degraded", help="Encoded AAC file (or decoded WAV)")
     parser.add_argument("--mode", choices=["audio", "speech"], default="audio", help="Scoring mode")
-    parser.add_argument("--backend", choices=["auto", "zimtohrli", "visqol", "visqol-py", "visqol-python"],
-                        default="auto", help="Perceptual MOS backend (default: auto, prefers zimtohrli)")
     args = parser.parse_args()
 
-    mos, backend_used = score_clip(args.reference, args.degraded, args.mode, args.backend)
+    mos, backend_used = score_clip(args.reference, args.degraded, args.mode)
     if mos is not None:
         print(f"MOS: {mos:.4f} (backend: {backend_used})")
     else:

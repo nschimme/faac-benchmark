@@ -41,13 +41,12 @@ python3 scripts/band_diag.py reference.wav encoded.aac --mode audio|speech
 ### `scripts/score_clip.py`
 
 One-shot MOS of a single encode vs its reference (no scenario matrix, no run
-bookkeeping — just a quick number). Reuses `phase2_mos.py`'s backend-selection
-logic (`score_wav_pair`), so `--backend auto` (default) prefers zimtohrli
-exactly like `run_benchmark.py`.
+bookkeeping — just a quick number). Reuses `phase2_mos.py`'s scoring logic
+(`score_wav_pair`), automatically routing speech to `visqol-python` and audio to
+`Zimtohrli`.
 
 ```bash
-python3 scripts/score_clip.py reference.wav encoded.aac --mode audio|speech \
-    [--backend auto|zimtohrli|visqol|visqol-py|visqol-python]
+python3 scripts/score_clip.py reference.wav encoded.aac --mode audio|speech
 ```
 
 ## Transient fidelity / TNS tooling

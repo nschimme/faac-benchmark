@@ -259,26 +259,40 @@ class TestThroughputGate(unittest.TestCase):
 
 
 class TestAutoBackendSelection(unittest.TestCase):
-    @patch("zimtohrli.Pyohrli", create=True)
-    def test_run_benchmark_selects_zimtohrli_when_available(self, mock_zimtohrli):
+    def test_run_benchmark_calls_phase2_mos(self):
         import run_benchmark
-        # Test that when zimtohrli is present, run_benchmark's detection logic selects zimtohrli
-        with patch.object(sys, "argv", ["run_benchmark.py", "bin", "lib", "name", "out.json", "--backend", "auto", "--skip-encode", "--skip-stereo"]):
+        with patch.object(sys, "argv", ["run_benchmark.py", "bin", "lib", "name", "out.json", "--skip-encode", "--skip-stereo"]):
             with patch("subprocess.run") as mock_subproc:
                 try:
                     run_benchmark.main()
                 except SystemExit:
                     pass
-                # Check that phase2_mos was called with --backend zimtohrli
+                called_phase2 = False
                 for call_args in mock_subproc.call_args_list:
                     cmd = call_args[0][0]
                     if "phase2_mos.py" in str(cmd):
-                        self.assertIn("zimtohrli", cmd)
-                        self.assertIn("--backend", cmd)
-                        idx = cmd.index("--backend")
-                        self.assertEqual(cmd[idx + 1], "zimtohrli")
+                        called_phase2 = True
+                        self.assertNotIn("--backend", cmd)
+                self.assertTrue(called_phase2)
 
-    def test_phase2_mos_auto_uses_zimtohrli_primary(self):
+    def test_phase2_mos_backend_routing(self):
+        import phase2_mos
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=1, sr=16000, ch=1)
+            write_wav(deg, seconds=1, sr=16000, ch=1)
+
+            # 16kHz should route to visqol-python
+            with patch.object(phase2_mos, "get_process_visqol_python") as mock_vpython:
+                mock_api = MagicMock()
+                mock_api.measure.return_value = MagicMock(moslqo=4.2)
+                mock_vpython.return_value = mock_api
+                mos, backend = phase2_mos.score_wav_pair(ref, deg, mode_str="speech", sample_rate=16000)
+                self.assertEqual(backend, "visqol-python")
+                self.assertAlmostEqual(mos, 4.2)
+
+    def test_phase2_mos_has_zimtohrli_flag(self):
         import phase2_mos
         self.assertTrue(hasattr(phase2_mos, "HAS_ZIMTOHRLI"))
 
@@ -412,21 +426,20 @@ class TestZimtohrliScoring(unittest.TestCase):
         if not phase2_mos.HAS_ZIMTOHRLI:
             self.skipTest("zimtohrli not installed")
 
-    def test_16khz_input_is_resampled_before_scoring(self):
-        # A 16kHz WAV fed straight into Zimtohrli (which hard-assumes 48kHz)
-        # is effectively time/frequency-scaled 3x -- identical ref/deg should
+    def test_32khz_input_is_resampled_before_scoring(self):
+        # A non-48kHz audio WAV fed straight into Zimtohrli (which hard-assumes 48kHz)
+        # is effectively time/frequency-scaled -- identical ref/deg should
         # still score near-perfect, but the regression this guards against is
-        # scipy.signal.resample_poly never being called at all (empty commit
-        # 3c56719), which previously fed 16kHz samples straight through.
+        # scipy.signal.resample_poly never being called at all.
         with tempfile.TemporaryDirectory() as td, \
              patch.object(self.phase2_mos.scipy.signal, "resample_poly",
                                 wraps=self.phase2_mos.scipy.signal.resample_poly) as m:
             ref = os.path.join(td, "ref.wav")
             deg = os.path.join(td, "deg.wav")
-            write_wav(ref, seconds=1, sr=16000, ch=1)
-            write_wav(deg, seconds=1, sr=16000, ch=1)
+            write_wav(ref, seconds=1, sr=32000, ch=1)
+            write_wav(deg, seconds=1, sr=32000, ch=1)
 
-            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, "speech", "zimtohrli")
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=32000)
 
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
@@ -434,7 +447,7 @@ class TestZimtohrliScoring(unittest.TestCase):
             for call in m.call_args_list:
                 up, down = call.args[1], call.args[2]
                 self.assertEqual(up, 3)
-                self.assertEqual(down, 1)
+                self.assertEqual(down, 2)
 
     def test_48khz_input_is_not_resampled(self):
         with tempfile.TemporaryDirectory() as td, \
@@ -445,7 +458,7 @@ class TestZimtohrliScoring(unittest.TestCase):
             write_wav(ref, seconds=1, sr=48000, ch=1)
             write_wav(deg, seconds=1, sr=48000, ch=1)
 
-            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, "speech", "zimtohrli")
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
 
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
@@ -480,7 +493,7 @@ class TestZimtohrliScoring(unittest.TestCase):
                 return original_distance(a, b)
 
             with patch.object(real_engine, "distance", side_effect=counting_distance):
-                mos, backend = self.phase2_mos.score_wav_pair(ref, deg, "audio", "zimtohrli")
+                mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
 
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
