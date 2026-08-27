@@ -527,9 +527,9 @@ class TestCompareResultsRendering(unittest.TestCase):
             "total_decode_errors": 0,
             "total_missing_mos": 0,
         }
-        lines = C.render_summary_table(metrics_with_churn, "Zimtohrli", "ABR")
-        avg_line = next((l for l in lines if "Avg Zimtohrli Δ" in l), None)
-        self.assertIsNotNone(avg_line, "Expected Avg Zimtohrli Δ row to be present when clip movement exists")
+        lines = C.render_summary_table(metrics_with_churn, "MOS", "ABR")
+        avg_line = next((l for l in lines if "Avg MOS Δ" in l), None)
+        self.assertIsNotNone(avg_line, "Expected Avg MOS Δ row to be present when clip movement exists")
         self.assertIn("+0.001", avg_line)
         self.assertIn("15 clips improved, 3 degraded", avg_line)
 
@@ -559,9 +559,9 @@ class TestCompareResultsRendering(unittest.TestCase):
             "total_decode_errors": 0,
             "total_missing_mos": 0,
         }
-        lines = C.render_summary_table(metrics_identical, "Zimtohrli", "ABR")
-        avg_line = next((l for l in lines if "Avg Zimtohrli Δ" in l), None)
-        self.assertIsNone(avg_line, "Avg Zimtohrli Δ row should be omitted for identical runs to avoid noise")
+        lines = C.render_summary_table(metrics_identical, "MOS", "ABR")
+        avg_line = next((l for l in lines if "Avg MOS Δ" in l), None)
+        self.assertIsNone(avg_line, "Avg MOS Δ row should be omitted for identical runs to avoid noise")
 
 
 class TestAttackCentroidShift(unittest.TestCase):
@@ -633,6 +633,14 @@ class TestCiSigntestVerdict(unittest.TestCase):
         p, _neg, _n = transient.sign_test_p(deltas)
         verdict = transient.ci_signtest_verdict(lo, hi, p, "decreased", "increased")
         self.assertEqual(verdict, "decreased")
+
+    def test_sign_test_p_large_n_no_overflow(self):
+        import transient
+        deltas = [-0.5] * 1000
+        p, neg, n = transient.sign_test_p(deltas)
+        self.assertEqual(n, 1000)
+        self.assertEqual(neg, 1000)
+        self.assertLess(p, 1e-12)
 
     def test_noisy_mixed_deltas_are_inconclusive(self):
         """A CI that barely excludes zero but with no consistent per-onset
