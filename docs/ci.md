@@ -109,12 +109,10 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `output-json` | Path where the result JSON should be saved. | Yes | |
 | `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
-| `visqol-image` | Docker image for ViSQOL (else internal discovery). | No | `""` |
 | `sha` | Commit SHA to associate with these results. | No | `${{ github.sha }}` |
 | `scenarios` | Comma-separated scenarios (e.g. `16k_mono_16k,48k_stereo_128k`). | No | |
 | `include-tests` | Comma-separated include globs (e.g. `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated exclude globs. | No | |
-| `backend` | `auto`, `docker`, `visqol`, `visqol-py`, `visqol-python`. | No | `visqol-python` |
 
 ### Action: `nschimme/faac-benchmark/report`
 

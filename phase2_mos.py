@@ -38,67 +38,29 @@ except ImportError:
     ffmpeg = None
 
 try:
-    import zimtohrli
     import soundfile as sf
     import scipy.signal
+except ImportError:
+    sf = None
+
+try:
+    import zimtohrli
     HAS_ZIMTOHRLI = True
 except ImportError:
     HAS_ZIMTOHRLI = False
 
-# Support for multiple Python ViSQOL implementations
 try:
     from visqol import VisqolApi
     HAS_VISQOL_PYTHON = True
 except ImportError:
     HAS_VISQOL_PYTHON = False
 
-try:
-    import visqol_py
-    from visqol_py import ViSQOLMode
-    HAS_VISQOL_PY = True
-except ImportError:
-    HAS_VISQOL_PY = False
-
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import SCENARIOS
 
-# Global paths for binary mode
-VISQOL_BIN = os.environ.get("VISQOL_BIN")
-MODEL_DIR = os.environ.get("VISQOL_MODEL_DIR")
-SPEECH_MODEL_NAME = "lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite"
-AUDIO_MODEL_NAME = "libsvm_nu_svr_model.txt"
-
-def find_visqol_assets():
-    global VISQOL_BIN, MODEL_DIR
-
-    if not VISQOL_BIN:
-        VISQOL_BIN = shutil.which("visqol")
-
-    if not VISQOL_BIN:
-        # Check common location in Docker or build dirs
-        common_locs = ["/app/visqol/bazel-bin/visqol"]
-        for loc in common_locs:
-            if os.path.exists(loc):
-                VISQOL_BIN = loc
-                break
-
-    if VISQOL_BIN and not MODEL_DIR:
-        # Try to find model relative to binary
-        base_dir = os.path.dirname(VISQOL_BIN)
-        rel_model = os.path.abspath(os.path.join(base_dir, "..", "model"))
-        if os.path.exists(rel_model):
-            MODEL_DIR = rel_model
-        else:
-            if os.path.exists("/app/visqol/model"):
-                MODEL_DIR = "/app/visqol/model"
-
-# Initialize paths
-find_visqol_assets()
-
 # Process-local storage for instances
 _process_zimtohrli_instances = {}
-_process_visqol_instances = {}
 _process_visqol_api_instances = {}
 
 def get_process_zimtohrli():
@@ -114,90 +76,70 @@ def get_process_zimtohrli():
             _process_zimtohrli_instances[pid] = None
     return _process_zimtohrli_instances[pid]
 
-def get_process_visqol_python(mode_str, model_dir=None):
+def get_process_visqol_python(mode_str="speech"):
     if not HAS_VISQOL_PYTHON:
         return None
 
-    cache_key = f"{mode_str}_{model_dir}"
-    if cache_key not in _process_visqol_api_instances:
+    if mode_str not in _process_visqol_api_instances:
         try:
             api = VisqolApi()
-            kwargs = {"mode": mode_str}
-            if mode_str == "speech" and model_dir:
-                model_path = os.path.join(model_dir, SPEECH_MODEL_NAME)
-                if os.path.exists(model_path):
-                    kwargs["lattice_model_path"] = model_path
-
-            api.create(**kwargs)
-            _process_visqol_api_instances[cache_key] = api
+            api.create(mode=mode_str)
+            _process_visqol_api_instances[mode_str] = api
         except Exception as e:
-            print(f" Failed to initialize ViSQOL Python (modern): {e}")
-            _process_visqol_api_instances[cache_key] = None
-    return _process_visqol_api_instances[cache_key]
+            print(f" Failed to initialize ViSQOL Python: {e}")
+            _process_visqol_api_instances[mode_str] = None
+    return _process_visqol_api_instances[mode_str]
 
 def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files=None):
     """
-    Attempts to process a batch of samples using visqol-python's internal parallelization.
+    Attempts to process a batch of speech/16kHz samples using visqol-python's internal parallelization.
     """
-    modes = {"audio": [], "speech": []}
+    speech_items = []
     for key, entry in pending.items():
         info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
-        if info:
-            modes[info["cfg"]["mode"]].append((key, entry, info))
+        if info and (info["cfg"]["mode"] == "speech" or info["cfg"]["rate"] == 16000):
+            speech_items.append((key, entry, info))
 
     results = {}
+    if not speech_items:
+        return results
+
     with tempfile.TemporaryDirectory() as batch_tmpdir:
-        for mode, items in modes.items():
-            if not items:
-                continue
+        print(f"  Batch processing {len(speech_items)} speech/16kHz samples with visqol-python...")
+        api = get_process_visqol_python("speech")
+        if not api:
+            print("    Failed to initialize VisqolApi for speech, skipping batch.")
+            return results
 
-            print(f"  Batch processing {len(items)} {mode} samples with visqol-python...")
-            api = get_process_visqol_python(mode, MODEL_DIR)
-            if not api:
-                print(f"    Failed to initialize VisqolApi for {mode}, skipping batch.")
-                continue
+        file_pairs = []
+        valid_keys = []
+        for key, entry, info in speech_items:
+            v_rate = info["v_rate"]
+            v_channels = info["v_channels"]
+            ref_input_path = info["ref_input_path"]
+            aac_path = info["aac_path"]
 
-            file_pairs = []
-            valid_keys = []
-            for key, entry, info in items:
-                v_rate = info["v_rate"]
-                v_channels = info["v_channels"]
-                ref_input_path = info["ref_input_path"]
-                aac_path = info["aac_path"]
+            if aac_path and os.path.exists(ref_input_path):
+                v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
+                v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
 
-                if aac_path and os.path.exists(ref_input_path):
-                    v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
-                    v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
+                if wav_conv(ref_input_path, v_ref, v_rate, v_channels) and \
+                   wav_conv(aac_path, v_deg, v_rate, v_channels):
+                    file_pairs.append((v_ref, v_deg))
+                    valid_keys.append(key)
 
-                    if wav_conv(ref_input_path, v_ref, v_rate, v_channels) and \
-                       wav_conv(aac_path, v_deg, v_rate, v_channels):
-                        file_pairs.append((v_ref, v_deg))
-                        valid_keys.append(key)
-
-            if file_pairs:
-                try:
-                    batch_results = api.measure_batch(file_pairs, parallel=True)
-                    for key, result in zip(valid_keys, batch_results):
-                        if isinstance(result, Exception):
-                            print(f"    Error for {key} in batch: {result}")
-                        else:
-                            results[key] = (float(result.moslqo), "visqol-python")
-                except Exception as e:
-                    print(f"    Batch execution failed for {mode}: {e}")
+        if file_pairs:
+            try:
+                batch_results = api.measure_batch(file_pairs, parallel=True)
+                for key, result in zip(valid_keys, batch_results):
+                    if isinstance(result, Exception):
+                        print(f"    Error for {key} in batch: {result}")
+                    else:
+                        results[key] = (float(result.moslqo), "visqol-python")
+            except Exception as e:
+                print(f"    Batch execution failed for speech: {e}")
 
     return results
-
-def get_process_visqol_py(mode_str):
-    if not HAS_VISQOL_PY:
-        return None
-    if mode_str not in _process_visqol_instances:
-        try:
-            mode = ViSQOLMode.SPEECH if mode_str == "speech" else ViSQOLMode.AUDIO
-            _process_visqol_instances[mode_str] = visqol_py.ViSQOL(mode=mode)
-        except Exception as e:
-            print(f" Failed to initialize ViSQOL Python (legacy): {e}")
-            _process_visqol_instances[mode_str] = None
-    return _process_visqol_instances[mode_str]
 
 def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=None):
     scenario_name = entry.get("scenario")
@@ -220,116 +162,78 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "v_channels": 1 if cfg["mode"] == "speech" else 2
     }
 
-def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
-    """Score an already-converted (matching rate/channels) ref/deg WAV pair
-    against the configured backend stack: zimtohrli (default/preferred),
-    then visqol-python, then the visqol binary, then legacy visqol_py.
-    Returns (mos, backend_used); mos is None on failure or if the requested
-    backend isn't available."""
+def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
+    """Score an already-converted ref/deg WAV pair.
+    Speech mode OR 16kHz sample rate automatically uses visqol-python;
+    all other audio uses Zimtohrli.
+    Returns (mos, backend_used); mos is None on failure."""
     try:
-        # 1. Try Zimtohrli (Default)
-        if backend in ["auto", "zimtohrli"]:
-            if HAS_ZIMTOHRLI:
-                z_engine = get_process_zimtohrli()
-                if z_engine:
-                    ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
-                    dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
+        sr = sample_rate
+        if sr is None and sf is not None:
+            try:
+                sr = sf.info(v_ref).samplerate
+            except Exception:
+                pass
 
-                    # Zimtohrli requires 48kHz input and does not check or
-                    # resample internally -- feeding it a lower rate silently
-                    # mis-scales the signal against its psychoacoustic filterbank.
-                    ZIMT_RATE = 48000
-                    if sr_r != ZIMT_RATE:
-                        g = math.gcd(ZIMT_RATE, sr_r)
-                        ref_data = scipy.signal.resample_poly(
-                            ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
-                    if sr_d != ZIMT_RATE:
-                        g = math.gcd(ZIMT_RATE, sr_d)
-                        dec_data = scipy.signal.resample_poly(
-                            dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
+        use_speech = (mode_str == "speech") or (sr == 16000)
 
-                    # Align using a mono mixdown for the cross-correlation lag
-                    # estimate, then apply that lag per-channel below --
-                    # Zimtohrli has no native multi-channel mode (per its
-                    # authors: "compares a single reference channel with a
-                    # single distortion channel"), so per-channel distance,
-                    # combined via L2, is the tool's own recommended approach
-                    # for stereo -- averaging channels into one signal before
-                    # scoring would dilute artifacts present in only one channel.
-                    r_mono = ref_data.mean(axis=1)
-                    d_mono = dec_data.mean(axis=1)
-
-                    n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
-                    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-                    d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
-                    corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
-                    lag = int(np.argmax(corr)) - (n_search - 1)
-
-                    if lag < 0:
-                        dec_aligned = dec_data[-lag:]
-                        ref_aligned = ref_data[:len(ref_data) + lag]
-                    elif lag > 0:
-                        ref_aligned = ref_data[lag:]
-                        dec_aligned = dec_data[:len(dec_data) - lag]
-                    else:
-                        ref_aligned, dec_aligned = ref_data, dec_data
-
-                    n = min(len(ref_aligned), len(dec_aligned))
-                    num_channels = ref_aligned.shape[1]
-                    per_channel_dist = [
-                        z_engine.distance(
-                            np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
-                            np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
-                        )
-                        for ch in range(num_channels)
-                    ]
-                    dist = math.sqrt(sum(d * d for d in per_channel_dist))
-                    return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
-            elif backend == "zimtohrli":
-                print("  ERROR: zimtohrli not found but requested")
-                return None, "zimtohrli"
-
-        # 2. Try visqol-python (Modern)
-        if backend in ["auto", "visqol-python"]:
+        if use_speech:
             if HAS_VISQOL_PYTHON:
-                api = get_process_visqol_python(mode_str, MODEL_DIR)
+                api = get_process_visqol_python("speech")
                 if api:
                     result = api.measure(v_ref, v_deg)
                     return float(result.moslqo), "visqol-python"
-            elif backend == "visqol-python":
-                print("  ERROR: visqol-python not found but requested")
-                return None, "visqol-python"
+            print("  ERROR: visqol-python is required for speech/16kHz scoring but not available.")
+            return None, "visqol-python"
 
-        # 3. Try Binary Mode
-        if backend in ["auto", "visqol"]:
-            if VISQOL_BIN and os.path.exists(VISQOL_BIN):
-                cmd = [VISQOL_BIN, "--reference_file", v_ref, "--degraded_file", v_deg]
-                if mode_str == "speech":
-                    cmd.append("--use_speech_mode")
-                    if MODEL_DIR:
-                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, SPEECH_MODEL_NAME)])
+        # Audio mode: use Zimtohrli
+        if HAS_ZIMTOHRLI:
+            z_engine = get_process_zimtohrli()
+            if z_engine:
+                ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
+                dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
+
+                ZIMT_RATE = 48000
+                if sr_r != ZIMT_RATE:
+                    g = math.gcd(ZIMT_RATE, sr_r)
+                    ref_data = scipy.signal.resample_poly(
+                        ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
+                if sr_d != ZIMT_RATE:
+                    g = math.gcd(ZIMT_RATE, sr_d)
+                    dec_data = scipy.signal.resample_poly(
+                        dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
+
+                r_mono = ref_data.mean(axis=1)
+                d_mono = dec_data.mean(axis=1)
+
+                n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
+                r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+                d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+                corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
+                lag = int(np.argmax(corr)) - (n_search - 1)
+
+                if lag < 0:
+                    dec_aligned = dec_data[-lag:]
+                    ref_aligned = ref_data[:len(ref_data) + lag]
+                elif lag > 0:
+                    ref_aligned = ref_data[lag:]
+                    dec_aligned = dec_data[:len(dec_data) - lag]
                 else:
-                    if MODEL_DIR:
-                        cmd.extend(["--similarity_to_quality_model", os.path.join(MODEL_DIR, AUDIO_MODEL_NAME)])
+                    ref_aligned, dec_aligned = ref_data, dec_data
 
-                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                for line in result.stdout.splitlines():
-                    if "MOS-LQO:" in line:
-                        return float(line.split()[-1]), "visqol"
-            elif backend == "visqol":
-                print("  ERROR: visqol binary not found but requested")
-                return None, "visqol"
-
-        # 4. Try visqol_py (Legacy)
-        if backend in ["auto", "visqol-py"]:
-            if HAS_VISQOL_PY:
-                visqol = get_process_visqol_py(mode_str)
-                if visqol:
-                    result = visqol.measure(v_ref, v_deg)
-                    return float(result.moslqo), "visqol-py"
-            elif backend == "visqol-py":
-                print("  ERROR: visqol-py not found but requested")
-                return None, "visqol-py"
+                n = min(len(ref_aligned), len(dec_aligned))
+                num_channels = ref_aligned.shape[1]
+                per_channel_dist = [
+                    z_engine.distance(
+                        np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
+                        np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
+                    )
+                    for ch in range(num_channels)
+                ]
+                dist = math.sqrt(sum(d * d for d in per_channel_dist))
+                return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
+        print("  ERROR: zimtohrli is required for audio scoring but not available.")
+        return None, "zimtohrli"
 
     except Exception as e:
         print(f"  Error computing MOS: {e}")
@@ -337,7 +241,7 @@ def score_wav_pair(v_ref, v_deg, mode_str, backend="auto"):
     return None, "none"
 
 
-def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, backend="auto", aac_files=None, ref_wav_cache_dir=None):
+def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac_files=None, ref_wav_cache_dir=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
         return key, None, "none"
@@ -365,18 +269,16 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, bac
             print(f"  FFmpeg decode gate failed for {key}")
             return key, 1.0, "none"
 
-        mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], backend)
+        mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"))
         if mos is None and backend_used != "none":
             print(f"  ERROR: backend '{backend_used}' failed for {key}")
         return key, mos, backend_used
 
 def main():
-    parser = argparse.ArgumentParser(description="ViSQOL MOS computation (Phase 2)")
+    parser = argparse.ArgumentParser(description="Perceptual MOS computation (Phase 2)")
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
-    parser.add_argument("--backend", choices=["auto", "zimtohrli", "visqol", "visqol-py", "visqol-python"],
-                        default="auto", help="Perceptual MOS backend to use")
     parser.add_argument("--faac-bin", help="Path to faac binary for provenance verification")
     parser.add_argument("--lib-path", help="Path to libfaac.so for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
@@ -434,23 +336,19 @@ def main():
 
     mos_results = {}
 
-    if HAS_VISQOL_PYTHON and (args.backend == "visqol-python" or (args.backend == "auto" and not HAS_ZIMTOHRLI)):
+    if HAS_VISQOL_PYTHON:
         batch_results = run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files)
         mos_results.update(batch_results)
         pending = {k: v for k, v in pending.items() if k not in mos_results}
 
     still_pending = pending
     if still_pending:
-        if args.backend == "auto":
-            mode_str = "zimtohrli" if HAS_ZIMTOHRLI else "visqol-python" if HAS_VISQOL_PYTHON else "Binary" if VISQOL_BIN else "visqol_py" if HAS_VISQOL_PY else "None"
-            print(f"Computing MOS for {len(still_pending)} samples using prioritized stack (Primary: {mode_str}, {num_cpus} cores)...")
-        else:
-            print(f"Computing MOS for {len(still_pending)} samples using backend '{args.backend}' ({num_cpus} cores)...")
+        print(f"Computing MOS for {len(still_pending)} samples (Speech/16kHz -> visqol-python, Audio -> Zimtohrli, {num_cpus} cores)...")
 
         with tempfile.TemporaryDirectory() as ref_wav_cache_dir, \
              concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
             futures = {
-                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, args.backend, aac_files, ref_wav_cache_dir): key
+                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, aac_files, ref_wav_cache_dir): key
                 for key, entry in still_pending.items()
             }
 
@@ -460,7 +358,7 @@ def main():
                     key, mos, backend_used = res
                 else:
                     key, mos = res
-                    backend_used = "zimtohrli" if HAS_ZIMTOHRLI else "visqol-python"
+                    backend_used = "zimtohrli"
                 if mos is not None:
                     mos_results[key] = (mos, backend_used)
                 mos_str = f"{mos:.2f}" if mos is not None else "N/A"

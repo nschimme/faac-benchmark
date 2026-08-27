@@ -408,7 +408,6 @@ def main():
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) calculation")
     parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid graph blocks in leaderboard")
-    parser.add_argument("--backend", default="auto", help="Perceptual MOS backend")
 
     args = parser.parse_args()
 
@@ -508,8 +507,7 @@ def main():
             sys.executable, phase2_script,
             bridge_json,
             output_dir,
-            external_data_dir,
-            "--backend", args.backend
+            external_data_dir
         ]
         subprocess.run(cmd_phase2, check=True)
 
