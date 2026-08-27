@@ -345,6 +345,8 @@ def analyze_pair(base_file, cand_file):
                 "bitrate_acc_count": 0,
                 "mos_deltas": [],
                 "centroid_deltas": [],
+                "centroid_o_abs": [],
+                "centroid_b_abs": [],
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
@@ -441,8 +443,12 @@ def analyze_pair(base_file, cand_file):
                 # significant verdict can be paired with the same 0-1
                 # fidelity number compare_encoders.py's leaderboard reports
                 # (1 / (1 + mean|ms|)), for a maintainer to read as "how much".
-                suite_results["centroid_o_abs"].extend(abs(v) for v in o_centroid)
-                suite_results["centroid_b_abs"].extend(abs(v) for v in b_centroid)
+                o_abs_list = [abs(v) for v in o_centroid]
+                b_abs_list = [abs(v) for v in b_centroid]
+                suite_results["centroid_o_abs"].extend(o_abs_list)
+                suite_results["centroid_b_abs"].extend(b_abs_list)
+                suite_results["scenario_stats"][scenario]["centroid_o_abs"].extend(o_abs_list)
+                suite_results["scenario_stats"][scenario]["centroid_b_abs"].extend(b_abs_list)
                 clip_mean = sum(clip_deltas) / len(clip_deltas)
                 if clip_mean > suite_results["worst_centroid_regression"][0]:
                     suite_results["worst_centroid_regression"] = (clip_mean, display_name)
@@ -896,12 +902,14 @@ def render_summary_table(metrics, mos_label, rc_mode):
             icon = "📉" if verdict == "regression" else "📈"
             o_abs = metrics.get("centroid_o_abs", [])
             b_abs = metrics.get("centroid_b_abs", [])
-            fid_str = ""
             if o_abs and b_abs:
                 fid_o = 1.0 / (1.0 + sum(o_abs) / len(o_abs))
                 fid_b = 1.0 / (1.0 + sum(b_abs) / len(b_abs))
-                fid_str = f", fidelity {fid_b:.3f} → {fid_o:.3f}"
-            lines.append(f"| **Transient Fidelity (attack-centroid)** | {icon} (n={n}{fid_str}) |")
+                fid_delta = fid_o - fid_b
+                fid_str = f"{fid_delta:+.4f} {icon} (n={n}, fidelity {fid_b:.3f} → {fid_o:.3f})"
+            else:
+                fid_str = f"{icon} (n={n})"
+            lines.append(f"| **Transient Fidelity Δ** | {fid_str} |")
         if metrics["worst_centroid_regression"][0] > 0.5:
             lines.append(
                 f"| **Worst Transient Regression** | "
@@ -1040,14 +1048,7 @@ def main():
     else:
         summary_lines.append("## 📊 Benchmark Summary")
 
-    # Determine backend name across suites
-    backend = "zimtohrli"
-    for d in all_suite_data.values():
-        b = d.get("mos_backend") or d.get("mos_provider")
-        if b:
-            backend = b
-            break
-    mos_label = "Zimtohrli" if "zimtohrli" in backend else "ViSQOL" if "visqol" in backend else backend.capitalize()
+    mos_label = "MOS"
 
     summary_lines.append("\n### Summary")
     if len(modes_present) > 1:
@@ -1088,7 +1089,7 @@ def main():
 
         # Aggregating across all suites for scenarios, keyed by mode too when
         # more than one mode is present.
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": [], "centroid_deltas": []})
+        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
         for suite_data in all_suite_data.values():
             mode = suite_data.get("rate_control_mode", "abr")
             for sc_name, sc_stats in suite_data["scenario_stats"].items():
@@ -1103,6 +1104,8 @@ def main():
                 global_scenario_stats[key]["acc_count"] += sc_stats["bitrate_acc_count"]
                 global_scenario_stats[key]["mos_deltas"] += sc_stats.get("mos_deltas", [])
                 global_scenario_stats[key]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
+                global_scenario_stats[key]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
+                global_scenario_stats[key]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
 
         has_sig_mark = False
         sort_key = (lambda k: (get_scenario_sort_key(k[0]), k[1])) if multi_mode else get_scenario_sort_key
@@ -1119,19 +1122,27 @@ def main():
             # MIN_CENTROID_ONSETS the cell just says how far short it fell
             # rather than guessing.
             sc_centroid_deltas = gs.get("centroid_deltas", [])
-            if len(sc_centroid_deltas) >= MIN_CENTROID_ONSETS:
+            n_c_total = len(sc_centroid_deltas)
+            if n_c_total >= MIN_CENTROID_ONSETS:
                 lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
                 p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
                 v_c = transient.ci_signtest_verdict(
                     lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
-                if v_c == "regression":
-                    sc_transient = f"📉 (n={n_c})"
-                elif v_c == "improved":
-                    sc_transient = f"📈 (n={n_c})"
+                if v_c in ("regression", "improved"):
+                    icon = "📉" if v_c == "regression" else "📈"
+                    sc_o_abs = gs.get("centroid_o_abs", [])
+                    sc_b_abs = gs.get("centroid_b_abs", [])
+                    if sc_o_abs and sc_b_abs:
+                        fid_o = 1.0 / (1.0 + sum(sc_o_abs) / len(sc_o_abs))
+                        fid_b = 1.0 / (1.0 + sum(sc_b_abs) / len(sc_b_abs))
+                        sc_fid_delta = fid_o - fid_b
+                        sc_transient = f"{sc_fid_delta:+.4f} {icon} (n={n_c})"
+                    else:
+                        sc_transient = f"{icon} (n={n_c})"
                 else:
                     sc_transient = f"➖ (n={n_c})"
             else:
-                sc_transient = f"n={len(sc_centroid_deltas)}<{MIN_CENTROID_ONSETS}"
+                sc_transient = f"➖ (n={n_c_total})"
 
             # Report-only: a scenario mean is small by nature, so say whether
             # it is a consistent shift or a couple of clips carrying the rest.
@@ -1156,8 +1167,9 @@ def main():
                     f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
                     f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_acc} |")
 
+        report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
         if has_sig_mark:
-            report.append("\n_✳ Statistically significant change (95% confidence interval excludes 0)_")
+            report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
 
         # 1. Collapsible Details: Regressions
         total_regressions = global_metrics["total_regressions"]

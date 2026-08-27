@@ -1280,15 +1280,14 @@ def sign_test_p(deltas):
 
     Negative ΔNPER = TNS reduced pre-echo (good). Zeros (short-block onsets) excluded.
     """
-    from math import comb
+    from scipy.stats import binomtest
     nz = [d for d in deltas if abs(d) > 1e-9]
     n = len(nz)
     if n == 0:
         return 1.0, 0, 0
     neg = sum(1 for d in nz if d < 0)
-    k = min(neg, n - neg)
-    tail = sum(comb(n, i) for i in range(0, k + 1)) / (2.0 ** n)
-    return min(1.0, 2.0 * tail), neg, n
+    p_val = float(binomtest(neg, n, 0.5).pvalue)
+    return p_val, neg, n
 
 
 def ci_signtest_verdict(lo, hi, p, label_decrease, label_increase, alpha=0.05):
