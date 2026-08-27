@@ -322,6 +322,7 @@ def run_benchmark(
                     # Warmup
                     subprocess.run([faac_bin_path,
                                     "-w",
+                                    "--overwrite",
                                     "-o",
                                     output_path,
                                     input_path],
@@ -338,6 +339,7 @@ def run_benchmark(
                         start_time = time.perf_counter()
                         subprocess.run([faac_bin_path,
                                         "-w",
+                                        "--overwrite",
                                         "-o",
                                         output_path,
                                         input_path],
