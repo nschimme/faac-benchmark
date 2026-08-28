@@ -78,7 +78,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.m4a")
 
     # Determine encoding parameters
-    cmd = [faac_bin_path, "-w", "--overwrite", "-o", output_path, input_path]
+    cmd = [faac_bin_path, "--overwrite", "-o", output_path, input_path]
     if rate_control == "vbr":
         cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
     else:
@@ -321,7 +321,6 @@ def run_benchmark(
                 try:
                     # Warmup
                     subprocess.run([faac_bin_path,
-                                    "-w",
                                     "--overwrite",
                                     "-o",
                                     output_path,
@@ -338,7 +337,6 @@ def run_benchmark(
                     for _ in range(TP_REPS):
                         start_time = time.perf_counter()
                         subprocess.run([faac_bin_path,
-                                        "-w",
                                         "--overwrite",
                                         "-o",
                                         output_path,

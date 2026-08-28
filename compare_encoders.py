@@ -153,12 +153,15 @@ def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
     return 6 <= bitrate_per_ch <= 20
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id, profile="lc", lib_override=None):
+    def __init__(self, name, binary_path, tool_id, profile="lc", lib_override=None, legacy=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
+        self.legacy = legacy
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        if self.legacy:
+            return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--overwrite", "-o", output_path, input_path]
         object_type = "he-aac-v1" if self.profile == "he" else "lc"
-        return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
+        return [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
@@ -280,14 +283,52 @@ def get_audio_info(path):
     except:
         return None, None
 
+def check_faac_legacy(faac_path, lib_override=None):
+    """Check if faac binary is legacy 1.XX (lacks --object-type support)."""
+    env = None
+    if lib_override:
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+
+    try:
+        res = subprocess.run([faac_path, "--help"], capture_output=True, text=True, env=env)
+        stdout_stderr = (res.stdout or "") + (res.stderr or "")
+        if "--object-type" in stdout_stderr:
+            return False
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run([faac_path, "-h"], capture_output=True, text=True, env=env)
+        stdout_stderr = (res.stdout or "") + (res.stderr or "")
+        if "--object-type" in stdout_stderr:
+            return False
+    except Exception:
+        pass
+
+    lib_path = lib_override or find_linked_lib(faac_path, "libfaac")
+    if lib_path and "libfaac.so.0" in lib_path:
+        return True
+
+    return True
+
 def detect_encoders(args):
     encoders = []
 
     # 1. FAAC
     faac_path = args.faac_bin or shutil.which("faac")
     if faac_path:
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib))
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib))
+        legacy = check_faac_legacy(faac_path, lib_override=args.faac_lib)
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib, legacy=legacy))
+        if not legacy:
+            encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib, legacy=legacy))
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()

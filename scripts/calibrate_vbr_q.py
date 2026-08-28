@@ -56,7 +56,7 @@ def get_dur(path, cache={}):
 def avg_kbps_for_q(q, samples, tmp):
     total_bits, total_dur = 0, 0
     for s in samples:
-        subprocess.run(["faac", "-w", "-q", str(q), "-o", tmp, s, "-X", "--overwrite"],
+        subprocess.run(["faac", "-q", str(q), "-o", tmp, s, "-X", "--overwrite"],
                         capture_output=True)
         total_bits += os.path.getsize(tmp) * 8
         total_dur += get_dur(s)

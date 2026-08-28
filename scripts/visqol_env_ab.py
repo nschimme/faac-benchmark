@@ -94,7 +94,7 @@ def main():
                 for tag, env in (("A", env_a), ("B", env_b)):
                     aac = os.path.join(tmp, f"{tag}.m4a")
                     dec = os.path.join(tmp, f"{tag}.wav")
-                    sh([args.faac, "-w", "-b", str(br), "-o", aac, clip], env)
+                    sh([args.faac, "-b", str(br), "-o", aac, clip], env)
                     to_48k_stereo(aac, dec)
                     mos[tag] = score(ref48, dec, args.reps)
                 d = mos["A"] - mos["B"]
