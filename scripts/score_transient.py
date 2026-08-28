@@ -35,7 +35,7 @@ import scipy.signal
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import wav_conv
+from utils import wav_conv, is_faac_legacy
 
 
 # ── algorithm constants ────────────────────────────────────────────────────────
@@ -113,7 +113,10 @@ def decode_aac(aac_path, wav_path, sr=48000, channels=1):
 
 def encode_aac(faac_bin, wav_path, aac_path, bitrate, extra_args=None, env_extra=None):
     """Encode WAV to AAC/M4A via FAAC at the given total bitrate (kbps)."""
-    cmd = [faac_bin, '-b', str(bitrate), '-o', aac_path, wav_path]
+    cmd = [faac_bin]
+    if is_faac_legacy(faac_bin):
+        cmd.append('-w')
+    cmd.extend(['-b', str(bitrate), '-o', aac_path, wav_path])
     if extra_args:
         cmd.extend(extra_args)
     env = dict(os.environ)
@@ -142,8 +145,11 @@ def require_tuning_build(faac_bin):
         subprocess.run(['ffmpeg', '-y', '-f', 'lavfi', '-i',
                         'sine=frequency=1000:duration=0.2', '-ar', '48000',
                         '-ac', '1', wav], capture_output=True, check=True)
-        out = subprocess.run([faac_bin, '-b', '64', '-o', os.path.join(tmp, 'probe.m4a'), wav],
-                             capture_output=True)
+        cmd = [faac_bin]
+        if is_faac_legacy(faac_bin):
+            cmd.append('-w')
+        cmd.extend(['-b', '64', '-o', os.path.join(tmp, 'probe.m4a'), wav])
+        out = subprocess.run(list(cmd), capture_output=True)
         banner = 'FAAC_TUNING build' in out.stderr.decode(errors='replace')
     if not banner:
         sys.exit(f'{faac_bin} is not a tuning build; FAAC_* knobs would be ignored.\n'
