@@ -88,7 +88,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
 
     try:
         t_start = time.time()
-        subprocess.run(cmd, env=env, check=True, capture_output=True)
+        subprocess.run(list(cmd), env=env, check=True, capture_output=True)
         t_duration = time.time() - t_start
 
         mos = None
@@ -321,7 +321,7 @@ def run_benchmark(
                 try:
                     tp_cmd = [faac_bin_path, "--overwrite", "-o", output_path, input_path]
                     # Warmup
-                    subprocess.run(tp_cmd, env=env, check=True, capture_output=True)
+                    subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
 
                     # Interference is one-sided: a run can be slowed by another
                     # process but never sped up, so the minimum is the
@@ -330,7 +330,7 @@ def run_benchmark(
                     durations = []
                     for _ in range(TP_REPS):
                         start_time = time.perf_counter()
-                        subprocess.run(tp_cmd, env=env, check=True, capture_output=True)
+                        subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
                         durations.append(time.perf_counter() - start_time)
 
                     best = min(durations)
