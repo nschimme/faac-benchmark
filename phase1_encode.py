@@ -319,15 +319,9 @@ def run_benchmark(
 
                 print(f"  Benchmarking throughput with {sample}...")
                 try:
+                    tp_cmd = [faac_bin_path, "--overwrite", "-o", output_path, input_path]
                     # Warmup
-                    subprocess.run([faac_bin_path,
-                                    "--overwrite",
-                                    "-o",
-                                    output_path,
-                                    input_path],
-                                   env=env,
-                                   check=True,
-                                   capture_output=True)
+                    subprocess.run(tp_cmd, env=env, check=True, capture_output=True)
 
                     # Interference is one-sided: a run can be slowed by another
                     # process but never sped up, so the minimum is the
@@ -336,14 +330,7 @@ def run_benchmark(
                     durations = []
                     for _ in range(TP_REPS):
                         start_time = time.perf_counter()
-                        subprocess.run([faac_bin_path,
-                                        "--overwrite",
-                                        "-o",
-                                        output_path,
-                                        input_path],
-                                       env=env,
-                                       check=True,
-                                       capture_output=True)
+                        subprocess.run(tp_cmd, env=env, check=True, capture_output=True)
                         durations.append(time.perf_counter() - start_time)
 
                     best = min(durations)
