@@ -296,9 +296,9 @@ def main():
     total = len(matrix)
     num_cpus = os.cpu_count() or 1
 
-    # Precompute AAC/M4A file list for performance
+    # Precompute AAC/M4A/MP3/Opus file list for performance
     try:
-        aac_files = [f for f in os.listdir(aac_dir) if f.endswith((".m4a", ".mp4", ".aac"))]
+        aac_files = [f for f in os.listdir(aac_dir) if f.endswith((".m4a", ".mp4", ".aac", ".opus", ".mp3"))]
     except FileNotFoundError:
         aac_files = []
 
