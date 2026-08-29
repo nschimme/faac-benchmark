@@ -19,7 +19,7 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key
+from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, safe_run
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -571,7 +571,7 @@ def main():
             output_dir,
             external_data_dir
         ]
-        subprocess.run(cmd_phase2, check=True)
+        safe_run(cmd_phase2, check=True)
 
         with open(bridge_json, "r") as f:
             updated_bridge = json.load(f)
@@ -625,7 +625,7 @@ def main():
             cmd_phase3.append("--skip-stereo")
         if args.skip_transient:
             cmd_phase3.append("--skip-transient")
-        subprocess.run(cmd_phase3, check=True)
+        safe_run(cmd_phase3, check=True)
 
         with open(bridge_json_stereo, "r") as f:
             updated_bridge = json.load(f)
