@@ -516,10 +516,12 @@ def main():
         sample_rate = cfg.get("rate", 48000)
 
         for encoder in encoders:
-            if encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
+            # Apple AAC (afconvert) handles HE-v1 and HE-v2 across all bitrates without restriction
+            is_apple = isinstance(encoder, AFConvertEncoder)
+            if not is_apple and encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v1 range.")
                 continue
-            if encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
+            if not is_apple and encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v2 range.")
                 continue
             print(f"  Encoding with {encoder.name}...")
