@@ -294,6 +294,7 @@ def analyze_pair(base_file, cand_file):
     base_m = base.get("matrix", {})
     cand_m = cand.get("matrix", {})
 
+    rc_mode = next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr")
     suite_results = {
         "gates": [],
         "has_regression": False,
@@ -321,6 +322,9 @@ def analyze_pair(base_file, cand_file):
         "bitrate_acc_sum": 0,
         "bitrate_acc_count": 0,
         "bitrate_bias_sum": 0,
+        "vbr_bitrate_chg_sum": 0,
+        "vbr_bitrate_chg_count": 0,
+        "vbr_anomalies": [],
         "regressions": [],
         "reg_critical": [],
         "reg_significant": [],
@@ -343,6 +347,8 @@ def analyze_pair(base_file, cand_file):
                 "ic_count": 0,
                 "bitrate_acc_sum": 0,
                 "bitrate_acc_count": 0,
+                "vbr_bitrate_chg_sum": 0,
+                "vbr_bitrate_chg_count": 0,
                 "mos_deltas": [],
                 "centroid_deltas": [],
                 "centroid_o_abs": [],
@@ -352,7 +358,7 @@ def analyze_pair(base_file, cand_file):
         "cand_tp": cand.get("throughput", {}),
         "base_sha": base.get("sha"),
         "cand_sha": cand.get("sha"),
-        "rate_control_mode": next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr"),
+        "rate_control_mode": rc_mode,
         "mos_backend": next((o.get("mos_backend") or o.get("mos_provider") for o in cand_m.values() if o.get("mos_backend") or o.get("mos_provider")), "zimtohrli")
     }
 
@@ -386,17 +392,34 @@ def analyze_pair(base_file, cand_file):
 
             acc = None
             bitrate_err = None
-            if o_bitrate is not None and o_target is not None and o_target > 0:
-                bitrate_err = (o_bitrate - o_target) / o_target * 100
-                acc = (1.0 - abs(o_bitrate - o_target) / o_target) * 100
-                suite_results["bitrate_acc_sum"] += acc
-                suite_results["bitrate_acc_count"] += 1
-                suite_results["bitrate_bias_sum"] += bitrate_err
-                suite_results["scenario_stats"][scenario]["bitrate_acc_sum"] += acc
-                suite_results["scenario_stats"][scenario]["bitrate_acc_count"] += 1
+            b_bitrate = b.get("bitrate")
 
-                if abs(bitrate_err) > abs(suite_results["worst_bitrate_err"][0]):
-                    suite_results["worst_bitrate_err"] = (bitrate_err, display_name)
+            if rc_mode == "vbr":
+                # In VBR mode, bitrate naturally varies per clip complexity.
+                # Measure bitrate change relative to baseline for the same -q setting.
+                if o_bitrate is not None and b_bitrate is not None and b_bitrate > 0:
+                    vbr_chg = (o_bitrate - b_bitrate) / b_bitrate * 100
+                    suite_results["vbr_bitrate_chg_sum"] += vbr_chg
+                    suite_results["vbr_bitrate_chg_count"] += 1
+                    suite_results["scenario_stats"][scenario]["vbr_bitrate_chg_sum"] += vbr_chg
+                    suite_results["scenario_stats"][scenario]["vbr_bitrate_chg_count"] += 1
+
+                    # Bug detection / anomaly flag: clip bitrate drifting >= 15% from baseline
+                    if abs(vbr_chg) >= 15.0:
+                        suite_results["vbr_anomalies"].append((display_name, vbr_chg))
+            else:
+                # ABR mode: target-bitrate accuracy and bias relative to cfg["bitrate"]
+                if o_bitrate is not None and o_target is not None and o_target > 0:
+                    bitrate_err = (o_bitrate - o_target) / o_target * 100
+                    acc = (1.0 - abs(o_bitrate - o_target) / o_target) * 100
+                    suite_results["bitrate_acc_sum"] += acc
+                    suite_results["bitrate_acc_count"] += 1
+                    suite_results["bitrate_bias_sum"] += bitrate_err
+                    suite_results["scenario_stats"][scenario]["bitrate_acc_sum"] += acc
+                    suite_results["scenario_stats"][scenario]["bitrate_acc_count"] += 1
+
+                    if abs(bitrate_err) > abs(suite_results["worst_bitrate_err"][0]):
+                        suite_results["worst_bitrate_err"] = (bitrate_err, display_name)
 
             o_time = o.get("time")
             b_time = b.get("time")
@@ -667,6 +690,8 @@ def aggregate_suite_metrics(items):
     total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
     total_bitrate_chg = total_bitrate_count = 0
     total_bitrate_acc_sum = total_bitrate_acc_count = total_bitrate_bias_sum = 0
+    total_vbr_bitrate_chg_sum = total_vbr_bitrate_chg_count = 0
+    total_vbr_anomalies = []
     total_regressions = total_reg_critical = total_reg_significant = total_reg_minor = 0
     total_new_wins = total_significant_wins = 0
     total_bit_exact = total_cases_all = 0
@@ -701,6 +726,9 @@ def aggregate_suite_metrics(items):
         total_bitrate_acc_sum += data["bitrate_acc_sum"]
         total_bitrate_acc_count += data["bitrate_acc_count"]
         total_bitrate_bias_sum += data["bitrate_bias_sum"]
+        total_vbr_bitrate_chg_sum += data.get("vbr_bitrate_chg_sum", 0)
+        total_vbr_bitrate_chg_count += data.get("vbr_bitrate_chg_count", 0)
+        total_vbr_anomalies.extend(data.get("vbr_anomalies", []))
 
         total_regressions += len(data["regressions"])
         total_reg_critical += len(data["reg_critical"])
@@ -731,6 +759,7 @@ def aggregate_suite_metrics(items):
     avg_bitrate_chg = total_bitrate_chg / total_bitrate_count if total_bitrate_count > 0 else 0
     avg_bitrate_acc = total_bitrate_acc_sum / total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
     avg_bitrate_bias = total_bitrate_bias_sum / total_bitrate_acc_count if total_bitrate_acc_count > 0 else 0
+    avg_vbr_bitrate_chg = total_vbr_bitrate_chg_sum / total_vbr_bitrate_chg_count if total_vbr_bitrate_chg_count > 0 else 0
     bit_exact_percent = (total_bit_exact / total_cases_all * 100) if total_cases_all > 0 else 0
 
     worst_tp_scen, worst_tp_delta = (None, 0)
@@ -755,6 +784,9 @@ def aggregate_suite_metrics(items):
         "avg_bitrate_chg": avg_bitrate_chg,
         "avg_bitrate_acc": avg_bitrate_acc, "avg_bitrate_bias": avg_bitrate_bias,
         "total_bitrate_acc_count": total_bitrate_acc_count,
+        "avg_vbr_bitrate_chg": avg_vbr_bitrate_chg,
+        "total_vbr_bitrate_chg_count": total_vbr_bitrate_chg_count,
+        "vbr_anomalies": total_vbr_anomalies,
         "bit_exact_percent": bit_exact_percent,
         "total_regressions": total_regressions, "total_reg_critical": total_reg_critical,
         "total_reg_significant": total_reg_significant, "total_reg_minor": total_reg_minor,
@@ -842,15 +874,26 @@ def render_summary_table(metrics, mos_label, rc_mode):
         bitrate_icon = "📉" if metrics["avg_bitrate_chg"] < -1.0 else "📈" if metrics["avg_bitrate_chg"] > 1.0 else ""
         lines.append(f"| **Bitrate Δ** | {metrics['avg_bitrate_chg']:+.2f}% {bitrate_icon} |")
 
-    acc_label = "Allocation Accuracy" if rc_mode == "VBR" else "Bitrate Accuracy"
-    bias_label = "Allocation Bias" if rc_mode == "VBR" else "Bitrate Bias"
-    if metrics["total_bitrate_acc_count"] > 0:
-        acc_icon = "🎯" if metrics["avg_bitrate_acc"] > 95 else "⚠️" if metrics["avg_bitrate_acc"] < 80 else ""
-        lines.append(f"| **{acc_label}** | {metrics['avg_bitrate_acc']:.1f}% {acc_icon} |")
+    if rc_mode == "VBR":
+        # In VBR mode, target-bitrate accuracy is misleading. Report Bitrate Δ vs Base instead.
+        if metrics.get("total_vbr_bitrate_chg_count", 0) > 0:
+            vbr_delta = metrics["avg_vbr_bitrate_chg"]
+            vbr_icon = "📈" if vbr_delta > 1.0 else "📉" if vbr_delta < -1.0 else "🎯"
+            lines.append(f"| **VBR Bitrate Δ (vs Base)** | {vbr_delta:+.2f}% {vbr_icon} |")
 
-        bias_icon = "📈" if metrics["avg_bitrate_bias"] > 2.0 else "📉" if metrics["avg_bitrate_bias"] < -2.0 else "🎯"
-        bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting" if metrics["avg_bitrate_bias"] < -0.5 else "Optimal"
-        lines.append(f"| **{bias_label}** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
+        anomalies = metrics.get("vbr_anomalies", [])
+        if anomalies:
+            anom_str = f"{len(anomalies)} clip(s) drifted ≥15% vs Base"
+            lines.append(f"| **VBR Bitrate Anomalies** | ⚠️ {anom_str} |")
+    else:
+        # ABR mode: fixed target accuracy and bias
+        if metrics["total_bitrate_acc_count"] > 0:
+            acc_icon = "🎯" if metrics["avg_bitrate_acc"] > 95 else "⚠️" if metrics["avg_bitrate_acc"] < 80 else ""
+            lines.append(f"| **Bitrate Accuracy** | {metrics['avg_bitrate_acc']:.1f}% {acc_icon} |")
+
+            bias_icon = "📈" if metrics["avg_bitrate_bias"] > 2.0 else "📉" if metrics["avg_bitrate_bias"] < -2.0 else "🎯"
+            bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting" if metrics["avg_bitrate_bias"] < -0.5 else "Optimal"
+            lines.append(f"| **Bitrate Bias** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
 
     mos_count = metrics["total_mos_count"]
     total_wins = metrics.get("total_clip_wins", 0)
@@ -1075,97 +1118,87 @@ def main():
             report.insert(3, f"- **Candidate SHA**: `{final_cand_sha}`")
 
     if not summary_only:
-        # Scenario Performance Table. When both ABR and VBR ran, a "Mode"
-        # column keys each scenario by mode too -- otherwise an ABR scenario
-        # row would silently average in its VBR counterpart's numbers.
-        multi_mode = len(modes_present) > 1
+        # Scenario Performance Tables separated per rate control mode
         report.append("\n### Scenario Performance")
-        if multi_mode:
-            report.append(f"| Scenario | Mode | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | Bitrate Acc |")
-            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-        else:
-            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | Bitrate Acc |")
+        has_sig_mark = False
+
+        for mode in modes_present:
+            if len(modes_present) > 1:
+                report.append(f"\n#### {mode.upper()} Scenario Performance")
+
+            bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
+            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
             report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-        # Aggregating across all suites for scenarios, keyed by mode too when
-        # more than one mode is present.
-        global_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
-        for suite_data in all_suite_data.values():
-            mode = suite_data.get("rate_control_mode", "abr")
-            for sc_name, sc_stats in suite_data["scenario_stats"].items():
-                key = (sc_name, mode) if multi_mode else sc_name
-                global_scenario_stats[key]["mos_delta"] += sc_stats["mos_delta_sum"]
-                global_scenario_stats[key]["mos_count"] += sc_stats["mos_count"]
-                global_scenario_stats[key]["ic_delta"] += sc_stats["ic_delta_sum"]
-                global_scenario_stats[key]["ic_count"] += sc_stats["ic_count"]
-                global_scenario_stats[key]["tp_cand"] += sc_stats["tp_sum_cand"]
-                global_scenario_stats[key]["tp_base"] += sc_stats["tp_sum_base"]
-                global_scenario_stats[key]["acc_sum"] += sc_stats["bitrate_acc_sum"]
-                global_scenario_stats[key]["acc_count"] += sc_stats["bitrate_acc_count"]
-                global_scenario_stats[key]["mos_deltas"] += sc_stats.get("mos_deltas", [])
-                global_scenario_stats[key]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
-                global_scenario_stats[key]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
-                global_scenario_stats[key]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
+            mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
+            for suite_data in all_suite_data.values():
+                if suite_data.get("rate_control_mode", "abr") != mode:
+                    continue
+                for sc_name, sc_stats in suite_data["scenario_stats"].items():
+                    mode_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
+                    mode_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
+                    mode_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
+                    mode_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
+                    mode_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
+                    mode_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
+                    mode_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
+                    mode_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
+                    mode_scenario_stats[sc_name]["vbr_chg_sum"] += sc_stats.get("vbr_bitrate_chg_sum", 0)
+                    mode_scenario_stats[sc_name]["vbr_chg_count"] += sc_stats.get("vbr_bitrate_chg_count", 0)
+                    mode_scenario_stats[sc_name]["mos_deltas"] += sc_stats.get("mos_deltas", [])
+                    mode_scenario_stats[sc_name]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
+                    mode_scenario_stats[sc_name]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
+                    mode_scenario_stats[sc_name]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
 
-        has_sig_mark = False
-        sort_key = (lambda k: (get_scenario_sort_key(k[0]), k[1])) if multi_mode else get_scenario_sort_key
-        for key in sorted(global_scenario_stats.keys(), key=sort_key):
-            gs = global_scenario_stats[key]
-            sc_name = key[0] if multi_mode else key
-            sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
-            sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
-            sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
-            sc_acc = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
+            for sc_name in sorted(mode_scenario_stats.keys(), key=get_scenario_sort_key):
+                gs = mode_scenario_stats[sc_name]
+                sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
+                sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
+                sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
 
-            # Same three-state verdict discipline as the summary row, at
-            # scenario granularity: never a bare number, and below
-            # MIN_CENTROID_ONSETS the cell just says how far short it fell
-            # rather than guessing.
-            sc_centroid_deltas = gs.get("centroid_deltas", [])
-            n_c_total = len(sc_centroid_deltas)
-            if n_c_total >= MIN_CENTROID_ONSETS:
-                lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
-                p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
-                v_c = transient.ci_signtest_verdict(
-                    lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
-                if v_c in ("regression", "improved"):
-                    icon = "📉" if v_c == "regression" else "📈"
-                    sc_o_abs = gs.get("centroid_o_abs", [])
-                    sc_b_abs = gs.get("centroid_b_abs", [])
-                    if sc_o_abs and sc_b_abs:
-                        fid_o = 1.0 / (1.0 + sum(sc_o_abs) / len(sc_o_abs))
-                        fid_b = 1.0 / (1.0 + sum(sc_b_abs) / len(sc_b_abs))
-                        sc_fid_delta = fid_o - fid_b
-                        sc_transient = f"{sc_fid_delta:+.4f} {icon} (n={n_c})"
+                if mode == "vbr":
+                    sc_bitrate_val = f"{(gs['vbr_chg_sum'] / gs['vbr_chg_count']):+.2f}%" if gs['vbr_chg_count'] > 0 else "N/A"
+                else:
+                    sc_bitrate_val = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
+
+                sc_centroid_deltas = gs.get("centroid_deltas", [])
+                n_c_total = len(sc_centroid_deltas)
+                if n_c_total >= MIN_CENTROID_ONSETS:
+                    lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
+                    p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
+                    v_c = transient.ci_signtest_verdict(
+                        lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
+                    if v_c in ("regression", "improved"):
+                        icon = "📉" if v_c == "regression" else "📈"
+                        sc_o_abs = gs.get("centroid_o_abs", [])
+                        sc_b_abs = gs.get("centroid_b_abs", [])
+                        if sc_o_abs and sc_b_abs:
+                            fid_o = 1.0 / (1.0 + sum(sc_o_abs) / len(sc_o_abs))
+                            fid_b = 1.0 / (1.0 + sum(sc_b_abs) / len(sc_b_abs))
+                            sc_fid_delta = fid_o - fid_b
+                            sc_transient = f"{sc_fid_delta:+.4f} {icon} (n={n_c})"
+                        else:
+                            sc_transient = f"{icon} (n={n_c})"
                     else:
-                        sc_transient = f"{icon} (n={n_c})"
+                        sc_transient = f"➖ (n={n_c})"
                 else:
-                    sc_transient = f"➖ (n={n_c})"
-            else:
-                sc_transient = f"➖ (n={n_c_total})"
+                    sc_transient = f"➖ (n={n_c_total})"
 
-            # Report-only: a scenario mean is small by nature, so say whether
-            # it is a consistent shift or a couple of clips carrying the rest.
-            ci = bootstrap_mean_ci(gs["mos_deltas"])
-            if ci:
-                if ci["lo"] <= 0 <= ci["hi"]:
-                    sig = ""
+                ci = bootstrap_mean_ci(gs["mos_deltas"])
+                if ci:
+                    if ci["lo"] <= 0 <= ci["hi"]:
+                        sig = ""
+                    else:
+                        sig = " ✳"
+                        has_sig_mark = True
+                    sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
+                    sc_wl = f"{ci['wins']}/{ci['losses']}"
                 else:
-                    sig = " ✳"
-                    has_sig_mark = True
-                sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
-                sc_wl = f"{ci['wins']}/{ci['losses']}"
-            else:
-                sc_ci, sc_wl = "N/A", "N/A"
+                    sc_ci, sc_wl = "N/A", "N/A"
 
-            if multi_mode:
-                report.append(
-                    f"| {sc_name} | {key[1].upper()} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_acc} |")
-            else:
                 report.append(
                     f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_acc} |")
+                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_bitrate_val} |")
 
         report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
         if has_sig_mark:

@@ -563,6 +563,65 @@ class TestCompareResultsRendering(unittest.TestCase):
         avg_line = next((l for l in lines if "Avg MOS Δ" in l), None)
         self.assertIsNone(avg_line, "Avg MOS Δ row should be omitted for identical runs to avoid noise")
 
+    def test_vbr_metrics_rendering_and_anomaly_detection(self):
+        import compare_results as C
+        vbr_metrics = {
+            "total_mos_count": 10,
+            "total_mos_delta": 0.0,
+            "total_clip_wins": 0,
+            "total_clip_losses": 0,
+            "total_regressions": 0,
+            "total_reg_critical": 0,
+            "total_reg_significant": 0,
+            "total_reg_minor": 0,
+            "worst_mos_drop": (0, "N/A"),
+            "worst_bitrate_err": (0, "N/A"),
+            "total_new_wins": 0,
+            "total_significant_wins": 0,
+            "bit_exact_percent": 100.0,
+            "avg_tp_reduction": 0.0,
+            "tp_details_source": [],
+            "worst_tp_delta": 0.0,
+            "avg_lib_chg": 0.0,
+            "avg_bitrate_chg": 0.0,
+            "total_bitrate_acc_count": 0,
+            "avg_vbr_bitrate_chg": 2.5,
+            "total_vbr_bitrate_chg_count": 10,
+            "vbr_anomalies": [("48k_stereo_64k: C_19_NOISE_FA.wav", 25.0)],
+            "total_ic_count": 0,
+            "total_decode_errors": 0,
+            "total_missing_mos": 0,
+        }
+        lines = C.render_summary_table(vbr_metrics, "MOS", "VBR")
+        content = "\n".join(lines)
+        self.assertIn("VBR Bitrate Δ (vs Base)", content)
+        self.assertIn("+2.50%", content)
+        self.assertIn("VBR Bitrate Anomalies", content)
+        self.assertIn("1 clip(s) drifted ≥15% vs Base", content)
+        self.assertNotIn("Allocation Accuracy", content)
+        self.assertNotIn("Allocation Bias", content)
+
+    def test_analyze_pair_vbr_bitrate_anomaly(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            base_json = os.path.join(td, "base.json")
+            cand_json = os.path.join(td, "cand.json")
+            save_results(base_json, {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav",
+                       "bitrate": 60.0, "time": 1.0, "rate_control_mode": "vbr"}
+            }})
+            save_results(cand_json, {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav",
+                       "bitrate": 75.0, "time": 1.0, "rate_control_mode": "vbr"}
+            }})
+            res = C.analyze_pair(base_json, cand_json)
+            self.assertIsNotNone(res)
+            self.assertEqual(res["rate_control_mode"], "vbr")
+            self.assertEqual(len(res["vbr_anomalies"]), 1)
+            self.assertIn("48k_stereo_64k: c1.wav", res["vbr_anomalies"][0][0])
+            self.assertAlmostEqual(res["vbr_anomalies"][0][1], 25.0)
+
 
 class TestAttackCentroidShift(unittest.TestCase):
     """Ground-truth checks for transient.py's attack-centroid-shift metric,
