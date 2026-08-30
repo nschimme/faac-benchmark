@@ -782,6 +782,79 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)
 
+    def test_leaderboard_title_and_standard_profile_with_non_aac(self):
+        from compare_encoders import generate_leaderboard, Encoder, OpusEncoder, LameEncoder
+
+        class DummyAAC(Encoder):
+            def __init__(self):
+                super().__init__("FAAC", "faac", "faac", "lc")
+            def get_encode_cmd(self, i, o, b, c, s):
+                return ["echo"]
+
+        aac_enc = DummyAAC()
+        opus_enc = OpusEncoder("Opus", "opusenc", tool_id="opusenc")
+        lame_enc = LameEncoder("LAME", "lame", tool_id="lame")
+
+        encoders = [aac_enc, opus_enc, lame_enc]
+        results = [
+            {
+                "tool": "FAAC", "profile": "lc", "row_key": "faac_lc",
+                "scenario": "48k_stereo_128k", "filename": "s1.wav", "duration": 1.0,
+                "audio_duration": 10.0, "size": 1000, "actual_bitrate": 128.0,
+                "target_bitrate": 128, "decode_valid": True, "decode_error": "",
+                "mos": 4.1, "ic_err": 0.05, "attack_centroid_ms": [1.0]
+            },
+            {
+                "tool": "Opus", "profile": "standard", "row_key": "opusenc_standard",
+                "scenario": "48k_stereo_128k", "filename": "s1.wav", "duration": 0.5,
+                "audio_duration": 10.0, "size": 900, "actual_bitrate": 128.0,
+                "target_bitrate": 128, "decode_valid": True, "decode_error": "",
+                "mos": 4.5, "ic_err": 0.02, "attack_centroid_ms": [0.5]
+            },
+            {
+                "tool": "LAME", "profile": "standard", "row_key": "lame_standard",
+                "scenario": "48k_stereo_128k", "filename": "s1.wav", "duration": 0.8,
+                "audio_duration": 10.0, "size": 1100, "actual_bitrate": 128.0,
+                "target_bitrate": 128, "decode_valid": True, "decode_error": "",
+                "mos": 3.9, "ic_err": 0.08, "attack_centroid_ms": [1.2]
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            scenario_list = ["48k_stereo_128k"]
+            generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
+
+            with open(out_md) as f:
+                content = f.read()
+
+            self.assertIn("# Audio Encoder Leaderboard", content)
+            self.assertIn("#### Standard Profile", content)
+            self.assertIn("Opus", content)
+            self.assertIn("LAME", content)
+
+
+class TestOpusLameEncoderCommands(unittest.TestCase):
+    def test_opusenc_command_and_ffmpeg_fallback(self):
+        from compare_encoders import OpusEncoder
+        op1 = OpusEncoder("Opus", "/usr/bin/opusenc", is_ffmpeg=False)
+        cmd1 = op1.get_encode_cmd("in.wav", "out.opus", 128, 2, 48000)
+        self.assertEqual(cmd1, ["/usr/bin/opusenc", "--bitrate", "128", "in.wav", "out.opus"])
+
+        op2 = OpusEncoder("Opus (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
+        cmd2 = op2.get_encode_cmd("in.wav", "out.opus", 128, 2, 48000)
+        self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libopus", "-b:a", "128k", "-ac", "2", "out.opus"])
+
+    def test_lame_command_and_ffmpeg_fallback(self):
+        from compare_encoders import LameEncoder
+        lame1 = LameEncoder("LAME", "/usr/bin/lame", is_ffmpeg=False)
+        cmd1 = lame1.get_encode_cmd("in.wav", "out.mp3", 128, 2, 48000)
+        self.assertEqual(cmd1, ["/usr/bin/lame", "-b", "128", "-s", "48.0", "in.wav", "out.mp3"])
+
+        lame2 = LameEncoder("LAME (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
+        cmd2 = lame2.get_encode_cmd("in.wav", "out.mp3", 128, 2, 48000)
+        self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "2", "out.mp3"])
+
 
 if __name__ == "__main__":
     unittest.main()
