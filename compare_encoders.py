@@ -516,12 +516,11 @@ def main():
         sample_rate = cfg.get("rate", 48000)
 
         for encoder in encoders:
-            # Apple AAC (afconvert) handles HE-v1 and HE-v2 across all bitrates without restriction
-            is_apple = isinstance(encoder, AFConvertEncoder)
-            if not is_apple and encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
+            is_faac = isinstance(encoder, FAACEncoder)
+            if is_faac and encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v1 range.")
                 continue
-            if not is_apple and encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
+            if is_faac and encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
                 print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v2 range.")
                 continue
             print(f"  Encoding with {encoder.name}...")
@@ -571,7 +570,7 @@ def main():
             output_dir,
             external_data_dir
         ]
-        safe_run(cmd_phase2, check=True)
+        safe_run(cmd_phase2, capture_output=False, check=True)
 
         with open(bridge_json, "r") as f:
             updated_bridge = json.load(f)
@@ -625,7 +624,7 @@ def main():
             cmd_phase3.append("--skip-stereo")
         if args.skip_transient:
             cmd_phase3.append("--skip-transient")
-        safe_run(cmd_phase3, check=True)
+        safe_run(cmd_phase3, capture_output=False, check=True)
 
         with open(bridge_json_stereo, "r") as f:
             updated_bridge = json.load(f)
