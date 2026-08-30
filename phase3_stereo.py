@@ -210,7 +210,7 @@ def main():
     matrix = data.get("matrix", {})
 
     try:
-        aac_files = [f for f in os.listdir(args.aac_dir) if f.endswith((".m4a", ".mp4", ".aac", ".opus", ".mp3"))]
+        aac_files = [f for f in os.listdir(args.aac_dir) if f.endswith((".m4a", ".mp4", ".aac"))]
     except FileNotFoundError:
         aac_files = []
 

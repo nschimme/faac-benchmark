@@ -59,21 +59,27 @@ Encode-time change vs base (positive = faster). Measured single-core on the
 fixed throughput stimuli. The report also breaks it down per stimulus and flags
 the worst-case scenario.
 
-## Rate Control: ABR vs. VBR Semantics
+## Bitrate accuracy / bias
 
-The benchmark suite evaluates ABR (Average Bitrate) and VBR (Variable Bitrate) using fundamentally different metrics to maximize Signal-to-Noise Ratio (SNR) and avoid false positives.
+How close the actual output bitrate is to the scenario target, and whether the
+encoder systematically over- or under-shoots.
 
-### ABR Mode (`-b <bitrate>`)
-- **Objective**: Target a fixed target average bitrate across content, utilizing the bit reservoir to smooth frame-to-frame bitrate variations.
-- **Bitrate Accuracy & Bias**: Measures how closely output bitrates hit the nominal target `cfg["bitrate"]`. Accuracy is reported as `(1.0 - |actual - target| / target) * 100%`, and Bias measures systematic overshooting or undershooting.
+In VBR mode this compares against `config.py`'s `vbr_q` (faac's `-q`, a percent
+quantizer quality, not a bitrate). `vbr_q` per scenario is chosen by grid
+search (`scripts/calibrate_vbr_q.py`) against representative content so it lands near
+the scenario's nominal `bitrate`, but VBR is inherently content-dependent, so
+expect single-digit-to-teens percent deviation even with no code change.
 
-### VBR Mode (`-q <vbr_q>`)
-- **Objective**: Maintain a constant perceptual quality level across clips. Clip bitrates naturally fluctuate based on spectral and transient complexity (e.g. complex/noisy clips spend significantly more bits than quiet/simple clips).
-- **VBR Bitrate Δ (vs Base)**: Evaluates the candidate's bitrate change relative to baseline for the same `-q` quality setting: $\frac{\text{cand\_bitrate} - \text{base\_bitrate}}{\text{base\_bitrate}} \times 100\%$.
-- **Target-Bitrate Accuracy Excluded**: VBR is not evaluated against fixed ABR scenario targets, as penalizing content-adaptive bit allocation produces false-positive warnings.
-- **VBR Bitrate Anomaly Detection**: Automatically flags individual clips whose candidate bitrate drifts by $\ge 15\%$ from baseline at the same `-q` setting. This pinpoints specific encoder regressions (e.g., TNS, SBR, or psychoacoustic bugs on specific audio material).
-
-Two scenarios, `48k_stereo_48k` and `48k_stereo_56k`, have **no achievable `vbr_q`**: libfaac's AUTO object-type resolution in VBR mode picks HE-AAC when `quantqual <= 75` and forces plain LC-AAC above that (`HE_VBR_QUANTQUAL_MAX` in `libfaac/frame.c`). On 48kHz stereo content HE-AAC tops out around ~41 kbps at q=75 and LC-AAC's cheapest encode is ~71 kbps at q=76 — there is no `-q` value that lands in the 42-70 kbps gap between them. For these scenarios, judge a PR by the **baseline-vs-candidate delta**, not the absolute deviation from `bitrate`.
+Two scenarios, `48k_stereo_48k` and `48k_stereo_56k`, have **no achievable
+`vbr_q`** and will always show a larger (~15-35%) deviation: libfaac's AUTO
+object-type resolution in VBR mode picks HE-AAC when `quantqual <= 75` and
+forces plain LC-AAC above that (`HE_VBR_QUANTQUAL_MAX` in `libfaac/frame.c`).
+On 48kHz stereo content HE-AAC tops out around ~41 kbps at q=75 and LC-AAC's
+cheapest encode is ~71 kbps at q=76 — there is no `-q` value that lands in the
+42-70 kbps gap between them. For these two scenarios, judge a PR by the
+**baseline-vs-candidate delta**, not the absolute deviation from `bitrate`; a
+large but *unchanged* deviation on both sides is expected and not a
+regression.
 
 ## Bits-adjusted MOS delta
 
