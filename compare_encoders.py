@@ -19,12 +19,36 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, find_linked_lib, is_faac_legacy, safe_run
+from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+def find_linked_lib(binary_path, name_substr):
+    """Resolve the on-disk path of a shared library linked into binary_path."""
+    try:
+        if sys.platform == "darwin":
+            # macOS: use otool -L
+            res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if name_substr in line:
+                    # otool output: "\t/path/to/lib (compatibility...)"
+                    lib_path = line.split(" ")[0]
+                    if os.path.exists(lib_path):
+                        return lib_path
+        else:
+            # Linux: use ldd
+            res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                if name_substr in line and "=>" in line:
+                    lib_path = line.split("=>")[1].strip().split(" ")[0]
+                    if lib_path and os.path.exists(lib_path):
+                        return lib_path
+    except Exception:
+        pass
+    return None
 
 def is_system_library(path):
     """Checks if a library path belongs to a system directory."""
@@ -37,7 +61,7 @@ def is_system_library(path):
     # On Linux, we generally want to measure library size even if in /usr/lib
     return False
 
-PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2"}
+PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard"}
 
 def profile_label(profile):
     return PROFILE_LABELS[profile]
@@ -79,6 +103,7 @@ class Encoder:
                 measured_path = binary_path if binary_path and not is_system_library(binary_path) else None
 
         sec_sizes = get_elf_section_sizes(measured_path) if measured_path else {"text": 0, "rodata": 0, "bss": 0, "data": 0}
+        self.file_ext = ".m4a"
         self.text_size = sec_sizes.get("text", 0)
         self.rodata_size = sec_sizes.get("rodata", 0)
         self.bss_size = sec_sizes.get("bss", 0)
@@ -220,6 +245,34 @@ class AFConvertEncoder(Encoder):
         # Use m4af format for M4A container
         return [self.binary_path, "-f", "m4af", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
+class OpusEncoder(Encoder):
+    def __init__(self, name, binary_path, tool_id="opusenc", profile="standard", is_ffmpeg=False):
+        lib_substr = None if not is_ffmpeg else "libopus"
+        if not is_ffmpeg and not lib_substr:
+            lib_substr = "libopus"
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr=lib_substr)
+        self.is_ffmpeg = is_ffmpeg
+        self.file_ext = ".opus"
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        if self.is_ffmpeg:
+            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
+        return [self.binary_path, "--bitrate", str(bitrate_kbps), input_path, output_path]
+
+class LameEncoder(Encoder):
+    def __init__(self, name, binary_path, tool_id="lame", profile="standard", is_ffmpeg=False):
+        lib_substr = None if not is_ffmpeg else "libmp3lame"
+        if not is_ffmpeg and not lib_substr:
+            lib_substr = "libmp3lame"
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr=lib_substr)
+        self.is_ffmpeg = is_ffmpeg
+        self.file_ext = ".mp3"
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        if self.is_ffmpeg:
+            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libmp3lame", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
+        return [self.binary_path, "-b", str(bitrate_kbps), "-s", str(sample_rate / 1000.0), input_path, output_path]
+
 def get_audio_info(path):
     try:
         cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate", "-of", "json", path]
@@ -291,6 +344,32 @@ def detect_encoders(args):
         encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="he"))
         encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="hev2"))
 
+    # 5. Non-AAC Codecs (Opus, LAME) if --include-other-codecs is specified
+    if getattr(args, 'include_other_codecs', False):
+        # 5a. Opus
+        opusenc_path = getattr(args, 'opusenc_bin', None) or shutil.which("opusenc")
+        if opusenc_path:
+            encoders.append(OpusEncoder("Opus", opusenc_path, tool_id="opusenc", is_ffmpeg=False))
+        elif ffmpeg_path:
+            try:
+                res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
+                if "libopus" in res.stdout or "opus" in res.stdout:
+                    encoders.append(OpusEncoder("Opus (FFmpeg)", ffmpeg_path, tool_id="ffmpeg_opus", is_ffmpeg=True))
+            except Exception:
+                pass
+
+        # 5b. LAME (MP3)
+        lame_path = getattr(args, 'lame_bin', None) or shutil.which("lame")
+        if lame_path:
+            encoders.append(LameEncoder("LAME", lame_path, tool_id="lame", is_ffmpeg=False))
+        elif ffmpeg_path:
+            try:
+                res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
+                if "libmp3lame" in res.stdout:
+                    encoders.append(LameEncoder("LAME (FFmpeg)", ffmpeg_path, tool_id="ffmpeg_lame", is_ffmpeg=True))
+            except Exception:
+                pass
+
     return encoders
 
 def gate_filter(name, filtered_samples):
@@ -306,7 +385,8 @@ def gate_filter(name, filtered_samples):
 
 def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     input_path = os.path.join(data_dir, sample)
-    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}.m4a".replace(" ", "_")
+    ext = getattr(encoder, "file_ext", ".m4a")
+    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}{ext}".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
     channels = 1 if cfg["mode"] == "speech" else 2
@@ -380,6 +460,9 @@ def main():
     parser.add_argument("--falabaac-bin", help="Path to falabaac binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--afconvert-bin", help="Path to afconvert binary")
+    parser.add_argument("--opusenc-bin", help="Path to opusenc binary")
+    parser.add_argument("--lame-bin", help="Path to lame binary")
+    parser.add_argument("--include-other-codecs", action="store_true", help="Include non-AAC codecs (Opus, LAME)")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -466,14 +549,15 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
+            ext = os.path.splitext(res["aac_path"])[1] or ".m4a"
             key = f"res_{res['row_key']}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
-                "aac": f"{key}.m4a",
+                "aac": f"{key}{ext}",
                 "mos": None
             }
-            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}.m4a"))
+            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}{ext}"))
             valid_count += 1
 
         if valid_count == 0:
@@ -511,16 +595,17 @@ def main():
             if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
                 continue
 
+            ext = os.path.splitext(res["aac_path"])[1] or ".m4a"
             key = f"res_{res['row_key']}_{i}"
             bridge_data["matrix"][key] = {
                 "scenario": res["scenario"],
                 "filename": res["filename"],
-                "aac": f"{key}.m4a",
+                "aac": f"{key}{ext}",
                 "ic_err": None,
                 "attack_centroid_ms": None
             }
             # Ensure files exist in output_dir
-            target_path = os.path.join(output_dir, f"{key}.m4a")
+            target_path = os.path.join(output_dir, f"{key}{ext}")
             if not os.path.exists(target_path):
                 shutil.copy(res["aac_path"], target_path)
             valid_count += 1
@@ -770,8 +855,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     has_mos = any(o["overall_mos"] > 0 for o in tool_overall.values())
     sorted_tools = sorted(tool_overall.keys(), key=lambda x: (tool_overall[x]["worst_mos"], tool_overall[x]["overall_mos"]), reverse=True) if has_mos else sorted(tool_overall.keys())
 
+    has_non_aac = any(e.profile == "standard" for e in encoders)
+    title_str = "# Audio Encoder Leaderboard\n\n" if has_non_aac else "# AAC Encoder Leaderboard\n\n"
+
     with open(output_path, "w") as f:
-        f.write("# AAC Encoder Leaderboard\n\n")
+        f.write(title_str)
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("## Overall Rankings\n\n")
         f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
@@ -826,8 +914,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
         all_em_keys_sorted = sorted(overall.keys())
 
-        # Group encoder keys by profile ("lc", "he", "hev2")
-        profile_order = ["lc", "he", "hev2"]
+        # Group encoder keys by profile ("lc", "he", "hev2", "standard")
+        profile_order = ["lc", "he", "hev2", "standard"]
         profile_keys = {p: [rk for rk in all_em_keys_sorted if overall[rk]["profile"] == p] for p in profile_order}
 
         tool_row_keys = defaultdict(list)

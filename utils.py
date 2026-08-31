@@ -590,8 +590,8 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
     elif "_cand.json" in results_filename:
         precision_suffix = "_cand"
 
-    # Try exact match with preferred extensions (.m4a, .mp4, .aac)
-    for ext in [".m4a", ".mp4", ".aac"]:
+    # Try exact match with preferred extensions (.m4a, .mp4, .aac, .opus, .mp3)
+    for ext in [".m4a", ".mp4", ".aac", ".opus", ".mp3"]:
         target_filename = f"{key}{precision_suffix}{ext}"
         aac_path = os.path.join(aac_dir, target_filename)
         if os.path.exists(aac_path):
@@ -601,7 +601,7 @@ def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):
     # Sort for determinism so repeated runs at least resolve identically.
     if aac_files is None:
         try:
-            aac_files = [f for f in os.listdir(aac_dir) if f.endswith((".m4a", ".mp4", ".aac"))]
+            aac_files = [f for f in os.listdir(aac_dir) if f.endswith((".m4a", ".mp4", ".aac", ".opus", ".mp3"))]
         except FileNotFoundError:
             return None
 
