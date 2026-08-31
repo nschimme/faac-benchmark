@@ -63,6 +63,66 @@ def get_binary_size(path):
         return os.path.getsize(path)
     return 0
 
+def find_linked_lib(binary_path, name_substr):
+    """Resolve the on-disk path of a shared library linked into binary_path."""
+    try:
+        if sys.platform == "darwin":
+            res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if name_substr in line:
+                    lib_path = line.split(" ")[0]
+                    if os.path.exists(lib_path):
+                        return lib_path
+        else:
+            res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
+            for line in res.stdout.splitlines():
+                if name_substr in line and "=>" in line:
+                    lib_path = line.split("=>")[1].strip().split(" ")[0]
+                    if lib_path and os.path.exists(lib_path):
+                        return lib_path
+    except Exception:
+        pass
+    return None
+
+def is_faac_legacy(faac_path, lib_override=None):
+    """Check if faac binary is legacy 1.XX (lacks --object-type support)."""
+    if not faac_path:
+        return False
+    env = None
+    if lib_override:
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+
+    try:
+        res = subprocess.run([faac_path, "--help"], capture_output=True, text=True, env=env)
+        stdout_stderr = (res.stdout or "") + (res.stderr or "")
+        if "--object-type" in stdout_stderr:
+            return False
+    except Exception:
+        pass
+
+    try:
+        res = subprocess.run([faac_path, "-h"], capture_output=True, text=True, env=env)
+        stdout_stderr = (res.stdout or "") + (res.stderr or "")
+        if "--object-type" in stdout_stderr:
+            return False
+    except Exception:
+        pass
+
+    lib_path = lib_override or find_linked_lib(faac_path, "libfaac")
+    if lib_path and "libfaac.so.0" in lib_path:
+        return True
+
+    return True
+
 def get_elf_section_sizes(path):
     """.text/.rodata/.bss/.data, always four keys, zero when unreadable.
 

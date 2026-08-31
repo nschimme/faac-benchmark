@@ -19,7 +19,7 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, safe_run
+from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy
 from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -153,12 +153,15 @@ def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
     return 6 <= bitrate_per_ch <= 20
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id, profile="lc", lib_override=None):
+    def __init__(self, name, binary_path, tool_id, profile="lc", lib_override=None, legacy=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
+        self.legacy = legacy
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        if self.legacy:
+            return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--overwrite", "-o", output_path, input_path]
         object_type = "he-aac-v1" if self.profile == "he" else "lc"
-        return [self.binary_path, "-w", "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
+        return [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
@@ -286,8 +289,10 @@ def detect_encoders(args):
     # 1. FAAC
     faac_path = args.faac_bin or shutil.which("faac")
     if faac_path:
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib))
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib))
+        legacy = is_faac_legacy(faac_path, lib_override=args.faac_lib)
+        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib, legacy=legacy))
+        if not legacy:
+            encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib, legacy=legacy))
 
     # 2. FFmpeg Internal AAC
     ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()

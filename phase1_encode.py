@@ -30,7 +30,7 @@ import fnmatch
 
 from utils import (decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
-                   get_object_sizes, get_toolchain_fp, get_host_fp)
+                   get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -78,7 +78,10 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
     output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.m4a")
 
     # Determine encoding parameters
-    cmd = [faac_bin_path, "-w", "--overwrite", "-o", output_path, input_path]
+    cmd = [faac_bin_path]
+    if is_faac_legacy(faac_bin_path, lib_override=lib_path):
+        cmd.append("-w")
+    cmd.extend(["--overwrite", "-o", output_path, input_path])
     if rate_control == "vbr":
         cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
     else:
@@ -88,7 +91,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
 
     try:
         t_start = time.time()
-        subprocess.run(cmd, env=env, check=True, capture_output=True)
+        subprocess.run(list(cmd), env=env, check=True, capture_output=True)
         t_duration = time.time() - t_start
 
         mos = None
@@ -319,16 +322,12 @@ def run_benchmark(
 
                 print(f"  Benchmarking throughput with {sample}...")
                 try:
+                    tp_cmd = [faac_bin_path]
+                    if is_faac_legacy(faac_bin_path, lib_override=lib_path):
+                        tp_cmd.append("-w")
+                    tp_cmd.extend(["--overwrite", "-o", output_path, input_path])
                     # Warmup
-                    subprocess.run([faac_bin_path,
-                                    "-w",
-                                    "--overwrite",
-                                    "-o",
-                                    output_path,
-                                    input_path],
-                                   env=env,
-                                   check=True,
-                                   capture_output=True)
+                    subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
 
                     # Interference is one-sided: a run can be slowed by another
                     # process but never sped up, so the minimum is the
@@ -337,15 +336,7 @@ def run_benchmark(
                     durations = []
                     for _ in range(TP_REPS):
                         start_time = time.perf_counter()
-                        subprocess.run([faac_bin_path,
-                                        "-w",
-                                        "--overwrite",
-                                        "-o",
-                                        output_path,
-                                        input_path],
-                                       env=env,
-                                       check=True,
-                                       capture_output=True)
+                        subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
                         durations.append(time.perf_counter() - start_time)
 
                     best = min(durations)

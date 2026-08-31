@@ -34,7 +34,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import wav_conv
+from utils import wav_conv, is_faac_legacy
 from visqol import VisqolApi
 
 _api = None
@@ -94,7 +94,11 @@ def main():
                 for tag, env in (("A", env_a), ("B", env_b)):
                     aac = os.path.join(tmp, f"{tag}.m4a")
                     dec = os.path.join(tmp, f"{tag}.wav")
-                    sh([args.faac, "-w", "-b", str(br), "-o", aac, clip], env)
+                    cmd = [args.faac]
+                    if is_faac_legacy(args.faac):
+                        cmd.append("-w")
+                    cmd.extend(["-b", str(br), "-o", aac, clip])
+                    sh(cmd, env)
                     to_48k_stereo(aac, dec)
                     mos[tag] = score(ref48, dec, args.reps)
                 d = mos["A"] - mos["B"]

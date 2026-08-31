@@ -36,7 +36,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import shutil
 from config import SCENARIOS, GATE_CLIPS
+from utils import is_faac_legacy
 
 DATA_DIR = "data/external"
 
@@ -55,9 +57,15 @@ def get_dur(path, cache={}):
 
 def avg_kbps_for_q(q, samples, tmp):
     total_bits, total_dur = 0, 0
+    faac_bin = shutil.which("faac") or "faac"
+    cmd = [faac_bin]
+    if is_faac_legacy(faac_bin):
+        cmd.append("-w")
+    cmd.extend(["-q", str(q), "-o", tmp, "-X", "--overwrite"])
     for s in samples:
-        subprocess.run(["faac", "-w", "-q", str(q), "-o", tmp, s, "-X", "--overwrite"],
-                        capture_output=True)
+        full_cmd = list(cmd)
+        full_cmd.insert(-3, s)
+        subprocess.run(full_cmd, capture_output=True)
         total_bits += os.path.getsize(tmp) * 8
         total_dur += get_dur(s)
     return (total_bits / 1000) / total_dur
