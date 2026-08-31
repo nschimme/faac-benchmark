@@ -101,21 +101,14 @@ def is_faac_legacy(faac_path, lib_override=None):
             env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
             env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
 
-    try:
-        res = subprocess.run([faac_path, "--help"], capture_output=True, text=True, env=env)
-        stdout_stderr = (res.stdout or "") + (res.stderr or "")
-        if "--object-type" in stdout_stderr:
-            return False
-    except Exception:
-        pass
-
-    try:
-        res = subprocess.run([faac_path, "-h"], capture_output=True, text=True, env=env)
-        stdout_stderr = (res.stdout or "") + (res.stderr or "")
-        if "--object-type" in stdout_stderr:
-            return False
-    except Exception:
-        pass
+    for help_flag in ["-H", "--help-advanced", "--help", "-h"]:
+        try:
+            res = safe_run([faac_path, help_flag], capture_output=True, check=False, env=env)
+            stdout_stderr = (res.stdout or "") + (res.stderr or "")
+            if "--object-type" in stdout_stderr:
+                return False
+        except Exception:
+            pass
 
     lib_path = lib_override or find_linked_lib(faac_path, "libfaac")
     if lib_path and "libfaac.so.0" in lib_path:

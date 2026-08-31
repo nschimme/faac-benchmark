@@ -119,6 +119,53 @@ class TestCompareClipsRanking(unittest.TestCase):
 
 from unittest.mock import patch, MagicMock
 
+class TestIsFaacLegacy(unittest.TestCase):
+    def test_none_faac_path_returns_false(self):
+        from utils import is_faac_legacy
+        self.assertFalse(is_faac_legacy(None))
+        self.assertFalse(is_faac_legacy(""))
+
+    @patch("utils.safe_run")
+    def test_modern_faac_advanced_help_returns_false(self, mock_safe_run):
+        from utils import is_faac_legacy
+        def side_effect(cmd, capture_output=True, check=False, env=None):
+            res = MagicMock()
+            res.returncode = 0
+            if "-H" in cmd or "--help-advanced" in cmd:
+                res.stdout = "Usage: faac [options] ...\n  --object-type X   Set AAC object type\n"
+            else:
+                res.stdout = "Usage: faac [options] ...\nBasic options: -q, -b, -o\n"
+            res.stderr = ""
+            return res
+
+        mock_safe_run.side_effect = side_effect
+        self.assertFalse(is_faac_legacy("/usr/bin/faac"))
+
+    @patch("utils.find_linked_lib", return_value=None)
+    @patch("utils.safe_run")
+    def test_legacy_faac_returns_true(self, mock_safe_run, mock_find_lib):
+        from utils import is_faac_legacy
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "Usage: faac [options] ...\nOptions: -q, -b, -w, -o\n"
+        res.stderr = ""
+        mock_safe_run.return_value = res
+
+        self.assertTrue(is_faac_legacy("/usr/bin/faac"))
+
+    @patch("utils.find_linked_lib", return_value="/usr/lib/libfaac.so.0")
+    @patch("utils.safe_run")
+    def test_libfaac_so_0_override_returns_true(self, mock_safe_run, mock_find_lib):
+        from utils import is_faac_legacy
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "Usage: faac [options]\n"
+        res.stderr = ""
+        mock_safe_run.return_value = res
+
+        self.assertTrue(is_faac_legacy("/usr/bin/faac"))
+
+
 class TestElfSectionSizes(unittest.TestCase):
     def test_nonexistent_file(self):
         from utils import get_elf_section_sizes
