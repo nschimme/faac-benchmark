@@ -386,7 +386,7 @@ def run_benchmark(
                             vg_cmd = [valgrind_bin, "--tool=cachegrind", "--cachegrind-out-file=/dev/null"] + tp_cmd
                             res = subprocess.run(vg_cmd, env=env, capture_output=True, text=True)
                             import re
-                            m = re.search(r"I refs:\s*([\d,]+)", res.stderr or "")
+                            m = re.search(r"I\s+refs:\s*([\d,]+)", res.stderr or "")
                             if not m:
                                 raise RuntimeError(f"Failed to parse Cachegrind instruction count from stderr: {res.stderr}")
                             ir_count = int(m.group(1).replace(",", ""))

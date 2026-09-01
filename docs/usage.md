@@ -52,8 +52,7 @@ Common options:
 
 The script runs three phases:
 
-1. **Phase 1** — encodes samples, measures throughput, library size, and
-   decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
+1. **Phase 1** — encodes samples, measures throughput (via deterministic Cachegrind instruction counts when `valgrind` is installed, or wall-clock timing fallback), library size, and decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
 2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for speech/16kHz scenarios) or `Zimtohrli` (for audio scenarios).
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
