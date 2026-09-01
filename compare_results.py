@@ -246,8 +246,11 @@ def check_throughput(suite_results, base, cand):
                  "no signal measured on both sides")
         return
 
+    tp_metric = cand.get("throughput_metric") or base.get("throughput_metric") or "timing"
+    metric_label = "instruction count" if tp_metric == "cachegrind" else "encode time"
+
     point, lo, hi, n = res
-    detail = (f"encode time x{point:.3f} (95% CI {lo:.3f}-{hi:.3f}) "
+    detail = (f"{metric_label} x{point:.3f} (95% CI {lo:.3f}-{hi:.3f}) "
               f"over {n} signal(s)")
     suite_results["tp_ratio"] = point
 
@@ -820,7 +823,7 @@ def render_summary_table(metrics, mos_label, rc_mode):
     if metrics["worst_mos_drop"][0] < -0.01:
         lines.append(f"| **Worst {mos_label} Drop** | {metrics['worst_mos_drop'][0]:.2f} ({metrics['worst_mos_drop'][1]}) |")
 
-    if abs(metrics["worst_bitrate_err"][0]) > 1.0:
+    if abs(metrics["worst_bitrate_err"][0]) > 1.0 and rc_mode != "VBR":
         err_icon = "📈" if metrics["worst_bitrate_err"][0] > 0 else "📉"
         lines.append(f"| **Max Bitrate Err** | {metrics['worst_bitrate_err'][0]:+.1f}% ({metrics['worst_bitrate_err'][1]}) {err_icon} |")
 
@@ -835,11 +838,9 @@ def render_summary_table(metrics, mos_label, rc_mode):
         consist_status += " (MD5 Match)"
     lines.append(f"| **Consistency** | {consist_status} |")
 
-    if abs(metrics["avg_tp_reduction"]) > 0.1:
-        tp_icon = "🚀" if metrics["avg_tp_reduction"] > 1.0 else "📉" if metrics["avg_tp_reduction"] < -1.0 else ""
-        lines.append(f"| **Throughput (Avg)** | {metrics['avg_tp_reduction']:+.1f}% {tp_icon} |")
-
-    tp_details = []
+    # High-SNR Throughput Summary
+    tp_details_lc = []
+    tp_details_he = []
     items = metrics["tp_details_source"]
     if items:
         _, first_data = items[0]
@@ -850,10 +851,22 @@ def render_summary_table(metrics, mos_label, rc_mode):
                 continue
             if signal in base_tp and base_tp[signal] > 0:
                 delta = (1 - cand_tp[signal] / base_tp[signal]) * 100
-                icon = "🚀" if delta > 1.0 else "📉" if delta < -1.0 else ""
-                tp_details.append(f"{signal.split('.')[0]}: {delta:+.1f}% {icon}")
-    if tp_details:
-        lines.append(f"| **TP Breakdown** | {', '.join(tp_details)} |")
+                if signal.endswith("_lc"):
+                    tp_details_lc.append(delta)
+                elif signal.endswith("_he"):
+                    tp_details_he.append(delta)
+
+    if abs(metrics["avg_tp_reduction"]) > 0.1 or tp_details_lc or tp_details_he:
+        tp_icon = "🚀" if metrics["avg_tp_reduction"] > 1.0 else "📉" if metrics["avg_tp_reduction"] < -1.0 else ""
+        tp_sub = []
+        if tp_details_lc:
+            avg_lc = sum(tp_details_lc) / len(tp_details_lc)
+            tp_sub.append(f"LC: {avg_lc:+.1f}%")
+        if tp_details_he:
+            avg_he = sum(tp_details_he) / len(tp_details_he)
+            tp_sub.append(f"HE: {avg_he:+.1f}%")
+        sub_str = f" ({', '.join(tp_sub)})" if tp_sub else ""
+        lines.append(f"| **Throughput Δ** | {metrics['avg_tp_reduction']:+.1f}% {tp_icon}{sub_str} |")
 
     if metrics["worst_tp_delta"] < -1.0:
         lines.append(f"| **Worst-case TP Δ** | {metrics['worst_tp_delta']:.1f}% ({metrics['worst_tp_scen']}) ⚠️ |")
@@ -862,21 +875,12 @@ def render_summary_table(metrics, mos_label, rc_mode):
         size_icon = "📉" if metrics["avg_lib_chg"] < -0.1 else "📈" if metrics["avg_lib_chg"] > 0.1 else ""
         lines.append(f"| **Library Size** | {metrics['avg_lib_chg']:+.2f}% {size_icon} |")
 
-        sec_details = []
-        if abs(metrics["avg_lib_text_chg"]) > 0.001:
-            sec_details.append(f".text: {metrics['avg_lib_text_chg']:+.2f}%")
-        if abs(metrics["avg_lib_rodata_chg"]) > 0.001:
-            sec_details.append(f".rodata: {metrics['avg_lib_rodata_chg']:+.2f}%")
-        if sec_details:
-            lines.append(f"| **Footprint Breakdown** | {', '.join(sec_details)} |")
-
     if abs(metrics["avg_bitrate_chg"]) > 0.1:
         bitrate_icon = "📉" if metrics["avg_bitrate_chg"] < -1.0 else "📈" if metrics["avg_bitrate_chg"] > 1.0 else ""
         lines.append(f"| **Bitrate Δ** | {metrics['avg_bitrate_chg']:+.2f}% {bitrate_icon} |")
 
     if rc_mode == "VBR":
-        # In VBR mode, target-bitrate accuracy is misleading. Report Bitrate Δ vs Base instead.
-        if metrics.get("total_vbr_bitrate_chg_count", 0) > 0:
+        if metrics.get("total_vbr_bitrate_chg_count", 0) > 0 and abs(metrics["avg_vbr_bitrate_chg"]) > 0.1:
             vbr_delta = metrics["avg_vbr_bitrate_chg"]
             vbr_icon = "📈" if vbr_delta > 1.0 else "📉" if vbr_delta < -1.0 else "🎯"
             lines.append(f"| **VBR Bitrate Δ (vs Base)** | {vbr_delta:+.2f}% {vbr_icon} |")
@@ -891,9 +895,10 @@ def render_summary_table(metrics, mos_label, rc_mode):
             acc_icon = "🎯" if metrics["avg_bitrate_acc"] > 95 else "⚠️" if metrics["avg_bitrate_acc"] < 80 else ""
             lines.append(f"| **Bitrate Accuracy** | {metrics['avg_bitrate_acc']:.1f}% {acc_icon} |")
 
-            bias_icon = "📈" if metrics["avg_bitrate_bias"] > 2.0 else "📉" if metrics["avg_bitrate_bias"] < -2.0 else "🎯"
-            bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting" if metrics["avg_bitrate_bias"] < -0.5 else "Optimal"
-            lines.append(f"| **Bitrate Bias** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
+            if abs(metrics["avg_bitrate_bias"]) > 0.5:
+                bias_icon = "📈" if metrics["avg_bitrate_bias"] > 2.0 else "📉" if metrics["avg_bitrate_bias"] < -2.0 else "🎯"
+                bias_desc = "Overshooting" if metrics["avg_bitrate_bias"] > 0.5 else "Undershooting"
+                lines.append(f"| **Bitrate Bias** | {metrics['avg_bitrate_bias']:+.1f}% ({bias_desc}) {bias_icon} |")
 
     mos_count = metrics["total_mos_count"]
     total_wins = metrics.get("total_clip_wins", 0)

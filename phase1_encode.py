@@ -62,6 +62,31 @@ OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 TP_REPS = 5
 
 
+def get_short_throughput_wav(input_path, target_sec=5.0):
+    """Return path to a ~5s WAV slice of input_path for fast Cachegrind profiling."""
+    import shutil
+    valgrind_bin = shutil.which("valgrind")
+    if not valgrind_bin:
+        return input_path
+
+    out_dir = os.path.dirname(input_path)
+    stem = os.path.splitext(os.path.basename(input_path))[0]
+    out_path = os.path.join(out_dir, f"{stem}_5s.wav")
+    if os.path.exists(out_path):
+        return out_path
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin:
+        cmd = [ffmpeg_bin, "-y", "-i", input_path, "-t", str(target_sec), "-c", "copy", out_path]
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+            if os.path.exists(out_path):
+                return out_path
+        except Exception:
+            pass
+    return input_path
+
+
 def worker_init(cpu_id_queue):
     """Pin the worker process to a specific CPU core for consistent benchmarks."""
     cpu_id = cpu_id_queue.get()
@@ -309,49 +334,86 @@ def run_benchmark(
         except BaseException:
             pass
 
+    import shutil
+    valgrind_bin = shutil.which("valgrind")
+    results["throughput_metric"] = "cachegrind" if valgrind_bin else "timing"
+
     tp_dir = os.path.join(EXTERNAL_DATA_DIR, "throughput")
     if os.path.exists(tp_dir):
         tp_samples = sorted(
-            [f for f in os.listdir(tp_dir) if f.endswith(".wav")])
+            [f for f in os.listdir(tp_dir) if f.endswith(".wav") and not f.endswith("_5s.wav")])
         if tp_samples:
-            overall_durations = []
+            overall_values = []
+            vbr_q_128k = SCENARIOS.get("48k_stereo_128k", {}).get("vbr_q", 203)
+            vbr_q_32k = SCENARIOS.get("48k_stereo_32k", {}).get("vbr_q", 50)
+            is_legacy = is_faac_legacy(faac_bin_path, lib_override=lib_path)
+
+            variants = []
+            # LC profile variant
+            lc_flags = ["-q", str(vbr_q_128k)] if rate_control == "vbr" else ["-b", "128"]
+            if not is_legacy:
+                lc_flags.extend(["--object-type", "lc"])
+            variants.append(("_lc", lc_flags))
+
+            # HE profile variant (if non-legacy)
+            if not is_legacy:
+                he_flags = ["-q", str(vbr_q_32k)] if rate_control == "vbr" else ["-b", "32"]
+                he_flags.extend(["--object-type", "he-aac-v1"])
+                variants.append(("_he", he_flags))
+
             for sample in tp_samples:
                 input_path = os.path.join(tp_dir, sample)
-                output_path = os.path.join(
-                    OUTPUT_DIR, f"tp_{sample}_{precision}.m4a")
+                sample_stem = os.path.splitext(sample)[0]
 
-                print(f"  Benchmarking throughput with {sample}...")
-                try:
-                    tp_cmd = [faac_bin_path]
-                    if is_faac_legacy(faac_bin_path, lib_override=lib_path):
-                        tp_cmd.append("-w")
-                    tp_cmd.extend(["--overwrite", "-o", output_path, input_path])
-                    # Warmup
-                    subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
+                for var_suffix, extra_flags in variants:
+                    var_key = f"{sample_stem}{var_suffix}"
+                    output_path = os.path.join(
+                        OUTPUT_DIR, f"tp_{var_key}_{precision}.m4a")
 
-                    # Interference is one-sided: a run can be slowed by another
-                    # process but never sped up, so the minimum is the
-                    # low-variance estimator of the true cost and the mean just
-                    # imports whatever else the runner was doing.
-                    durations = []
-                    for _ in range(TP_REPS):
-                        start_time = time.perf_counter()
-                        subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
-                        durations.append(time.perf_counter() - start_time)
+                    print(f"  Benchmarking throughput for {var_key}...")
+                    try:
+                        eff_input = get_short_throughput_wav(input_path) if valgrind_bin else input_path
+                        tp_cmd = [faac_bin_path]
+                        if is_legacy:
+                            tp_cmd.append("-w")
+                        tp_cmd.extend(["--overwrite", "-o", output_path])
+                        tp_cmd.extend(extra_flags)
+                        if extra_args:
+                            tp_cmd.extend(extra_args)
+                        tp_cmd.append(eff_input)
 
-                    best = min(durations)
-                    results["throughput"][sample] = best
-                    # Keep every sample. Without them there is no dispersion to
-                    # test, and a gate cannot be built on a bare mean.
-                    results["throughput_samples"][sample] = durations
-                    overall_durations.append(best)
-                except BaseException as e:
-                    print(f"    Throughput benchmark failed for {sample}: {e}")
-                    pass
+                        if valgrind_bin:
+                            vg_cmd = [valgrind_bin, "--tool=cachegrind", "--cachegrind-out-file=/dev/null"] + tp_cmd
+                            res = subprocess.run(vg_cmd, env=env, capture_output=True, text=True)
+                            import re
+                            m = re.search(r"I\s+refs:\s*([\d,]+)", res.stderr or "")
+                            if not m:
+                                raise RuntimeError(f"Failed to parse Cachegrind instruction count from stderr: {res.stderr}")
+                            ir_count = int(m.group(1).replace(",", ""))
+                            results["throughput"][var_key] = ir_count
+                            results["throughput_samples"][var_key] = [ir_count]
+                            overall_values.append(ir_count)
+                        else:
+                            # Warmup
+                            subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
 
-            if overall_durations:
+                            durations = []
+                            for _ in range(TP_REPS):
+                                start_time = time.perf_counter()
+                                subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
+                                durations.append(time.perf_counter() - start_time)
+
+                            best = min(durations)
+                            results["throughput"][var_key] = best
+                            results["throughput_samples"][var_key] = durations
+                            overall_values.append(best)
+                    except BaseException as e:
+                        print(f"    Throughput benchmark failed for {var_key}: {e}")
+                        pass
+
+            if overall_values:
                 results["throughput"]["overall"] = sum(
-                    overall_durations) / len(overall_durations)
+                    overall_values) / len(overall_values)
 
     return results
 

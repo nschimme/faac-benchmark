@@ -20,7 +20,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faad ffmpeg
+          sudo apt-get install -y faad ffmpeg valgrind
 
       - name: Install dependencies
         run: |

@@ -55,9 +55,10 @@ from an onset for pre-echo.
 
 ## Throughput Δ
 
-Encode-time change vs base (positive = faster). Measured single-core on the
-fixed throughput stimuli. The report also breaks it down per stimulus and flags
-the worst-case scenario.
+Throughput measures the speed of the encoder on fixed throughput stimuli.
+- **Cachegrind Instruction Counts (CI / Default when valgrind is installed)**: Measures exact instructions executed (`I refs`) via `valgrind --tool=cachegrind` on short (~5s) audio clips. This yields ~0.002% deterministic reproducibility across runs, immune to host CPU load/VM scheduling noise.
+- **Wall-Clock Timing (Fallback when valgrind is absent)**: Measures single-core wall-clock timing minimum across repetitions on fixed stimuli.
+- **Difference from Leaderboard Speed (xRT)**: Throughput Δ evaluates relative candidate-vs-baseline performance on fixed benchmark stimuli in `phase1_encode.py`. The multi-encoder leaderboard (`compare_encoders.py`), by contrast, reports **Speed (xRT)** (realtime factor = audio duration / encode duration) across the full scenario corpus.
 
 ## Rate Control: ABR vs. VBR Semantics
 

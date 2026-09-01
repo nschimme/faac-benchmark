@@ -304,6 +304,15 @@ class TestThroughputGate(unittest.TestCase):
         self.assertIn("different machine", g["detail"])
         self.assertIn("--throughput-only", g["detail"])
 
+    def test_cachegrind_metric_label(self):
+        import compare_results as C
+        sr = {"gates": [], "has_regression": False}
+        C.check_throughput(
+            sr,
+            {"throughput_samples": {"s": [1000]}, "host_fp": {"cpu": "a"}, "throughput_metric": "cachegrind"},
+            {"throughput_samples": {"s": [1000]}, "host_fp": {"cpu": "a"}, "throughput_metric": "cachegrind"})
+        self.assertIn("instruction count", sr["gates"][0]["detail"])
+
 
 class TestAutoBackendSelection(unittest.TestCase):
     def test_run_benchmark_calls_phase2_mos(self):
