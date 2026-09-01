@@ -246,8 +246,11 @@ def check_throughput(suite_results, base, cand):
                  "no signal measured on both sides")
         return
 
+    tp_metric = cand.get("throughput_metric") or base.get("throughput_metric") or "timing"
+    metric_label = "instruction count" if tp_metric == "cachegrind" else "encode time"
+
     point, lo, hi, n = res
-    detail = (f"encode time x{point:.3f} (95% CI {lo:.3f}-{hi:.3f}) "
+    detail = (f"{metric_label} x{point:.3f} (95% CI {lo:.3f}-{hi:.3f}) "
               f"over {n} signal(s)")
     suite_results["tp_ratio"] = point
 
