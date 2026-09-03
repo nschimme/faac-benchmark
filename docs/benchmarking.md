@@ -80,12 +80,11 @@ the retired `16k_mono_40k` asked 16 kHz mono for 40 kbps and got 32.2 (-20%),
 because the format saturates well below it.
 
 The mono families turn out to track a target only inside a **narrow window**,
-and they fail at *both* ends. Measured on faac 2.1.0 (see the comments in
-`config.py` for the full curves):
+and they fail at *both* ends (see `config.py` for the full curves):
 
 | 16 kHz mono | 12k | 16k | 20k | 24k | 28k | 32k |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| achieved | +42.5% | +18.5% | **+4.1%** | **-4.7%** | -11.8% | -17.4% |
+| achieved | +24.5% | +11.1% | **+4.1%** | **-4.7%** | -11.8% | -17.4% |
 
 Below the window the encoder simply will not emit fewer bits on this content
 (a floor near 17 kbps), so a smaller target overshoots; above it, the content
@@ -99,9 +98,15 @@ never engages HE-AAC. On a build with AUTO object-type resolution they land
 within tolerance (measured +9.4% at 24 kbps). That is a property of the binary,
 not of the scenario — check the build before retargeting there.
 
+**Every bitrate figure in this repo is quoted against one reference build**
+(`faac` master @ `8aebaa31`, recorded at the top of `config.py`). Reachability
+is as much a property of the encoder as of the format, so a number is only
+interpretable next to the build that produced it — quote the build whenever you
+record a new one.
+
 ### What each family actually exercises
 
-Verified with `ffprobe` on a `--gate` run (faac 2.1.0): every new family
+Verified with `ffprobe` on a `--gate` run: every new family
 resolves to **LC**, while the 48 kHz ladder switches to HE-AAC at 24-48 kbps.
 
 | Family | Object type across the ladder |

@@ -170,8 +170,17 @@ Regenerates `config.py`'s per-scenario `vbr_q` table: grid-searches faac's
 `-q` so VBR output lands near each scenario's nominal `bitrate` for
 representative content (see [metrics.md](metrics.md) for why this needs a
 search rather than a linear formula). Prints a table and a ready-to-paste
-`vbr_q` dict; does not edit `config.py` itself. Re-run after any libfaac
-change that could shift its quantizer/bitrate curve.
+`vbr_q` dict; does not edit `config.py` itself.
+
+**Do not re-run this as routine maintenance after a libfaac change.** In VBR
+mode the regression signal *is* the bitrate delta at a fixed `-q`: base and
+candidate encode at the same `vbr_q`, so a shift in the quantizer curve shows
+up in the report, and recalibrating afterwards is the one action that erases
+it. Treat `vbr_q` like `bitrate` — a constant of the scenario, pinned to the
+reference build recorded in `config.py`. Recalibrating is a deliberate
+rebaseline (the same class of change as moving `thresh`), warranted only once
+VBR has drifted so far that the run no longer measures the intended operating
+point, and never in the same run as a comparison.
 
 ```bash
 python3 scripts/calibrate_vbr_q.py [--scenarios NAME|FAMILY,...]

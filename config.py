@@ -113,8 +113,10 @@ FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo
 # bitrates, because faac's -q-to-bitrate curve isn't linear. These values
 # were found by grid search against GATE_CLIPS content (see
 # scripts/calibrate_vbr_q.py) and validated to land within ~1-16% of "bitrate" on
-# held-out clips not used in the search. Re-run scripts/calibrate_vbr_q.py after any
-# libfaac change that could shift its quantizer/bitrate curve.
+# held-out clips not used in the search. See the note below on when re-running
+# scripts/calibrate_vbr_q.py is and is not appropriate -- "after any libfaac
+# change that could shift the quantizer curve", which this comment used to
+# say, defeats the VBR report's purpose.
 #
 # Two scenarios (48k_stereo_48k, 48k_stereo_56k) are UNAVOIDABLY off target:
 # for 48kHz stereo, libfaac's AUTO object-type resolution in VBR mode picks
@@ -126,6 +128,22 @@ FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo
 # expected, non-regression bitrate-accuracy deficit (~-15% to -35%) in every
 # report; watch the baseline-vs-candidate DELTA for these two, not the
 # absolute deviation from "bitrate".
+#
+# REFERENCE BUILD for every bitrate figure quoted in this file:
+#   faac master @ 8aebaa31 ("faac-2.1", meson default build)
+# Bitrate reachability is a property of the encoder as much as of the format,
+# so a number is only interpretable next to the build that produced it. Quote
+# the build whenever you record a new one.
+#
+# vbr_q is deliberately NOT refreshed against whatever the tree does today. In
+# VBR mode the regression signal IS the bitrate delta at a fixed -q: base and
+# candidate encode at the same vbr_q, so a shift in libfaac's quantizer curve
+# shows up in the report. Re-running calibrate_vbr_q.py after such a change is
+# the one action that erases the finding. Treat vbr_q like "bitrate" -- a
+# constant of the scenario, pinned to the reference build above. Recalibrating
+# is a deliberate rebaseline (same class of change as moving "thresh"),
+# warranted only once VBR has drifted so far that the run no longer measures
+# the intended operating point, and never in the same run as a comparison.
 #
 # thresh/vbr_q marked PROVISIONAL below belong to scenarios added with the
 # corpus rework and have not been through calibrate_vbr_q.py / a baseline run
@@ -139,16 +157,16 @@ FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo
 SCENARIOS = {
     # -- 16 kHz mono speech ------------------------------------------------
     # ABR only tracks a target inside a narrow window here. Measured on this
-    # corpus (faac 2.1.0, scripts/validate_scenarios.py): 12k -> +42.5%,
-    # 14k -> +28.7%, 16k -> +18.5%, 18k -> +10.4%, 20k -> +4.1%, 24k -> -4.7%,
+    # corpus with scripts/validate_scenarios.py against the reference build
+    # below: 12k -> +24.5%, 16k -> +11.1%, 20k -> +4.1%, 24k -> -4.7%,
     # 28k -> -11.8%, 32k -> -17.4%. Below ~20 kbps the encoder will not go any
-    # lower on this content (a floor around 17 kbps, so a smaller target just
+    # lower on this content (a floor around 18 kbps, so a smaller target just
     # overshoots); above ~24 kbps it saturates. The ladder is 20k/24k, the
     # window's two ends.
     #
-    # 16 kbps was the old telephony rung and is retired for overshooting it by
-    # 18.5% -- the mirror image of the 40 kbps scenario's -20% undershoot, and
-    # just as uncloseable.
+    # 16 kbps was the old telephony rung and is retired for overshooting it --
+    # the mirror image of the 40 kbps scenario's -20% undershoot, and just as
+    # uncloseable.
     "16k_mono_20k": {
         "mode": "speech",
         "corpus": "speech_clean_16k",
@@ -175,8 +193,8 @@ SCENARIOS = {
     # Scored in AUDIO mode (Zimtohrli at 48 kHz), not ViSQOL speech mode:
     # speech mode is 16 kHz and would band-limit the reference to 8 kHz,
     # hiding exactly the bandwidth this family exists to test.
-    # Measured ABR reachability on this corpus (faac 2.1.0, gate clips, via
-    # scripts/validate_scenarios.py): 24k -> +11.8%, 28k -> +1.8%,
+    # Measured ABR reachability on this corpus (gate clips, via
+    # scripts/validate_scenarios.py): 24k -> +0.4%, 28k -> -3.2%,
     # 32k -> -6.2%, 36k -> -12.6%, 40k -> -17.8%, 48k -> -25.5%. Same shape as
     # the 16 kHz family: a floor near 27 kbps and saturation past ~34, so the
     # ladder is 28k/32k. 40 kbps was tried and dropped -- shipping it would
