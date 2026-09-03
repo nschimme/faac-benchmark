@@ -30,7 +30,8 @@ import argparse
 
 import numpy as np
 
-from utils import wav_conv, get_aac_path, calculate_provenance_hash, get_cached_ref_wav
+from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
+                   get_cached_ref_wav, corpus_dir, scenario_channels)
 
 try:
     import ffmpeg
@@ -97,7 +98,7 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
     speech_items = []
     for key, entry in pending.items():
         info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
-        if info and (info["cfg"]["mode"] == "speech" or info["cfg"]["rate"] == 16000):
+        if info and info["cfg"]["mode"] == "speech":
             speech_items.append((key, entry, info))
 
     results = {}
@@ -149,8 +150,7 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
     if not cfg:
         return None
 
-    data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
-    ref_input_path = os.path.join(external_data_dir, data_subdir, filename)
+    ref_input_path = os.path.join(corpus_dir(cfg, external_data_dir), filename)
 
     aac_path = get_aac_path(key, aac_dir, results_path, aac_files=aac_files, entry=entry)
 
@@ -159,31 +159,30 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "ref_input_path": ref_input_path,
         "aac_path": aac_path,
         "v_rate": cfg["visqol_rate"],
-        "v_channels": 1 if cfg["mode"] == "speech" else 2
+        # Channels come from the corpus, not from the metric mode: 24k_mono_*
+        # is mono content scored in AUDIO mode, and the old ternary would have
+        # silently upmixed it to stereo before scoring.
+        "v_channels": scenario_channels(cfg)
     }
 
 def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     """Score an already-converted ref/deg WAV pair.
-    Speech mode OR 16kHz sample rate automatically uses visqol-python;
-    all other audio uses Zimtohrli.
+
+    Speech mode uses visqol-python (16 kHz mono); audio mode uses Zimtohrli
+    (48 kHz). The engine is chosen by the scenario's mode ALONE. It used to
+    also trigger on `sr == 16000`, which was fine while 16 kHz meant speech,
+    but would now hijack any 16 kHz corpus a scenario deliberately scores in
+    audio mode. `sample_rate` is still accepted for callers that pass it, and
+    is unused for dispatch.
     Returns (mos, backend_used); mos is None on failure."""
     try:
-        sr = sample_rate
-        if sr is None and sf is not None:
-            try:
-                sr = sf.info(v_ref).samplerate
-            except Exception:
-                pass
-
-        use_speech = (mode_str == "speech") or (sr == 16000)
-
-        if use_speech:
+        if mode_str == "speech":
             if HAS_VISQOL_PYTHON:
                 api = get_process_visqol_python("speech")
                 if api:
                     result = api.measure(v_ref, v_deg)
                     return float(result.moslqo), "visqol-python"
-            print("  ERROR: visqol-python is required for speech/16kHz scoring but not available.")
+            print("  ERROR: visqol-python is required for speech-mode scoring but not available.")
             return None, "visqol-python"
 
         # Audio mode: use Zimtohrli

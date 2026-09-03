@@ -61,7 +61,7 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from config import SCENARIOS
-from utils import get_aac_path, wav_conv, get_cached_ref_wav
+from utils import get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels
 from transient import attack_centroid_deltas
 
 # 48 kHz, 50 ms analysis frames.
@@ -214,10 +214,13 @@ def main():
     except FileNotFoundError:
         aac_files = []
 
-    # Only non-speech scenarios, and only entries missing a metric this
+    # Only stereo scenarios, and only entries missing a metric this
     # invocation was asked to compute.
     def is_pending(v):
-        if SCENARIOS.get(v.get("scenario"), {}).get("mode") == "speech":
+        # Stereo image fidelity is undefined for mono content. Key off the
+        # corpus channel count, not the metric mode -- 24k_mono_* is mono
+        # content scored in audio mode.
+        if scenario_channels(SCENARIOS.get(v.get("scenario"), {})) < 2:
             return False
         if want_ic and v.get("ic_err") is None:
             return True

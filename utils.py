@@ -504,62 +504,236 @@ def calculate_provenance_hash(faac_bin, libfaac_so, extra_args, input_path, env=
 
     return hasher.hexdigest()[:16]
 
+def _scenario_cfg(name_or_cfg):
+    """Accepts a scenario name or an already-resolved cfg dict.
+
+    A name absent from SCENARIOS (a retired scenario in an archived result
+    JSON, say) is reconstructed from the name itself, so reports of old runs
+    still show the right rate and channel count instead of the defaults.
+    """
+    if isinstance(name_or_cfg, dict):
+        return name_or_cfg
+    from config import SCENARIOS
+    cfg = SCENARIOS.get(name_or_cfg)
+    if cfg:
+        return cfg
+    rate, channels, bitrate = _parse_scenario_name(name_or_cfg or "")
+    if not rate:
+        return {}
+    return {"rate": rate, "channels": channels, "bitrate": bitrate}
+
+
+def get_corpus(cfg):
+    """The CORPORA entry a scenario reads its content from."""
+    from config import CORPORA
+    cfg = _scenario_cfg(cfg)
+    return CORPORA.get(cfg.get("corpus")) or {}
+
+
+def corpus_dir(cfg, external_data_dir=None):
+    """Absolute path of a scenario's reference-WAV directory.
+
+    This replaces the `"speech" if cfg["mode"] == "speech" else "audio"`
+    ternary that used to be repeated in every phase: sample rate and channel
+    count are properties of the corpus, and `mode` now only selects the metric
+    engine.
+    """
+    if external_data_dir is None:
+        external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data", "external")
+    subdir = get_corpus(cfg).get("dir", "audio")
+    return os.path.join(external_data_dir, subdir)
+
+
+def scenario_channels(cfg):
+    cfg = _scenario_cfg(cfg)
+    return cfg.get("channels") or get_corpus(cfg).get("channels", 2)
+
+
+def scenario_rate(cfg):
+    cfg = _scenario_cfg(cfg)
+    return cfg.get("rate") or get_corpus(cfg).get("rate", 48000)
+
+
+def scenario_family(name_or_cfg):
+    """The rate/channel family a scenario belongs to (e.g. "44k1_stereo").
+
+    Reports chart MOS against bitrate, which is only meaningful within one
+    family -- two scenarios at 48 kbps and different sample rates are not two
+    points on the same curve.
+    """
+    cfg = _scenario_cfg(name_or_cfg)
+    fam = get_corpus(cfg).get("family")
+    if fam:
+        return fam
+    # Unknown scenario (e.g. a stale result JSON): derive from the name.
+    rate, channels, _ = _parse_scenario_name(
+        name_or_cfg if isinstance(name_or_cfg, str) else "")
+    if not rate:
+        return "other"
+    label = f"{rate // 1000}k" if rate % 1000 == 0 else f"{rate // 1000}k{(rate % 1000) // 100}"
+    return f"{label}_{'mono' if channels == 1 else 'stereo'}"
+
+
+def family_label(family):
+    """Human label for a family, taken from whichever corpus declares it."""
+    from config import CORPORA
+    for c in CORPORA.values():
+        if c.get("family") == family:
+            # Strip the parenthetical qualifier so "16 kHz Mono Speech
+            # (VoIP-degraded)" and the clean corpus share one section heading.
+            return c.get("label", family).split(" (")[0]
+    return family
+
+
+def format_scenario_rate(cfg):
+    """Compact "48k/2ch" tag for report tables."""
+    rate = scenario_rate(cfg)
+    khz = rate / 1000.0
+    khz_s = f"{khz:g}k"
+    return f"{khz_s}/{scenario_channels(cfg)}ch"
+
+
+def select_corpus_clips(files, corpus):
+    """Deterministically cap a corpus to `max_clips`, balanced across strata.
+
+    The 400-clip TCD-VoIP set is 5 degradation types x ~20 conditions x 4
+    talkers describing ONE configuration; taking a prefix would silently drop
+    whole degradation types. Round-robin across the strata matched by the
+    corpus's `strata` regex (falling back to an even-spaced stride when a
+    filename doesn't match) keeps every stratum represented and the selection
+    reproducible.
+    """
+    files = sorted(files)
+    max_clips = (corpus or {}).get("max_clips")
+    if not max_clips or len(files) <= max_clips:
+        return files
+
+    pattern = (corpus or {}).get("strata")
+    if not pattern:
+        step = len(files) / max_clips
+        return [files[int(i * step)] for i in range(max_clips)]
+
+    groups = {}
+    rx = re.compile(pattern)
+    for f in files:
+        m = rx.search(f)
+        groups.setdefault(m.groups() if m else ("_",), []).append(f)
+
+    selected = []
+    keys = sorted(groups, key=lambda k: tuple("" if p is None else p for p in k))
+    idx = 0
+    while len(selected) < max_clips:
+        progressed = False
+        for k in keys:
+            if idx < len(groups[k]):
+                selected.append(groups[k][idx])
+                progressed = True
+                if len(selected) == max_clips:
+                    break
+        if not progressed:
+            break
+        idx += 1
+    return sorted(selected)
+
+
+def expand_scenario_list(spec):
+    """Parse a --scenarios value, expanding family names.
+
+    With five rate families in the matrix, "run just the 44.1 kHz family" is
+    the common iteration command, so a family name ("44k1_stereo") expands to
+    every scenario in it. Anything else is passed through untouched so an
+    unknown name still reaches the caller's own "not found" warning.
+    """
+    from config import SCENARIOS
+
+    out = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token in SCENARIOS:
+            out.append(token)
+            continue
+        members = [n for n in SCENARIOS if scenario_family(n) == token]
+        if members:
+            out.extend(sorted(members, key=get_scenario_sort_key))
+        else:
+            out.append(token)
+    # Preserve order, drop duplicates (a family plus one of its members).
+    seen = set()
+    return [s for s in out if not (s in seen or seen.add(s))]
+
+
+def scenario_families(names):
+    """The families present in `names`, in report order."""
+    from config import FAMILY_ORDER
+    present = {scenario_family(n) for n in names}
+    ordered = [f for f in FAMILY_ORDER if f in present]
+    return ordered + sorted(present - set(ordered))
+
+
+def _parse_scenario_name(name):
+    """(rate, channels, bitrate) parsed from a scenario name.
+
+    Handles the decimal-rate form too: "44k1_stereo_128k" -> 44100 Hz. Used
+    only as a fallback for names absent from SCENARIOS.
+    """
+    rate = 0
+    channels = 0
+    bitrate = 0
+
+    m = re.match(r"^(\d+)k(\d)?_(mono|stereo|speech|audio)(?:_[a-z0-9]+)?_(\d+)k$", name)
+    if m:
+        rate = int(m.group(1)) * 1000 + (int(m.group(2)) * 100 if m.group(2) else 0)
+        channels = 1 if m.group(3) in ("mono", "speech") else 2
+        bitrate = int(m.group(4))
+        return rate, channels, bitrate
+
+    if "mono" in name or "speech" in name:
+        channels = 1
+    elif "stereo" in name or "audio" in name:
+        channels = 2
+
+    # Bitrate: the last number before a 'k'.
+    m_br_list = re.findall(r"(\d+)k(?:$|_)", name)
+    if m_br_list:
+        bitrate = int(m_br_list[-1])
+
+    m_rate = re.match(r"^(\d+)k(\d)?", name)
+    if m_rate:
+        rate = int(m_rate.group(1)) * 1000 + (int(m_rate.group(2)) * 100 if m_rate.group(2) else 0)
+
+    return rate, channels, bitrate
+
+
 @lru_cache(maxsize=128)
 def get_scenario_sort_key(name):
-    """Returns a sortable key for a scenario: (dataset_rank, bitrate, rate, name).
-    Dataset rank: 0 for mono/speech, 1 for stereo/audio, 2 for others.
-    Bitrate and rate are numeric.
+    """Sortable key for a scenario: (family_rank, rate, channels, bitrate, name).
+
+    Rate outranks bitrate deliberately. The old key sorted by bitrate first,
+    which interleaved rate families -- 32k_stereo_48k would land next to
+    48k_stereo_48k -- and made the scenario tables unscannable once more than
+    one sample rate existed. Families now stay contiguous and ascend by rate.
     """
     try:
-        from config import SCENARIOS
+        from config import SCENARIOS, FAMILY_ORDER
     except ImportError:
         SCENARIOS = {}
-
-    dataset_rank = 2
-    bitrate = 0
-    rate = 0
+        FAMILY_ORDER = []
 
     if name in SCENARIOS:
         cfg = SCENARIOS[name]
-        mode = cfg.get("mode", "")
-        if mode == "speech":
-            dataset_rank = 0
-        elif mode == "audio":
-            dataset_rank = 1
-
+        rate = scenario_rate(cfg)
+        channels = scenario_channels(cfg)
         bitrate = cfg.get("bitrate", 0)
-        rate = cfg.get("rate", 0)
+        family = scenario_family(cfg)
     else:
-        # Attempt to parse from name: e.g. "48k_stereo_128k"
-        # Try full pattern
-        m = re.match(r"^(\d+)k_(mono|stereo|speech|audio)_(\d+)k$", name)
-        if m:
-            rate = int(m.group(1)) * 1000
-            mode_str = m.group(2)
-            bitrate = int(m.group(3))
-            if mode_str in ["mono", "speech"]:
-                dataset_rank = 0
-            elif mode_str in ["stereo", "audio"]:
-                dataset_rank = 1
-        else:
-            # Heuristics
-            if "mono" in name or "speech" in name:
-                dataset_rank = 0
-            elif "stereo" in name or "audio" in name:
-                dataset_rank = 1
+        rate, channels, bitrate = _parse_scenario_name(name)
+        family = scenario_family(name)
 
-            # Extract bitrate (usually the last number before a 'k').
-            # Use findall and take the last match to honor the "last number" heuristic.
-            m_br_list = re.findall(r"(\d+)k(?:$|_)", name)
-            if m_br_list:
-                bitrate = int(m_br_list[-1])
-
-            # Extract rate (usually the first number)
-            m_rate = re.search(r"^(\d+)k", name)
-            if m_rate:
-                rate = int(m_rate.group(1)) * 1000
-
-    return (dataset_rank, bitrate, rate, name)
+    family_rank = FAMILY_ORDER.index(family) if family in FAMILY_ORDER else len(FAMILY_ORDER)
+    return (family_rank, rate, channels, bitrate, name)
 
 
 def get_aac_path(key, aac_dir, results_path, aac_files=None, entry=None):

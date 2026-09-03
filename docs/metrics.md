@@ -2,7 +2,26 @@
 
 ## Perceptual Quality (MOS)
 
-Computed in Phase 2 (`phase2_mos.py`). Phase 2 automatically selects the perceptual engine based on scenario mode and sample rate: **visqol-python** is used for speech scenarios and 16kHz audio, while **Zimtohrli** (`zimtohrli.Pyohrli()`) is used for all other audio scenarios, mapping psychoacoustic distance deterministically to a 1.0–5.0 MOS scale (`zimtohrli.mos_from_zimtohrli()`). Zimtohrli is particularly sensitive to transient preservation, temporal smearing, and pre-echo artifacts.
+Computed in Phase 2 (`phase2_mos.py`). The engine is selected by the scenario's
+**mode alone**: `speech` uses **visqol-python**, `audio` uses **Zimtohrli**
+(`zimtohrli.Pyohrli()`), mapping psychoacoustic distance deterministically to a
+1.0–5.0 MOS scale (`zimtohrli.mos_from_zimtohrli()`). Zimtohrli is particularly
+sensitive to transient preservation, temporal smearing, and pre-echo artifacts.
+
+Dispatch used to also trigger on a 16 kHz sample rate. That was equivalent while
+16 kHz meant speech, but it would now hijack any 16 kHz corpus a scenario
+deliberately scores in audio mode, so the rate no longer takes part.
+
+**Scoring rate is a property of the engine, not of the content**: ViSQOL speech
+mode is 16 kHz mono, Zimtohrli is 48 kHz. That is all `visqol_rate` can ever be
+(`config.METRIC_RATE`, derived per scenario and enforced by a unit test), and
+phase 2 conforms reference and degraded to it with the same call, so the
+comparison is fair whatever the corpus rate is.
+
+The `24k_mono_*` scenarios are mono content scored in **audio** mode for this
+reason: ViSQOL speech mode would band-limit the reference to 8 kHz and hide
+exactly the bandwidth those scenarios exist to test. Channel count comes from
+the corpus, so mono content is not upmixed before scoring.
 
 - **Scale**: 1.0 to 5.0 MOS scale (higher is better).
 - **Reported Delta**: **Avg MOS Δ** (candidate − base); positive indicates improvement.

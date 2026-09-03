@@ -19,8 +19,11 @@ import concurrent.futures
 import multiprocessing
 from collections import defaultdict
 
-from utils import get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path, ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy
-from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path,
+                   ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy,
+                   corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
+                   scenario_family, family_label, scenario_families, expand_scenario_list)
+from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -389,8 +392,8 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
     output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}{ext}".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
-    channels = 1 if cfg["mode"] == "speech" else 2
-    sample_rate = cfg.get("rate", 48000)
+    channels = scenario_channels(cfg)
+    sample_rate = scenario_rate(cfg)
     cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
 
     try:
@@ -413,7 +416,7 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
 
         valid, decode_err = decode_validate(output_path)
         out_channels, out_rate = get_audio_info(output_path)
-        exp_channels = 1 if cfg["mode"] == "speech" else 2
+        exp_channels = scenario_channels(cfg)
         if valid and out_channels is not None and out_channels != exp_channels:
             valid = False
             decode_err = f"Channels mismatch: {out_channels} vs {exp_channels}"
@@ -491,9 +494,9 @@ def main():
 
     num_cpus = os.cpu_count() or 1
 
-    scenario_list = SCENARIOS.keys()
+    scenario_list = list(SCENARIOS.keys())
     if args.scenarios:
-        scenario_list = [s.strip() for s in args.scenarios.split(",")]
+        scenario_list = expand_scenario_list(args.scenarios)
 
     for scenario_name in scenario_list:
         if scenario_name not in SCENARIOS:
@@ -501,13 +504,17 @@ def main():
             continue
         cfg = SCENARIOS[scenario_name]
         print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
-        data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
-        data_dir = os.path.join(external_data_dir, data_subdir)
+        data_dir = corpus_dir(cfg, external_data_dir)
         if not os.path.exists(data_dir):
             print(f"Data directory {data_dir} not found, skipping.")
             continue
 
-        all_samples = sorted([f for f in os.listdir(data_dir) if f.endswith(".wav")])
+        # --gate selects from a curated list, so the corpus cap (which bounds
+        # full runs) is skipped there; applying both would drop gate clips the
+        # cap happened not to select.
+        wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
+        all_samples = sorted(wavs) if args.gate else select_corpus_clips(
+            wavs, CORPORA.get(cfg["corpus"], {}))
         if args.gate:
             samples = gate_filter(scenario_name, all_samples)
         else:
@@ -517,8 +524,8 @@ def main():
 
         print(f"Processing {len(samples)} samples...")
 
-        channels = 1 if cfg["mode"] == "speech" else 2
-        sample_rate = cfg.get("rate", 48000)
+        channels = scenario_channels(cfg)
+        sample_rate = scenario_rate(cfg)
 
         for encoder in encoders:
             is_faac = isinstance(encoder, FAACEncoder)
@@ -862,6 +869,13 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write(title_str)
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("## Overall Rankings\n\n")
+        # Overall MOS is a mean of per-scenario means, so the scenario set is
+        # part of the number: adding or removing a family shifts every
+        # encoder's absolute score even though nothing about the encoders
+        # changed. Rankings stay valid (all encoders see the same set).
+        f.write("> **Note**: Overall MOS averages the scenario set listed below, so absolute "
+                "values are only comparable between leaderboards built from the same set of "
+                "scenarios. Relative ranking is unaffected.\n\n")
         f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
@@ -936,8 +950,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
         top_tools = chart_tools[:5]      # Top 5 for clean line display
 
-        audio_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "audio"]
-        speech_scenarios = [s for s in scenarios if SCENARIOS.get(s, {}).get("mode") == "speech"]
 
         def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
             if val is None or max_val <= 0:
@@ -991,116 +1003,85 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("\n## Per-Scenario Breakdown & Visualizations\n\n")
 
-        # 1. Stereo Audio Quality
-        if audio_scenarios:
-            f.write("### Stereo Audio Quality Across Bitrates\n\n")
-            if not skip_graphs and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Stereo Audio Quality across Bitrates (Average MOS)"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_mos = []
-                    for s in audio_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["mos_count"] > 0:
-                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
-                        else:
-                            scen_mos.append("0.0")
-                    f.write(f'    line "{t}" [{", ".join(scen_mos)}]\n')
-                f.write("```\n\n")
+        # 1-3. Quality per rate family.
+        #
+        # These sections used to be a hard-coded "Stereo Audio" / "Mono Speech"
+        # pair, which worked only while the suite had exactly one sample rate
+        # per channel count. The charts plot MOS against BITRATE, so mixing
+        # rates into one chart draws a line through unrelated configurations --
+        # 32k_stereo_48k and 48k_stereo_48k would both land on the "48k" tick.
+        # One section per family keeps every curve meaningful.
+        def family_chart(fam_scenarios, title, y_label, y_range, value_fn):
+            """Emit one MOS-style xychart for a single family.
 
-            f.write("<details><summary><b>View Detailed Stereo Audio Average & Worst MOS Tables</b></summary>\n\n")
-            f.write("#### Per-Scenario Average MOS (Stereo Audio)\n\n")
-            render_metric_tables(
-                lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
-                lambda v: f"{v:.3f}",
-                filter_scenarios=audio_scenarios,
-                max_scale=5.0
-            )
-            f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Stereo Audio)\n\n")
+            Skipped below three points: a two-point line chart says less than
+            the table underneath it.
+            """
+            if skip_graphs or not top_tools or len(fam_scenarios) < 3:
+                return
+            # The x-axis is bitrate, so two scenarios at the same bitrate (the
+            # clean and VoIP-degraded 16 kHz corpora, say) would collide on one
+            # tick and read as a single curve through unrelated content.
+            bitrates = [SCENARIOS.get(sc, {}).get("bitrate") for sc in fam_scenarios]
+            if len(set(bitrates)) != len(bitrates):
+                return
+            scen_labels = [f'"{SCENARIOS.get(sc, {}).get("bitrate", sc)}k"' for sc in fam_scenarios]
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write(f'    title "{title}"\n')
+            f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+            f.write(f'    y-axis "{y_label}" {y_range}\n')
+            for t in top_tools:
+                candidates = tool_row_keys[t]
+                vals = []
+                for sc in fam_scenarios:
+                    rk = scenario_best_row_key(candidates, sc)
+                    v = value_fn(rk, sc) if rk else None
+                    vals.append(f"{v:.4f}" if v is not None else "0.0")
+                f.write(f'    line "{t}" [{", ".join(vals)}]\n')
+            f.write("```\n\n")
+
+        avg_mos = (lambda rk, sc: stats[rk][sc]["mos_sum"] / stats[rk][sc]["mos_count"]
+                   if stats[rk][sc]["mos_count"] > 0 else None)
+        worst_mos = (lambda rk, sc: stats[rk][sc]["mos_min"]
+                     if stats[rk][sc]["mos_count"] > 0 else None)
+        stereo_fid = (lambda rk, sc: 1.0 - (stats[rk][sc]["ic_sum"] / stats[rk][sc]["ic_count"])
+                      if stats[rk][sc]["ic_count"] > 0 else None)
+
+        for fam in scenario_families(scenarios):
+            fam_scenarios = sorted(
+                [sc for sc in scenarios if scenario_family(sc) == fam],
+                key=get_scenario_sort_key)
+            if not fam_scenarios:
+                continue
+            label = family_label(fam)
+
+            f.write(f"### {label} Quality Across Bitrates\n\n")
+            family_chart(fam_scenarios,
+                         f"{label} Quality across Bitrates (Average MOS)",
+                         "MOS Score", "1.0 --> 5.0", avg_mos)
+
+            f.write(f"<details><summary><b>View Detailed {label} Average & Worst MOS Tables</b></summary>\n\n")
+            f.write(f"#### Per-Scenario Average MOS ({label})\n\n")
+            render_metric_tables(avg_mos, lambda v: f"{v:.3f}",
+                                 filter_scenarios=fam_scenarios, max_scale=5.0)
+            f.write(f"#### Per-Scenario Worst MOS (Min Clip MOS - {label})\n\n")
             f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
-            render_metric_tables(
-                lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
-                lambda v: f"{v:.3f}",
-                filter_scenarios=audio_scenarios,
-                max_scale=5.0
-            )
+            render_metric_tables(worst_mos, lambda v: f"{v:.3f}",
+                                 filter_scenarios=fam_scenarios, max_scale=5.0)
             f.write("</details>\n\n")
 
-        # 2. Mono Speech Quality
-        if speech_scenarios:
-            f.write("### Mono Speech Quality Across Bitrates\n\n")
-            if not skip_graphs and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in speech_scenarios]
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Mono Speech Quality across Bitrates (Average MOS)"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "MOS Score" 1.0 --> 5.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_mos = []
-                    for s in speech_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["mos_count"] > 0:
-                            scen_mos.append(f"{stats[rk][s]['mos_sum'] / stats[rk][s]['mos_count']:.3f}")
-                        else:
-                            scen_mos.append("0.0")
-                    f.write(f'    line "{t}" [{", ".join(scen_mos)}]\n')
-                f.write("```\n\n")
-
-            f.write("<details><summary><b>View Detailed Mono Speech Average & Worst MOS Tables</b></summary>\n\n")
-            f.write("#### Per-Scenario Average MOS (Mono Speech)\n\n")
-            render_metric_tables(
-                lambda rk, s: stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None,
-                lambda v: f"{v:.3f}",
-                filter_scenarios=speech_scenarios,
-                max_scale=5.0
-            )
-            f.write("#### Per-Scenario Worst MOS (Min Clip MOS - Mono Speech)\n\n")
-            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
-            render_metric_tables(
-                lambda rk, s: stats[rk][s]["mos_min"] if stats[rk][s]["mos_count"] > 0 else None,
-                lambda v: f"{v:.3f}",
-                filter_scenarios=speech_scenarios,
-                max_scale=5.0
-            )
-            f.write("</details>\n\n")
-
-        # 3. Stereo Image Fidelity
-        if audio_scenarios:
-            f.write("### Stereo Image Fidelity\n\n")
+            # Stereo image fidelity is undefined for mono families.
+            if scenario_channels(SCENARIOS.get(fam_scenarios[0], {})) < 2:
+                continue
+            f.write(f"### Stereo Image Fidelity ({label})\n\n")
             f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
-            if not skip_graphs and top_tools:
-                scen_labels = [f'"{SCENARIOS.get(s, {}).get("bitrate", s)}k"' for s in audio_scenarios]
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write('    title "Stereo Image Fidelity across Bitrates (Higher is Better)"\n')
-                f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-                f.write('    y-axis "Stereo Fidelity" 0.0 --> 1.0\n')
-                for t in top_tools:
-                    candidates = tool_row_keys[t]
-                    scen_ic = []
-                    for s in audio_scenarios:
-                        rk = scenario_best_row_key(candidates, s)
-                        if rk and stats[rk][s]["ic_count"] > 0:
-                            scen_ic.append(f"{1.0 - (stats[rk][s]['ic_sum'] / stats[rk][s]['ic_count']):.4f}")
-                        else:
-                            scen_ic.append("0.0")
-                    f.write(f'    line "{t}" [{", ".join(scen_ic)}]\n')
-                f.write("```\n\n")
-
-            f.write("<details><summary><b>View Detailed Stereo Fidelity Table</b></summary>\n\n")
-            render_metric_tables(
-                lambda rk, s: 1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None,
-                lambda v: f"{v:.4f}",
-                filter_scenarios=audio_scenarios,
-                max_scale=1.0
-            )
+            family_chart(fam_scenarios,
+                         f"Stereo Image Fidelity across Bitrates - {label} (Higher is Better)",
+                         "Stereo Fidelity", "0.0 --> 1.0", stereo_fid)
+            f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({label})</b></summary>\n\n")
+            render_metric_tables(stereo_fid, lambda v: f"{v:.4f}",
+                                 filter_scenarios=fam_scenarios, max_scale=1.0)
             f.write("</details>\n\n")
 
         # 4. Transient Fidelity

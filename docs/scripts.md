@@ -146,6 +146,24 @@ python3 scripts/cmp_sweep.py out_leverD FAAC_TNS_COEFF_THRESH 1.0,1.5,2.0
 
 ## Calibration
 
+### `scripts/validate_scenarios.py`
+
+Checks that every scenario asks for a bitrate its content can actually carry:
+encodes each scenario's gate clips and reports achieved-vs-target, exiting
+non-zero on anything outside the tolerance (default ±15%, with the documented
+48 kHz VBR dead zone exempt). **Run it before adding or retuning a scenario** —
+a target the format cannot reach becomes a permanent accuracy deficit in every
+report that no code change can fix, which is why `16k_mono_40k` was retired.
+
+On a stock LC-only faac the HE-AAC-targeted stereo scenarios (24-56 kbps) read
+as large overshoots; that is a property of the binary, not the scenario. The
+script prints which binary it used.
+
+```bash
+python3 scripts/validate_scenarios.py [--scenarios NAME|FAMILY,...] \
+    [--rate-control abr|vbr] [--tolerance 15] [--faac-bin PATH]
+```
+
 ### `scripts/calibrate_vbr_q.py`
 
 Regenerates `config.py`'s per-scenario `vbr_q` table: grid-searches faac's
@@ -156,7 +174,7 @@ search rather than a linear formula). Prints a table and a ready-to-paste
 change that could shift its quantizer/bitrate curve.
 
 ```bash
-python3 scripts/calibrate_vbr_q.py [--scenarios NAME,...]
+python3 scripts/calibrate_vbr_q.py [--scenarios NAME|FAMILY,...]
 ```
 
 ## Build/perf investigations

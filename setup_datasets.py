@@ -17,6 +17,7 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 """
 
+import argparse
 import os
 import urllib.request
 import zipfile
@@ -90,6 +91,15 @@ def get_info(wav_path):
             return frames / float(rate), channels
     except BaseException:
         return 0, 2
+
+
+def get_rate(wav_path):
+    """Source sample rate, or 0 if unreadable."""
+    try:
+        with wave.open(wav_path, 'rb') as f:
+            return f.getframerate()
+    except BaseException:
+        return 0
 
 
 def resample(
@@ -170,38 +180,89 @@ def setup_pmlt():
             loop=loop)
 
 
-def setup_tcd_voip():
-    dataset_info = DATASETS["TCD-VOIP"]
-    src_dir = os.path.join(TEMP_DIR, "TCD-VOIP-harte2015tcd")
-    dest_dir = os.path.join(BASE_DATA_DIR, "speech")
+def _tcd_wav_files(src_dir, clean):
+    """Walk the TCD-VoIP tree for either the clean references or the degraded set.
 
+    The `ref/` folders hold the undegraded source recordings. They used to be
+    skipped outright, which meant every speech scenario measured codec
+    artifacts on top of pre-existing chop/clip/echo/noise -- the degradation
+    sits in ViSQOL's reference, widening the variance a real regression has to
+    clear. They are now their own corpus.
+    """
     wav_files = []
     for root, dirs, files in os.walk(src_dir):
-        # Do not use any wave files if they're in a "ref" folder
-        if "ref" in root.split(os.sep):
+        is_ref = "ref" in root.split(os.sep)
+        if is_ref != clean:
             continue
-
         for f in files:
-            if f.endswith(".wav") and ("Test Set" in root or "chop" in root):
+            if not f.endswith(".wav"):
+                continue
+            if clean or "Test Set" in root or "chop" in root:
                 wav_files.append(os.path.join(root, f))
+    return wav_files
 
-    print(f"Found {len(wav_files)} valid samples for {dataset_info['name']}.")
+
+def _build_speech_corpus(src_dir, dest_dir, rate, label):
+    """Resample a set of TCD-VoIP WAVs into one fixed-format corpus."""
+    clean = "clean" in os.path.basename(dest_dir)
+    wav_files = _tcd_wav_files(src_dir, clean=clean)
+
+    print(f"Found {len(wav_files)} valid samples for {label}.")
+    skipped = 0
     for i, wav in enumerate(wav_files):
-        print(f"  [{i + 1}/{len(wav_files)}] Processing {os.path.basename(wav)}...")
         dur, chans = get_info(wav)
+        src_rate = get_rate(wav)
+        # Never upsample into a corpus: a 24 kHz corpus built from 16 kHz
+        # sources would be inventing bandwidth the benchmark then claims to
+        # measure.
+        if src_rate and src_rate < rate:
+            skipped += 1
+            continue
+        print(f"  [{i + 1}/{len(wav_files)}] Processing {os.path.basename(wav)}...")
         start, duration, loop = get_tier_params(dur)
+        output = os.path.join(dest_dir, os.path.basename(wav))
+        resample(wav, output, rate, 1, start=start, duration=duration, loop=loop)
 
-        filename = os.path.basename(wav)
-        output = os.path.join(dest_dir, filename)
-        # ViSQOL speech mode requires 16k mono
-        resample(
-            wav,
-            output,
-            16000,
-            1,
-            start=start,
-            duration=duration,
-            loop=loop)
+    if skipped:
+        print(f"  WARNING: skipped {skipped} source(s) below {rate} Hz rather than "
+              f"upsampling them into {os.path.basename(dest_dir)}.")
+
+
+def setup_tcd_voip():
+    """The degraded VoIP test set (data/external/speech)."""
+    dataset_info = DATASETS["TCD-VOIP"]
+    src_dir = os.path.join(TEMP_DIR, "TCD-VOIP-harte2015tcd")
+    # ViSQOL speech mode requires 16k mono
+    _build_speech_corpus(src_dir, os.path.join(BASE_DATA_DIR, "speech"),
+                         16000, dataset_info["name"])
+
+
+def setup_tcd_ref(rate, dest_name):
+    """The clean reference recordings, at `rate` mono."""
+    src_dir = os.path.join(TEMP_DIR, "TCD-VOIP-harte2015tcd")
+    _build_speech_corpus(src_dir, os.path.join(BASE_DATA_DIR, dest_name),
+                         rate, f"TCD-VoIP clean references @ {rate} Hz")
+
+
+def setup_derived_audio(dest_name, rate):
+    """Build a music corpus by resampling the 48 kHz one already on disk.
+
+    No re-download: data/external/audio is the source. Downsampling is honest
+    here -- the derived file is itself the reference every metric scores
+    against, so the comparison stays self-consistent.
+    """
+    src_dir = os.path.join(BASE_DATA_DIR, "audio")
+    dest_dir = os.path.join(BASE_DATA_DIR, dest_name)
+    if not os.path.isdir(src_dir):
+        print(f"  WARNING: {src_dir} missing; cannot build {dest_name}.")
+        return
+
+    wav_files = sorted(f for f in os.listdir(src_dir) if f.endswith(".wav"))
+    print(f"Found {len(wav_files)} samples to derive {dest_name} @ {rate} Hz.")
+    for i, filename in enumerate(wav_files):
+        print(f"  [{i + 1}/{len(wav_files)}] Processing {filename}...")
+        resample(os.path.join(src_dir, filename),
+                 os.path.join(dest_dir, filename), rate, 2)
 
 
 def setup_soundexpert():
@@ -314,21 +375,66 @@ def setup_realistic_throughput_signals(dest_dir):
                   f"{e.stderr.decode() if e.stderr else e}")
 
 
-if __name__ == "__main__":
-    if not os.path.exists(BASE_DATA_DIR):
-        for name, info in DATASETS.items():
-            download_and_extract(name, info["url"])
+# Which builder produces each corpus directory, and which dataset zips it needs.
+# Keyed by the "dir" of each entry in config.CORPORA.
+CORPUS_BUILDERS = {
+    "audio": (["PMLT2014", "SoundExpert"], lambda: (setup_pmlt(), setup_soundexpert())),
+    "speech": (["TCD-VOIP"], setup_tcd_voip),
+    "speech_clean_16k": (["TCD-VOIP"], lambda: setup_tcd_ref(16000, "speech_clean_16k")),
+    "speech_clean_24k": (["TCD-VOIP"], lambda: setup_tcd_ref(24000, "speech_clean_24k")),
+    # Derived from data/external/audio, so no dataset download is required --
+    # but "audio" must exist first, which build order below guarantees.
+    "audio_44k1": ([], lambda: setup_derived_audio("audio_44k1", 44100)),
+    "audio_32k": ([], lambda: setup_derived_audio("audio_32k", 32000)),
+}
 
-        setup_pmlt()
-        setup_tcd_voip()
-        setup_soundexpert()
-        setup_throughput_signals()
+# Build order matters: the derived music corpora read data/external/audio.
+BUILD_ORDER = ["audio", "speech", "speech_clean_16k", "speech_clean_24k",
+               "audio_44k1", "audio_32k"]
+
+
+def corpus_is_populated(dirname):
+    path = os.path.join(BASE_DATA_DIR, dirname)
+    return os.path.isdir(path) and any(f.endswith(".wav") for f in os.listdir(path))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download and build the reference corpora.")
+    parser.add_argument("--force", action="store_true",
+                        help="Rebuild every corpus even if it already exists.")
+    args = parser.parse_args()
+
+    # Per-corpus, not all-or-nothing. The old guard was
+    # `if not os.path.exists(BASE_DATA_DIR)`, so an existing checkout could
+    # never gain a corpus that was added later -- it would silently run with
+    # whatever it happened to have.
+    todo = [d for d in BUILD_ORDER
+            if args.force or not corpus_is_populated(d)]
+
+    if todo:
+        needed_zips = []
+        for dirname in todo:
+            for zip_name in CORPUS_BUILDERS[dirname][0]:
+                if zip_name not in needed_zips:
+                    needed_zips.append(zip_name)
+
+        for zip_name in needed_zips:
+            download_and_extract(zip_name, DATASETS[zip_name]["url"])
+
+        for dirname in todo:
+            print(f"\n>>> Building corpus: {dirname}")
+            CORPUS_BUILDERS[dirname][1]()
 
         if os.path.exists(TEMP_DIR):
             shutil.rmtree(TEMP_DIR)
     else:
-        # Always check for throughput signals as they are vital for stable
-        # metrics
-        setup_throughput_signals()
-        print("Datasets already setup.")
+        print("All corpora already present.")
+
+    # Always check for throughput signals as they are vital for stable metrics
+    setup_throughput_signals()
     print("Done.")
+
+
+if __name__ == "__main__":
+    main()

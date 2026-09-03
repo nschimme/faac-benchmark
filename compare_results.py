@@ -22,7 +22,8 @@ import sys
 import os
 import argparse
 from collections import defaultdict
-from utils import get_scenario_sort_key
+from utils import (get_scenario_sort_key, scenario_family, scenario_families,
+                   family_label, format_scenario_rate)
 import transient
 
 
@@ -1112,6 +1113,31 @@ def main():
     else:
         summary_lines.extend(render_summary_table(global_metrics, mos_label, modes_present[0].upper()))
 
+    # Per-family MOS rollup. With five rate families in the matrix, "did any
+    # family regress?" should be answerable without scanning every row of the
+    # scenario table below -- that table only needs reading once something
+    # here is red.
+    family_deltas = defaultdict(list)
+    for suite_data in all_suite_data.values():
+        for sc_name, sc_stats in suite_data["scenario_stats"].items():
+            family_deltas[scenario_family(sc_name)] += sc_stats.get("mos_deltas", [])
+
+    families_with_data = [f for f in scenario_families(family_deltas.keys())
+                          if family_deltas[f]]
+    if len(families_with_data) > 1:
+        summary_lines.append(f"\n#### {mos_label} Δ by Rate Family")
+        summary_lines.append(f"| Family | {mos_label} Δ | 95% Conf. Interval | Clips |")
+        summary_lines.append("| :--- | :---: | :---: | :---: |")
+        for fam in families_with_data:
+            deltas = family_deltas[fam]
+            mean = sum(deltas) / len(deltas)
+            ci = bootstrap_mean_ci(deltas)
+            ci_str = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]" if ci else "N/A"
+            if ci and not (ci["lo"] <= 0 <= ci["hi"]):
+                ci_str += " ✳"
+            summary_lines.append(
+                f"| {family_label(fam)} | {mean:+.3f} | {ci_str} | {len(deltas)} |")
+
     # Build the full report
     report = list(summary_lines)
 
@@ -1132,8 +1158,8 @@ def main():
                 report.append(f"\n#### {mode.upper()} Scenario Performance")
 
             bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
-            report.append(f"| Scenario | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
-            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+            report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
+            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
             mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
             for suite_data in all_suite_data.values():
@@ -1155,7 +1181,16 @@ def main():
                     mode_scenario_stats[sc_name]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
                     mode_scenario_stats[sc_name]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
 
+            # One table, not one per family: in CI the job here is "scan for a
+            # regressed row", and five tables means five places to look. The
+            # sort key keeps families contiguous; a bold separator row renders
+            # as a subhead inside the single table.
+            current_family = None
             for sc_name in sorted(mode_scenario_stats.keys(), key=get_scenario_sort_key):
+                fam = scenario_family(sc_name)
+                if fam != current_family:
+                    current_family = fam
+                    report.append(f"| **{family_label(fam)}** | | | | | | | | |")
                 gs = mode_scenario_stats[sc_name]
                 sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
                 sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
@@ -1202,7 +1237,7 @@ def main():
                     sc_ci, sc_wl = "N/A", "N/A"
 
                 report.append(
-                    f"| {sc_name} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
+                    f"| {sc_name} | {format_scenario_rate(sc_name)} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
                     f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_bitrate_val} |")
 
         report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")

@@ -28,13 +28,14 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
-from utils import (decode_validate, calculate_provenance_hash, get_binary_size,
+from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
+                   decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
                    get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+from config import SCENARIOS, CORPORA, GATE_CLIPS, GATE_FALLBACK_N
 
 
 def gate_filter(name, filtered_samples):
@@ -247,22 +248,28 @@ def run_benchmark(
 
         scenario_list = SCENARIOS.keys()
         if scenarios:
-            scenario_list = [s.strip() for s in scenarios.split(",")]
+            scenario_list = expand_scenario_list(scenarios)
 
         for name in scenario_list:
             if name not in SCENARIOS:
                 print(f"  [Scenario: {name}] Warning: Scenario not found in config, skipping.")
                 continue
             cfg = SCENARIOS[name]
-            data_subdir = "speech" if cfg["mode"] == "speech" else "audio"
-            data_dir = os.path.join(EXTERNAL_DATA_DIR, data_subdir)
+            data_dir = corpus_dir(cfg, EXTERNAL_DATA_DIR)
             if not os.path.exists(data_dir):
                 print(
                     f"  [Scenario: {name}] Data directory {data_dir} not found, skipping.")
                 continue
 
-            all_samples = sorted(
-                [f for f in os.listdir(data_dir) if f.endswith(".wav")])
+            # The corpus's own deterministic cap (stratified, so no
+            # degradation type or talker is dropped) is what bounds a full
+            # run, and it applies before --include/--exclude/--coverage.
+            # --gate does its own bounding from a curated list, so the cap is
+            # skipped there -- applying both would silently drop gate clips
+            # that the cap happened not to select.
+            wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
+            all_samples = sorted(wavs) if gate else select_corpus_clips(
+                wavs, CORPORA.get(cfg["corpus"], {}))
 
             # Apply include/exclude filters
             filtered_samples = []

@@ -83,6 +83,163 @@ class TestGateFilter(unittest.TestCase):
         self.assertEqual([], self.gate_filter("48k_stereo_64k", []))
 
 
+class TestScenarioMatrix(unittest.TestCase):
+    """Invariants a new scenario or corpus must not break."""
+
+    def setUp(self):
+        from config import SCENARIOS, CORPORA, FAMILY_ORDER, METRIC_RATE
+        self.SCENARIOS, self.CORPORA = SCENARIOS, CORPORA
+        self.FAMILY_ORDER, self.METRIC_RATE = FAMILY_ORDER, METRIC_RATE
+
+    def test_every_scenario_has_a_known_corpus(self):
+        for name, cfg in self.SCENARIOS.items():
+            self.assertIn(cfg["corpus"], self.CORPORA, f"{name} points at an unknown corpus")
+
+    def test_corpus_directories_are_distinct(self):
+        dirs = [c["dir"] for c in self.CORPORA.values()]
+        self.assertEqual(len(dirs), len(set(dirs)), "two corpora share a directory")
+
+    def test_scoring_rate_matches_metric_engine(self):
+        # ViSQOL speech mode is 16 kHz mono and Zimtohrli is 48 kHz; any other
+        # value is a rate neither engine accepts.
+        for name, cfg in self.SCENARIOS.items():
+            self.assertEqual(cfg["visqol_rate"], self.METRIC_RATE[cfg["mode"]],
+                             f"{name} scores at a rate its engine does not accept")
+
+    def test_speech_mode_is_mono(self):
+        for name, cfg in self.SCENARIOS.items():
+            if cfg["mode"] == "speech":
+                self.assertEqual(cfg["channels"], 1, f"{name} scores stereo in speech mode")
+
+    def test_every_family_is_ordered(self):
+        for corpus_name, corpus in self.CORPORA.items():
+            self.assertIn(corpus["family"], self.FAMILY_ORDER,
+                          f"{corpus_name}'s family is missing from FAMILY_ORDER")
+
+
+class TestScenarioSortKey(unittest.TestCase):
+    def setUp(self):
+        from utils import get_scenario_sort_key
+        self.key = get_scenario_sort_key
+
+    def test_decimal_rate_name_parses(self):
+        # 44k1 means 44100 Hz, not 44000.
+        self.assertEqual(self.key("44k1_stereo_128k")[1], 44100)
+
+    def test_families_stay_contiguous(self):
+        # Rate outranks bitrate: 32k_stereo_48k must not land beside
+        # 48k_stereo_48k just because they share a bitrate.
+        from config import SCENARIOS
+        order = sorted(SCENARIOS, key=self.key)
+        seen, last = set(), None
+        for name in order:
+            fam = self.key(name)[0]
+            if fam != last:
+                self.assertNotIn(fam, seen, f"family {fam} is split across the ordering")
+                seen.add(fam)
+                last = fam
+
+    def test_retired_scenario_name_still_parses(self):
+        # Archived result JSONs still name scenarios that no longer exist.
+        self.assertEqual(self.key("16k_mono_40k")[1:4], (16000, 1, 40))
+
+
+class TestSelectCorpusClips(unittest.TestCase):
+    def setUp(self):
+        from utils import select_corpus_clips
+        self.select = select_corpus_clips
+        self.voip = [f"C_{c:02d}_{deg}_{talker}.wav"
+                     for c in range(1, 21)
+                     for deg in ("CHOP", "CLIP", "ECHO", "NOISE", "COMPSPKR")
+                     for talker in ("FA", "FG", "MK", "ML")]
+        self.corpus = {"max_clips": 40, "strata": r"_([A-Z]+)_([A-Z]{2})\.wav$"}
+
+    def test_under_cap_is_untouched(self):
+        files = ["b.wav", "a.wav"]
+        self.assertEqual(self.select(files, {"max_clips": 40}), ["a.wav", "b.wav"])
+
+    def test_cap_is_honoured(self):
+        self.assertEqual(len(self.select(self.voip, self.corpus)), 40)
+
+    def test_every_stratum_survives(self):
+        # A prefix slice would keep only CHOP/CLIP; round-robin must not drop
+        # a whole degradation type or talker.
+        picked = self.select(self.voip, self.corpus)
+        for deg in ("CHOP", "CLIP", "ECHO", "NOISE", "COMPSPKR"):
+            self.assertTrue(any(f"_{deg}_" in f for f in picked), f"{deg} dropped")
+        for talker in ("FA", "FG", "MK", "ML"):
+            self.assertTrue(any(f.endswith(f"_{talker}.wav") for f in picked), f"{talker} dropped")
+
+    def test_selection_is_deterministic(self):
+        self.assertEqual(self.select(self.voip, self.corpus),
+                         self.select(list(reversed(self.voip)), self.corpus))
+
+    def test_unmatched_names_fall_back_to_a_stride(self):
+        files = [f"clip_{i}.wav" for i in range(100)]
+        picked = self.select(files, self.corpus)
+        self.assertEqual(len(picked), 40)
+
+
+class TestGateClipsSurviveCorpusCap(unittest.TestCase):
+    """A corpus cap must never eat a scenario's curated gate clips.
+
+    It did: the cap ran first and 16k_mono_voip_24k's 4 gate clips came out of
+    a 48-clip stratified subset that happened to contain only one of them, so
+    --gate quietly ran a single clip for that scenario.
+    """
+
+    # The real TCD-VoIP listing shape: 20 conditions x 5 degradations x 4 talkers.
+    VOIP_FILES = sorted(
+        f"C_{c:02d}_{deg}_{talker}.wav"
+        for c in range(1, 21)
+        for deg in ("CHOP", "CLIP", "COMPSPKR", "ECHO", "NOISE")
+        for talker in ("FA", "FG", "MK", "ML"))
+
+    def test_capping_first_would_lose_gate_clips(self):
+        # Guards the premise: if this ever stops being true the bug cannot
+        # recur and the skip below is free to be simplified away.
+        from config import CORPORA, GATE_CLIPS
+        from utils import select_corpus_clips
+        clips = GATE_CLIPS["16k_mono_voip_24k"]
+        capped = select_corpus_clips(self.VOIP_FILES, CORPORA["speech_voip_16k"])
+        self.assertTrue(set(clips) - set(capped),
+                        "the cap now happens to keep every gate clip; premise stale")
+
+    def test_gate_mode_keeps_every_gate_clip(self):
+        from config import GATE_CLIPS
+        from phase1_encode import gate_filter
+        clips = GATE_CLIPS["16k_mono_voip_24k"]
+        # Gate mode passes the uncapped listing through, so gate_filter sees
+        # all four curated clips.
+        picked = gate_filter("16k_mono_voip_24k", self.VOIP_FILES)
+        self.assertEqual(sorted(picked), sorted(clips))
+
+    def test_phase1_skips_the_cap_in_gate_mode(self):
+        import inspect
+        import phase1_encode
+        src = inspect.getsource(phase1_encode.run_benchmark)
+        self.assertIn("if gate else select_corpus_clips", src)
+
+
+class TestExpandScenarioList(unittest.TestCase):
+    def setUp(self):
+        from utils import expand_scenario_list
+        self.expand = expand_scenario_list
+
+    def test_family_expands_to_its_members(self):
+        self.assertEqual(self.expand("44k1_stereo"),
+                         ["44k1_stereo_64k", "44k1_stereo_128k", "44k1_stereo_192k"])
+
+    def test_scenario_name_passes_through(self):
+        self.assertEqual(self.expand("48k_stereo_128k"), ["48k_stereo_128k"])
+
+    def test_unknown_name_is_preserved_for_the_callers_warning(self):
+        self.assertEqual(self.expand("nope"), ["nope"])
+
+    def test_duplicates_are_dropped(self):
+        self.assertEqual(self.expand("44k1_stereo,44k1_stereo_64k").count("44k1_stereo_64k"), 1)
+
+
 class TestSweepRejectsBitrate(unittest.TestCase):
     def test_sweep_without_scenarios_fails(self):
         r = subprocess.run(
@@ -818,12 +975,16 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "leaderboard.md")
             scenario_list = ["48k_stereo_128k", "48k_stereo_32k", "48k_stereo_16k"]
-            from config import SCENARIOS
-            SCENARIOS["48k_stereo_128k"] = {"mode": "audio", "bitrate": 128, "rate": 48000}
-            SCENARIOS["48k_stereo_32k"] = {"mode": "audio", "bitrate": 32, "rate": 48000}
-            SCENARIOS["48k_stereo_16k"] = {"mode": "audio", "bitrate": 16, "rate": 48000}
-
-            generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
+            # patch.dict, not assignment: this used to overwrite the real
+            # SCENARIOS entries for the rest of the process, so whichever test
+            # ran next saw a synthetic matrix.
+            import config
+            fake = {n: {"mode": "audio", "corpus": "audio_48k", "bitrate": b,
+                        "rate": 48000, "channels": 2, "visqol_rate": 48000}
+                    for n, b in (("48k_stereo_128k", 128), ("48k_stereo_32k", 32),
+                                 ("48k_stereo_16k", 16))}
+            with patch.dict(config.SCENARIOS, fake):
+                generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
 
             with open(out_md) as f:
                 content = f.read()

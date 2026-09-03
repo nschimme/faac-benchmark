@@ -15,7 +15,7 @@ import argparse
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
-from utils import load_results, get_aac_path, get_scenario_sort_key
+from utils import load_results, get_aac_path, get_scenario_sort_key, corpus_dir
 
 OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
 EXTERNAL_DATA_DIR = os.path.join(ROOT_DIR, "data", "external")
@@ -33,7 +33,7 @@ def _band_report(rows, scenario, file_a, file_b, top, matrix_a):
         return
     cfg = SCENARIOS.get(scenario, {})
     mode = "speech" if cfg.get("mode") == "speech" else "audio"
-    data_dir = os.path.join(EXTERNAL_DATA_DIR, "speech" if mode == "speech" else "audio")
+    data_dir = corpus_dir(cfg, EXTERNAL_DATA_DIR)
     for d, k, ma, mb, *_ in sorted(rows)[:top]:
         if d >= -0.01:
             continue
