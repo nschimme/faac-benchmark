@@ -42,7 +42,7 @@ Common options:
 | Flag | Purpose |
 | :--- | :--- |
 | `--rate-control abr\|vbr` | Choose rate control mode (`abr` using `-b` bitrates, or `vbr` using `-q` quality targets) |
-| `--scenarios 16k_mono_16k,48k_stereo_64k` | Restrict to specific scenarios (default: all) |
+| `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
@@ -53,7 +53,7 @@ Common options:
 The script runs three phases:
 
 1. **Phase 1** — encodes samples, measures throughput (via deterministic Cachegrind instruction counts when `valgrind` is installed, or wall-clock timing fallback), library size, and decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
-2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for speech/16kHz scenarios) or `Zimtohrli` (for audio scenarios).
+2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for `speech`-mode scenarios) or `Zimtohrli` (for `audio`-mode ones); the engine follows the scenario's mode, not its sample rate.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
 
@@ -70,8 +70,10 @@ python3 run_benchmark.py ... --exclude-tests "white_noise.wav"
 For quick iteration, `--gate` runs a small, fixed, reproducible set of clips per
 scenario (`config.GATE_CLIPS`) curated to span the strata that matter (percussive
 vs tonal music; chop/noise/echo speech). Scenarios without a curated list fall
-back to a deterministic even-spaced slice, so `--gate` always works. Use the full
-run (or `--coverage 100`) only for the final check.
+back to a deterministic even-spaced slice, so `--gate` always works. `--gate`
+also bypasses a corpus's `max_clips` cap, so a curated clip is never dropped by
+the cap before the gate list is applied. Use the full run (or `--coverage 100`)
+only for the final check.
 
 ## A/B comparison (`--compare`)
 

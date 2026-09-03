@@ -110,7 +110,7 @@ Runs the encoding benchmark and MOS computation for a single configuration.
 | `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
 | `sha` | Commit SHA to associate with these results. | No | `${{ github.sha }}` |
-| `scenarios` | Comma-separated scenarios (e.g. `16k_mono_16k,48k_stereo_128k`). | No | |
+| `scenarios` | Comma-separated scenarios or rate families (e.g. `16k_mono_20k,44k1_stereo`). | No | |
 | `include-tests` | Comma-separated include globs (e.g. `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated exclude globs. | No | |
 

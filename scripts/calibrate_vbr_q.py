@@ -37,8 +37,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import shutil
-from config import SCENARIOS, GATE_CLIPS
-from utils import is_faac_legacy
+from config import SCENARIOS, GATE_CLIPS, GATE_FALLBACK_N
+from utils import is_faac_legacy, corpus_dir, expand_scenario_list
 
 DATA_DIR = "data/external"
 
@@ -71,11 +71,28 @@ def avg_kbps_for_q(q, samples, tmp):
     return (total_bits / 1000) / total_dur
 
 
-def calibrate(name, cfg, tmp):
-    subdir = "speech" if cfg["mode"] == "speech" else "audio"
+def gate_samples(name, cfg):
+    """The scenario's gate clips, or a deterministic slice when it has none.
+
+    Corpora added with the rate rework (the clean-speech ones) have no curated
+    gate list, so falling back to a slice keeps them calibratable.
+    """
+    data_dir = corpus_dir(cfg, DATA_DIR)
     clips = GATE_CLIPS.get(name, [])
-    samples = [os.path.join(DATA_DIR, subdir, c) for c in clips]
+    samples = [os.path.join(data_dir, c) for c in clips]
     samples = [s for s in samples if os.path.exists(s)]
+    if samples or not os.path.isdir(data_dir):
+        return samples
+    avail = sorted(f for f in os.listdir(data_dir) if f.endswith(".wav"))
+    n = min(GATE_FALLBACK_N, len(avail))
+    if n <= 0:
+        return []
+    step = len(avail) / n
+    return [os.path.join(data_dir, avail[int(i * step)]) for i in range(n)]
+
+
+def calibrate(name, cfg, tmp):
+    samples = gate_samples(name, cfg)
     target = cfg["bitrate"]
 
     # Coarse grid, then refine around the best candidate. A binary search
@@ -101,10 +118,10 @@ def main():
     parser.add_argument("--scenarios", help="Comma-separated scenario names (default: all)")
     args = parser.parse_args()
 
-    names = [s.strip() for s in args.scenarios.split(",")] if args.scenarios else list(SCENARIOS.keys())
+    names = expand_scenario_list(args.scenarios) if args.scenarios else list(SCENARIOS.keys())
     tmp = "/tmp/_calibrate_vbr_q.m4a"
 
-    print(f"{'scenario':<18}{'target':>8}{'chosen_q':>10}{'actual':>10}{'err%':>8}")
+    print(f"{'scenario':<20}{'target':>8}{'chosen_q':>10}{'actual':>10}{'err%':>8}")
     results = {}
     for name in names:
         if name not in SCENARIOS:
@@ -114,7 +131,7 @@ def main():
         q, kbps = calibrate(name, cfg, tmp)
         results[name] = q
         target = cfg["bitrate"]
-        print(f"{name:<18}{target:>8}{q:>10}{kbps:>10.1f}{100*(kbps-target)/target:>7.1f}%")
+        print(f"{name:<20}{target:>8}{q:>10}{kbps:>10.1f}{100*(kbps-target)/target:>7.1f}%")
 
     print("\nvbr_q values:")
     for name, q in results.items():
