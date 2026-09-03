@@ -150,8 +150,10 @@ python3 scripts/cmp_sweep.py out_leverD FAAC_TNS_COEFF_THRESH 1.0,1.5,2.0
 
 Checks that every scenario asks for a bitrate its content can actually carry:
 encodes each scenario's gate clips and reports achieved-vs-target, exiting
-non-zero on anything outside the tolerance (default ±15%, with the documented
-48 kHz VBR dead zone exempt). **Run it before adding or retuning a scenario** —
+non-zero on anything outside the tolerance (default ±15%). Two exemption lists
+are reported but never fail: the documented 48 kHz VBR dead zone, and
+`PENDING_UPSTREAM` — scenarios that are out of range only because of a known
+encoder defect with a fix in flight, each entry naming the fix. **Run it before adding or retuning a scenario** —
 a target the format cannot reach becomes a permanent accuracy deficit in every
 report that no code change can fix, which is why `16k_mono_40k` was retired.
 

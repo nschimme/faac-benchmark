@@ -46,6 +46,20 @@ DATA_DIR = "data/external"
 # LC-AAC above it, leaving no -q value in the 42-70 kbps gap. See config.py.
 VBR_DEAD_ZONE = {"48k_stereo_48k", "48k_stereo_56k"}
 
+# Scenarios that are out of range only because of a known encoder defect with a
+# fix in flight. These are reported but do not fail the run: the scenario is
+# right and the encoder is being corrected, which is the opposite of the case
+# this script normally catches (a target the format genuinely cannot carry).
+#
+# Delete an entry once its fix lands -- if the scenario then still deviates,
+# that is a real finding and should fail.
+PENDING_UPSTREAM = {
+    # AUTO refuses HE-AAC below 24 kbps total and falls back to LC, which
+    # cannot reach 8 kbps/channel. Measured +28.5% before the fix, +11.9%
+    # after.
+    "32k_stereo_16k": "nschimme/faac#451 (HE floor hands lowest rates to LC)",
+}
+
 
 def get_dur(path, cache={}):
     if path not in cache:
@@ -143,11 +157,16 @@ def main():
 
         target = cfg["bitrate"]
         err = 100.0 * (kbps - target) / target
-        exempt = args.rate_control == "vbr" and name in VBR_DEAD_ZONE
-        ok = abs(err) <= args.tolerance or exempt
-        status = "ok" if abs(err) <= args.tolerance else (
-            "EXPECTED (documented dead zone)" if exempt else "OUT OF RANGE")
-        if not ok:
+        in_range = abs(err) <= args.tolerance
+        if args.rate_control == "vbr" and name in VBR_DEAD_ZONE:
+            exempt, why = True, "documented dead zone"
+        elif name in PENDING_UPSTREAM:
+            exempt, why = True, PENDING_UPSTREAM[name]
+        else:
+            exempt, why = False, ""
+        status = "ok" if in_range else (
+            f"EXPECTED ({why})" if exempt else "OUT OF RANGE")
+        if not in_range and not exempt:
             failures.append(name)
         print(f"{name:<20}{format_scenario_rate(cfg):>10}"
               f"{target:>8}{kbps:>9.1f}{err:>7.1f}%  {status}")

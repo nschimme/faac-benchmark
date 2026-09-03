@@ -19,6 +19,10 @@
 - Sample rate and channel count live in `config.CORPORA`, never in a scenario
   and never derived from `mode` (which now only picks the metric engine). Use
   `utils.corpus_dir/scenario_channels/scenario_rate`.
+- Object-type AUTO resolution is build-dependent, not a fixed function of
+  bitrate: HE-AAC reaches 96 kbps on master but only 48 kbps on
+  `bandwidth-curve-smoothing`. `ffprobe` the output before claiming a scenario
+  exercises HE or LC.
 - A new or retuned scenario must pass `python3 scripts/validate_scenarios.py`
   (achieved bitrate within ±15% of target). A target the format cannot carry is
   a permanent accuracy deficit in every report — that is why `16k_mono_40k` was

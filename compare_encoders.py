@@ -137,12 +137,15 @@ def use_he_aac(bitrate_kbps, channels, sample_rate):
     Centralized heuristic for selecting HE-AAC vs LC-AAC.
     HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
     It also generally requires a minimum sample rate (typically 32kHz+).
-    Typical range for HE-AAC: 10kbps to 48kbps per channel.
+    Typical range for HE-AAC: 8kbps to 48kbps per channel. The floor is 8, not
+    10, because 8 kbps/channel is HE-AAC's design floor and the whole point of
+    the 32k_stereo_16k scenario; a 10 kbps floor here would have silently
+    skipped every HE encoder on it and compared only LC entries.
     """
     if sample_rate < 32000:
         return False
     bitrate_per_ch = bitrate_kbps / channels
-    return 10 <= bitrate_per_ch <= 48
+    return 8 <= bitrate_per_ch <= 48
 
 def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
     """

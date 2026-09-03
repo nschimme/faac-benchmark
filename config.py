@@ -212,6 +212,19 @@ SCENARIOS = {
         "vbr_q": 500,   # PROVISIONAL
         "thresh": 3.2},  # PROVISIONAL
     # -- 32 kHz stereo -----------------------------------------------------
+    # 8 kbps/channel is HE-AAC's design floor. On the reference build AUTO
+    # refuses HE below 24 kbps total and falls back to LC, which physically
+    # cannot reach this rate (+28.5%, bottoming out near 20 kbps); faac has no
+    # HE-AAC v2 to escalate to either. nschimme/faac#451 removes that floor and
+    # AUTO resolves this to HE-AAC v1 at +11.9% -- measured, not assumed. The
+    # scenario is therefore listed in PENDING_UPSTREAM in
+    # scripts/validate_scenarios.py until that lands.
+    "32k_stereo_16k": {
+        "mode": "audio",
+        "corpus": "audio_32k",
+        "bitrate": 16,
+        "vbr_q": 20,    # PROVISIONAL
+        "thresh": 1.8},  # PROVISIONAL
     "32k_stereo_48k": {
         "mode": "audio",
         "corpus": "audio_32k",
@@ -313,7 +326,19 @@ SCENARIOS = {
         "corpus": "audio_48k",
         "bitrate": 256,
         "vbr_q": 569,
-        "thresh": 4.3}}
+        "thresh": 4.3},
+    # The top of the format's usable range. On the reference build the -b
+    # ceiling divides a per-channel bound by the channel count, so everything
+    # above ~296 kbps silently collapses to the same 295.7 kbps stream (320k
+    # -> -7.6%, 384k -> -23.0%, 448k -> -34.0% all produce identical output).
+    # nschimme/faac#451 fixes that bound: 320k -> +2.2%, 384k -> +1.2%,
+    # 448k -> -6.8%, so 448k becomes a viable rung too once it lands.
+    "48k_stereo_320k": {
+        "mode": "audio",
+        "corpus": "audio_48k",
+        "bitrate": 320,
+        "vbr_q": 700,   # PROVISIONAL
+        "thresh": 4.3}}  # PROVISIONAL
 
 # Scoring rates are a property of the METRIC ENGINE, not of the content:
 # ViSQOL speech mode is 16 kHz mono, ViSQOL audio / Zimtohrli are 48 kHz

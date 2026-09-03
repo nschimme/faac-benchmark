@@ -47,6 +47,7 @@ from the corpus and the mode — never set them by hand.
 | `16k_mono_voip_24k` | speech_voip_16k | 16k mono | 24k | 24k | VoIP-degraded spot check, paired with the row above |
 | `24k_mono_28k` | speech_clean_24k | 24k mono | 28k | 28k | wideband speech |
 | `24k_mono_32k` | speech_clean_24k | 24k mono | 32k | 32k | wideband speech |
+| `32k_stereo_16k` | audio_32k | 32k stereo | 16k | **8k/ch** | HE-AAC's design floor |
 | `32k_stereo_48k` | audio_32k | 32k stereo | 48k | 24k/ch | low-rate **LC** (48 kHz switches to HE here) |
 | `32k_stereo_96k` | audio_32k | 32k stereo | 96k | 48k/ch | broadcast-style |
 | `44k1_stereo_64k` | audio_44k1 | 44.1k stereo | 64k | 32k/ch | 44.1k SFB tables, low rate |
@@ -63,6 +64,7 @@ from the corpus and the mode — never set them by hand.
 | `48k_stereo_160k` | audio_48k | 48k stereo | 160k | 80k/ch | |
 | `48k_stereo_192k` | audio_48k | 48k stereo | 192k | 96k/ch | |
 | `48k_stereo_256k` | audio_48k | 48k stereo | 256k | 128k/ch | transparency |
+| `48k_stereo_320k` | audio_48k | 48k stereo | 320k | 160k/ch | top of the format's usable range |
 
 `48k_stereo_40k` / `48k_stereo_48k` are named **by rate, not codec**. While HE-AAC is not
 auto-engaged in faac they run as pure LC (valid low-rate LC tests); once faac's
@@ -106,20 +108,55 @@ record a new one.
 
 ### What each family actually exercises
 
-Verified with `ffprobe` on a `--gate` run: every new family
-resolves to **LC**, while the 48 kHz ladder switches to HE-AAC at 24-48 kbps.
+Verified with `ffprobe` on a `--gate` run against the reference build:
 
 | Family | Object type across the ladder |
 | :--- | :--- |
 | `16k_mono`, `24k_mono` | LC throughout |
-| `32k_stereo` | LC at both 48k and 96k |
-| `44k1_stereo` | LC throughout |
-| `48k_stereo` | HE-AAC at 24-48k, LC from 56k up |
+| `32k_stereo` | HE-AAC at 16k (pinned), LC at 48k and 96k |
+| `44k1_stereo` | HE-AAC at 64k, LC at 128k and 192k |
+| `48k_stereo` | HE-AAC from 24k to 96k, LC from 128k up |
 
-That contrast is the point of the 32 kHz family: at 24 kbps/channel the 48 kHz
+Note this is a **property of the build, not of the bitrate**: object-type AUTO
+resolution moves. On the reference build HE-AAC reaches up to 96 kbps
+(48 kbps/channel); on the `bandwidth-curve-smoothing` branch the same clip at
+the same bitrate switches to LC from 56k up. Re-check with `ffprobe` rather
+than assuming — and note the pre-existing "HE-AAC Ceiling" label on
+`48k_stereo_56k` in the table above predates all of this and is inaccurate on
+both builds.
+
+The contrast is the point of the 32 kHz family: at 24 kbps/channel the 48 kHz
 ladder answers with HE-AAC, so the low-rate **LC** path is only measured at all
 because a lower sample rate reaches those bitrates without triggering the
 switch.
+
+### Scenarios blocked on an encoder fix
+
+The reachability rule assumes the *scenario* is what might be wrong. Sometimes
+it is the encoder, and a fix is already in flight — the scenario is right and
+should be kept. `scripts/validate_scenarios.py` carries a `PENDING_UPSTREAM`
+map for exactly that: those scenarios are reported with their deviation but do
+not fail the run, and each entry names the fix.
+
+Two of the current scenarios sit at the ends of the range the reference build
+gets wrong, both addressed by [nschimme/faac#451][pr451]:
+
+| Scenario | reference build | with #451 |
+| :--- | :---: | :---: |
+| `32k_stereo_16k` (8k/ch) | +28.5%, LC | **+11.9%, HE-AAC** |
+| `48k_stereo_320k` | -7.6% (saturated) | **+2.2%** |
+
+At 8 kbps/channel AUTO refuses HE-AAC and falls back to LC, which cannot reach
+that rate; faac has no HE-AAC v2 to escalate to either. At the top end the `-b`
+ceiling divides a per-channel bound by the channel count, so 320k, 384k and
+448k all collapse to the *same* 295.7 kbps stream — 320k is nominally within
+tolerance on the reference build but is measuring the bug. With #451 the
+ceiling opens up (384k -> +1.2%, 448k -> -6.8%), making 448k a viable rung too.
+
+Delete a `PENDING_UPSTREAM` entry once its fix lands. If the scenario still
+deviates afterwards, that is a real finding and should fail.
+
+[pr451]: https://github.com/nschimme/faac/pull/451
 
 ### Rate families
 

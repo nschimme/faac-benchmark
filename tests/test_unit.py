@@ -111,6 +111,26 @@ class TestScenarioMatrix(unittest.TestCase):
             if cfg["mode"] == "speech":
                 self.assertEqual(cfg["channels"], 1, f"{name} scores stereo in speech mode")
 
+    def test_he_heuristic_covers_the_lowest_scenario(self):
+        # use_he_aac gates which encoders the leaderboard runs. Its floor used
+        # to be 10 kbps/channel, which would have silently skipped every HE
+        # entry on the 8 kbps/channel scenario and compared LC only.
+        from compare_encoders import use_he_aac
+        lowest = min(self.SCENARIOS.values(),
+                     key=lambda c: c["bitrate"] / c["channels"])
+        if lowest["rate"] >= 32000:
+            self.assertTrue(
+                use_he_aac(lowest["bitrate"], lowest["channels"], lowest["rate"]),
+                "the lowest per-channel scenario falls below use_he_aac's floor")
+
+    def test_pending_upstream_entries_are_real_scenarios(self):
+        # A stale exemption silently suppresses a genuine failure.
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from validate_scenarios import PENDING_UPSTREAM, VBR_DEAD_ZONE
+        for name in set(PENDING_UPSTREAM) | VBR_DEAD_ZONE:
+            self.assertIn(name, self.SCENARIOS,
+                          f"{name} is exempted but no longer exists")
+
     def test_every_family_is_ordered(self):
         for corpus_name, corpus in self.CORPORA.items():
             self.assertIn(corpus["family"], self.FAMILY_ORDER,
