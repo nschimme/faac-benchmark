@@ -168,9 +168,19 @@ separately were +0.816% and +0.705%. `bd_rate.py` splits ladders by
 different object type on rather than average through it.
 
 **Limitation**: a cubic needs four points, so a ladder needs ≥4 rungs at one
-object type to be fitted at all. The mono scenario families have only two
-rungs each and cannot be covered by BD-rate; keep using the bits-adjusted MOS
-delta from `scripts/compare_clips.py` for those.
+object type to be fitted at all. The **mono** families have two rungs each and
+cannot be covered; keep using the bits-adjusted MOS delta from
+`scripts/compare_clips.py` for those — and note that adjustment is a two-rung
+local slope validated at bitrate deltas under ~1.3%, so treat it with suspicion
+past a few percent (a −5% shift once produced a +0.16 MOS "gain", which is not
+credible).
+
+The stereo families all reach four rungs at one object type: `48k_stereo` has
+seven HE and five LC, and `32k_stereo` (48/64/80/96, all LC) and `44k1_stereo`
+(128/160/192/256, all LC) were extended to four for exactly this reason. Object
+type per rung is probed, not derived — on `audio_32k`, AUTO resolves 16k to LC,
+24k/32k to HE and everything from 48k up to LC again, so HE there is a two-rung
+island and the LC group is the measurable one.
 
 ```bash
 python3 scripts/bd_rate.py base.json cand.json
