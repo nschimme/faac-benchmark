@@ -247,8 +247,15 @@ class TestExpandScenarioList(unittest.TestCase):
         self.expand = expand_scenario_list
 
     def test_family_expands_to_its_members(self):
-        self.assertEqual(self.expand("44k1_stereo"),
-                         ["44k1_stereo_64k", "44k1_stereo_128k", "44k1_stereo_192k"])
+        # Derived from config, not hardcoded: rungs get added to a family when a
+        # BD-rate ladder needs a 4th point, and that must not break expansion.
+        from config import SCENARIOS
+        from utils import get_scenario_sort_key, scenario_family
+        members = sorted((n for n in SCENARIOS if scenario_family(n) == "44k1_stereo"),
+                         key=get_scenario_sort_key)
+        self.assertEqual(self.expand("44k1_stereo"), members)
+        self.assertTrue(set(members) >= {"44k1_stereo_64k", "44k1_stereo_128k",
+                                         "44k1_stereo_192k"})
 
     def test_scenario_name_passes_through(self):
         self.assertEqual(self.expand("48k_stereo_128k"), ["48k_stereo_128k"])
