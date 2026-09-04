@@ -63,6 +63,14 @@ FOOTPRINT_WARN_BYTES = 512
 # Bytes of growth the author has explicitly accepted (--footprint-allow).
 FOOTPRINT_ALLOW = 0
 
+# BD-rate thresholds, in percent of bitrate needed for equal quality.
+# Positive is worse. Anchored on measurements, not taste: a run scored against
+# itself is exactly 0.000%, and nschimme/faac#454 -- rejected on this metric --
+# measured +0.816% (HE) and +0.705% (LC), so a fail at +0.50% catches it on
+# either segment while leaving room for fit noise on a genuinely neutral change.
+BD_RATE_WARN_PCT = 0.25
+BD_RATE_FAIL_PCT = 0.50
+
 # Gate names allowed to fail the run (--gates). None means all of them. A
 # footprint-only job measures no MOS, and a run that cannot measure a gate must
 # not fail on it -- but the gate still appears in the report, as a skip.
@@ -116,6 +124,56 @@ def add_gate(suite_results, name, status, detail):
         {"name": name, "status": status, "detail": detail})
     if status == "fail":
         suite_results["has_regression"] = True
+
+
+def check_bd_rate(suite_results, base, cand):
+    """Gate the rate-quality curve rather than MOS at a fixed target bitrate.
+
+    The MOS gate compares two builds at the same requested `-b`, where the
+    bitrate actually delivered is free to differ -- so a build that overshoots
+    is credited with quality it bought rather than earned, and a rate-control
+    fix that removes the overshoot is charged for it. Master overshoots ~4.6%,
+    which is enough to decide a close call on its own. BD-rate holds quality
+    fixed instead and asks for the bitrate, so accuracy work can be judged.
+
+    Reported for every run; select it with --gates for rate-control work, where
+    it is the verdict and raw MOS is context.
+    """
+    try:
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+        import bd_rate as bdr
+    except Exception as e:
+        add_gate(suite_results, "bd_rate", "skip", f"unavailable: {e}")
+        return
+
+    try:
+        analysis = bdr.analyze(base.get("matrix", {}), cand.get("matrix", {}))
+    except Exception as e:
+        add_gate(suite_results, "bd_rate", "skip", f"failed: {e}")
+        return
+
+    scored = [seg for seg in analysis["segments"] if seg.get("stats")]
+    suite_results["bd_rate_segments"] = scored
+    suite_results["bd_rate_notes"] = analysis["notes"]
+    if not scored:
+        add_gate(suite_results, "bd_rate", "skip",
+                 "no ladder with enough rungs at one object type")
+        return
+
+    parts = []
+    for seg in scored:
+        ot = seg["object_type"] or "pooled"
+        parts.append(f"{seg['corpus']}/{ot} {seg['stats']['mean']:+.3f}%")
+    detail = ", ".join(parts)
+
+    worst = max(seg["stats"]["mean"] for seg in scored)
+    if worst > BD_RATE_FAIL_PCT:
+        add_gate(suite_results, "bd_rate", "fail", detail)
+    elif worst > BD_RATE_WARN_PCT:
+        add_gate(suite_results, "bd_rate", "warn", detail)
+    else:
+        add_gate(suite_results, "bd_rate", "pass", detail)
 
 
 def check_footprint(suite_results, base, cand):
@@ -301,6 +359,8 @@ def analyze_pair(base_file, cand_file):
     rc_mode = next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr")
     suite_results = {
         "gates": [],
+        "bd_rate_segments": [],
+        "bd_rate_notes": [],
         "has_regression": False,
         "decode_error_count": 0,
         "missing_data": False,
@@ -670,6 +730,7 @@ def analyze_pair(base_file, cand_file):
 
     check_footprint(suite_results, base, cand)
     check_throughput(suite_results, base, cand)
+    check_bd_rate(suite_results, base, cand)
 
     return suite_results
 
@@ -1291,6 +1352,23 @@ def main():
                 for g in data["gates"]:
                     report.append(
                         f"- {icons.get(g['status'], '?')} `{g['name']}`: {g['detail']}")
+
+            # The rate-quality curve, per object type. Pooling these two
+            # segments reports a smaller number than either of them, so they
+            # are printed apart and never summed.
+            if data.get("bd_rate_segments"):
+                report.append("\n**BD-rate** (positive = more bits for equal "
+                              "quality = worse)")
+                report.append("| Ladder | Rungs | Clips | Mean | Median |")
+                report.append("| :--- | :---: | :---: | :---: | :---: |")
+                for seg in data["bd_rate_segments"]:
+                    st = seg["stats"]
+                    ot = seg["object_type"] or "pooled (object type unrecorded)"
+                    report.append(
+                        f"| {seg['corpus']} / {ot} | {len(seg['rungs'])} | "
+                        f"{st['n']} | {st['mean']:+.3f}% | {st['median']:+.3f}% |")
+                for note in data.get("bd_rate_notes", []):
+                    report.append(f"- {note}")
 
             if data.get("object_movers"):
                 report.append("\n**Object .text movers**")

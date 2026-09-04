@@ -18,6 +18,7 @@
 """
 
 import os
+import re
 import subprocess
 import time
 import sys
@@ -36,6 +37,37 @@ from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from config import SCENARIOS, CORPORA, GATE_CLIPS, GATE_FALLBACK_N
+
+
+# frontend/main.c prints "Object type: <name> (MPEG-n)[ + TNS][ + M/S][ + PNS]"
+# at its default verbosity, so no extra flag is needed to get this.
+_OBJECT_TYPE_RE = re.compile(rb"^Object type:\s*([^(]+?)\s*\(", re.MULTILINE)
+
+
+def parse_object_type(stderr_bytes):
+    """Which object type AUTO actually resolved to for this encode.
+
+    Scenarios do not pass --object-type, so the codec at a given rung is the
+    encoder's own decision and can differ between two builds under test --
+    nschimme/faac#451 moves the HE/LC boundary, for one. Without this recorded
+    per encode, the only way to segment a rate-quality ladder by object type was
+    to re-encode a probe clip afterwards and read the banner, which is fragile
+    and silent when it is wrong. scripts/bd_rate.py needs the split because
+    fitting one curve across the 48k_stereo HE->LC switch halved the measured
+    loss (+0.401% pooled against +0.816% / +0.705% segmented).
+
+    None when the banner is absent, which is the case for legacy faac binaries;
+    consumers fall back to a pooled fit and say so.
+    """
+    if not stderr_bytes:
+        return None
+    m = _OBJECT_TYPE_RE.search(stderr_bytes)
+    if not m:
+        return None
+    try:
+        return m.group(1).decode("utf-8", "replace").strip() or None
+    except Exception:
+        return None
 
 
 def gate_filter(name, filtered_samples):
@@ -117,8 +149,10 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
 
     try:
         t_start = time.time()
-        subprocess.run(list(cmd), env=env, check=True, capture_output=True)
+        proc = subprocess.run(list(cmd), env=env, check=True, capture_output=True)
         t_duration = time.time() - t_start
+
+        object_type = parse_object_type(proc.stderr)
 
         mos = None
         aac_size = os.path.getsize(output_path)
@@ -184,6 +218,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],
             "scenario": name,
+            "object_type": object_type,
             "filename": sample,
             "aac": os.path.basename(output_path),
             "decode_error": decode_err if not valid else None,

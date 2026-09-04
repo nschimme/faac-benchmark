@@ -151,6 +151,42 @@ validation. The report always shows a **Decode Errors** count.
   decoder check has been validated as clean across the LC corpus (it has, as of
   this change: 0 decode errors over 448 LC clips spanning all scenarios).
 
+## Choosing gates (`--gates`)
+
+`compare_results.py` records every verdict as a named gate — `mos`,
+`footprint`, `throughput`, `bd_rate` — and `--gates NAMES` selects which of
+them may fail the run. Unselected gates still appear in the report, as skips,
+so narrowing the selection never hides an axis.
+
+**For rate-control work, gate on `bd_rate` and read `mos` as context:**
+
+```bash
+python3 compare_results.py results/ --gates bd_rate,footprint,throughput
+```
+
+The `mos` gate compares two builds at the same requested `-b` while letting the
+bitrate they actually deliver differ. Those two quantities are not independent:
+faac master overshoots its target by ~4.6%, and the overshoot buys quality it
+is then credited with. So the default gate systematically rewards spending more
+bits and penalises any change that tightens accuracy — which is not a
+hypothetical, it is how three separate rate-control efforts were judged before
+the effect was identified. `bd_rate` holds quality fixed and measures bitrate
+instead, so an accuracy change can be judged on its coding efficiency.
+
+The difference is not cosmetic. Scoring nschimme/faac#454 against master, the
+same run reports:
+
+| gate | verdict |
+| :--- | :--- |
+| `mos` (raw, fixed `-b`) | passes |
+| `bd_rate`, segmented by object type | **fails** — +0.816% HE, +0.705% LC |
+| `bd_rate`, pooled across the HE→LC switch | warns only — +0.401% |
+
+The third row is why `object_type` is recorded per encode (see
+`phase1_encode.py`): without it the ladder cannot be segmented, the fit runs
+across AUTO's HE→LC switch between 96k and 128k, and the loss reads as roughly
+half of what either segment actually shows.
+
 ## Multi-Encoder Leaderboard (`leaderboard.yml`)
 
 The repository includes an automated workflow to compare `faac` against other

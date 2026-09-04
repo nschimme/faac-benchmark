@@ -109,23 +109,73 @@ is larger than most real wins.
 
 ```
 48k_stereo_64k: n=49 avgMOSd=+0.0260 ... avg_br=67.4->68.2 (+1.26%) ...
-   bits-adjusted avgMOSd=-0.0056 (at +0.0251 MOS per +1% bits)   <-- the raw delta is explained by bit spend, not allocation
+   bits-adjusted avgMOSd=-0.0056 (n=49, per-clip +0.0081..+0.0482 MOS per +1% bits)   <-- the raw delta is explained by bit spend, not allocation
 ```
 
 The exchange rate comes from the **baseline's own bitrate ladder**: within a
-family (`48k_stereo` at 24k…256k), the slope of MOS against bitrate is measured
+corpus (`48k_stereo` at 24k…320k), the slope of MOS against bitrate is measured
 by central difference around each scenario. No constant is assumed, and the
 estimate is re-derived from whatever baseline you pass in.
 
-Treat it as an estimate, not a verdict — it is a corpus-average slope applied to
-a scenario mean. To settle a close call, **re-encode the candidate at a scaled
-`-b` so actual bytes match the baseline, then compare directly**. That test
-agreed with this adjustment to within 0.013 MOS on both cases it was checked
-against.
+The slope is estimated **per clip**, and each clip's own MOS delta is charged
+for the bits that clip spent before the scenario mean is taken. A single
+scenario-wide slope is not a usable approximation: clips inside one scenario
+differ by up to 6× in how much MOS a percent of bitrate buys them, and on #454
+the headline bits-adjusted figure turned out to be carried by the one row with
+the steepest fitted slope. Clips are also differenced only against neighbours
+of the **same object type**, since a step across AUTO's HE→LC switch measures
+the codec change rather than the price of bits — that needs `object_type` in
+the results, and pools when it is absent.
 
-Judge a rate-control change on the adjusted number. Judge a change that is meant
-to alter bitrate (rate-control accuracy work) on both, and report them
-separately.
+Treat it as an estimate, not a verdict — it is still a two-rung local slope. To
+settle a close call, use **BD-rate** below where the ladder is long enough, or
+**re-encode the candidate at a scaled `-b` so actual bytes match the baseline
+and compare directly**. That test agreed with this adjustment to within 0.013
+MOS on both cases it was checked against.
+
+Judge a rate-control change on the adjusted number where BD-rate is
+unavailable (the mono families). Where BD-rate is available, it is the verdict
+and this is the cross-check.
+
+## BD-rate
+
+`scripts/bd_rate.py`. Answers the question a fixed-`-b` MOS delta can't: how
+many more (or fewer) bits does the candidate need to reach the *same* quality
+as the baseline, holding a rate-quality curve fit rather than the delivered
+bitrate constant.
+
+**Positive BD-rate = the candidate needs more bits for equal quality = worse.**
+
+Why this exists: at a fixed `-b`, MOS and the bitrate actually delivered are
+not independent — a build that overshoots its target is rewarded for the bits
+it stole, and a rate-control fix that removes overshoot is charged for
+quality it never lost. On nschimme/faac#454 this produced three different
+verdicts from three metrics (raw MOS −0.021, bits-adjusted median +0.0004,
+BD-rate +0.8%); only BD-rate holds bitrate fixed by construction rather than
+by after-the-fact arithmetic, which is why rate-control work is gated on it.
+
+The fit: per clip, MOS is the independent variable and `log10(bitrate)` the
+dependent one, a cubic is fitted to each build's rate-quality curve, both are
+integrated over the MOS range the two curves share, and the mean log-rate
+difference is converted back to a percentage.
+
+**Must be segmented by object type.** A ladder that crosses an AUTO
+object-type switch (e.g. the `48k_stereo` HE→LC crossover between 96k and
+128k) fits one curve across a discontinuity, which understates the loss:
+pooled, that ladder reported +0.401%, while the two segments measured
+separately were +0.816% and +0.705%. `bd_rate.py` splits ladders by
+`(corpus, object_type)` and excludes any rung the two builds resolved to a
+different object type on rather than average through it.
+
+**Limitation**: a cubic needs four points, so a ladder needs ≥4 rungs at one
+object type to be fitted at all. The mono scenario families have only two
+rungs each and cannot be covered by BD-rate; keep using the bits-adjusted MOS
+delta from `scripts/compare_clips.py` for those.
+
+```bash
+python3 scripts/bd_rate.py base.json cand.json
+python3 scripts/bd_rate.py base.json --self-check   # must report 0
+```
 
 ## Decode errors
 
