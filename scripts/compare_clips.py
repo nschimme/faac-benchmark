@@ -15,6 +15,7 @@ import argparse
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from utils import load_results, get_aac_path, get_scenario_sort_key, corpus_dir
 
 OUTPUT_DIR = os.path.join(ROOT_DIR, "output")
@@ -58,46 +59,100 @@ def _band_report(rows, scenario, file_a, file_b, top, matrix_a):
 
 
 def _bit_sensitivity(matrix_a):
-    """How much MOS a scenario gains per +1% of bitrate, per scenario.
+    """How much MOS a clip gains per +1% of bitrate, per clip and per scenario.
 
     A candidate that simply spends more bits scores higher, so a raw MOS delta
     cannot tell "allocates better" apart from "spent more" -- a distinction that
     has repeatedly decided rate-control work the wrong way. The baseline run
     already contains the answer: its scenarios form a bitrate ladder within each
-    family (48k_stereo at 24k..256k, and so on), and the slope of MOS against
+    corpus (48k_stereo at 24k..320k, and so on), and the slope of MOS against
     bitrate along that ladder is exactly the exchange rate needed.
 
-    Returns {scenario: dMOS per +1% bitrate}, omitting families too short to
-    estimate a slope from.
+    The slope is estimated per CLIP, not per scenario. A family average is one
+    number applied to every clip in the scenario, and clips do not share a
+    slope: on nschimme/faac#454 the scenario means disagreed by 9x, and the
+    headline bits-adjusted figure (+0.0113) turned out to be carried by the one
+    row with the steepest fitted slope. A clip is charged at its own exchange
+    rate or it is not charged at all.
+
+    Neighbours are taken only from the same object type. AUTO switches the
+    48k_stereo ladder from HE-AAC to LC between 96k and 128k, and a difference
+    taken across that step measures the codec change, not the price of bits.
+    Falls back to pooling when the run predates the object_type field.
+
+    Returns (per_clip, per_scenario): {(scenario, filename): dMOS/+1%} and
+    {scenario: dMOS/+1%}, either of which may omit entries whose ladder is too
+    short to difference.
     """
-    agg = {}
+    try:
+        from bd_rate import _scenario_corpus, _scenario_target
+    except Exception:
+        def _scenario_corpus(s):
+            return s.rsplit('_', 1)[0]
+
+        def _scenario_target(s, recs):
+            for r in recs:
+                t = r.get('bitrate_target') or r.get('expected_bitrate')
+                if t:
+                    return float(t)
+            return 0.0
+
+    by_scen = {}
     for v in matrix_a.values():
-        if v.get('mos') is None or not v.get('bitrate'):
+        scen, fn = v.get('scenario'), v.get('filename')
+        if not scen or not fn or v.get('mos') is None or not v.get('bitrate'):
             continue
-        e = agg.setdefault(v.get('scenario', 'unknown'), [0.0, 0.0, 0])
-        e[0] += v['mos']
-        e[1] += v['bitrate']
-        e[2] += 1
+        by_scen.setdefault(scen, {})[fn] = v
 
-    families = {}
-    for s, (mos, br, n) in agg.items():
-        families.setdefault(s.rsplit('_', 1)[0], []).append((br / n, mos / n, s))
-
-    sens = {}
-    for rows in families.values():
+    # (corpus, object_type) -> [(target, scenario)], the ladder a clip walks.
+    ladders = {}
+    for scen, clips in by_scen.items():
+        recs = list(clips.values())
+        ot = next((r.get('object_type') for r in recs if r.get('object_type')),
+                  None)
+        key = (_scenario_corpus(scen), ot)
+        ladders.setdefault(key, []).append((_scenario_target(scen, recs), scen))
+    for rows in ladders.values():
         rows.sort()
-        if len(rows) < 2:
-            continue
-        for i, (br, _, s) in enumerate(rows):
-            # Central difference where possible; one-sided at the ladder ends.
-            lo = rows[i - 1] if i > 0 else rows[i]
-            hi = rows[i + 1] if i + 1 < len(rows) else rows[i]
+
+    def _slope(points):
+        """Central difference of MOS against bitrate, as dMOS per +1% bits."""
+        out = {}
+        for i, (br, mos, scen) in enumerate(points):
+            lo = points[i - 1] if i > 0 else points[i]
+            hi = points[i + 1] if i + 1 < len(points) else points[i]
             d_br = hi[0] - lo[0]
             if d_br <= 0 or br <= 0:
                 continue
-            # Convert "per kbps" to "per 1% of this scenario's bitrate".
-            sens[s] = (hi[1] - lo[1]) / (d_br / br * 100.0)
-    return sens
+            out[scen] = (hi[1] - lo[1]) / (d_br / br * 100.0)
+        return out
+
+    per_clip = {}
+    per_scenario = {}
+    for rows in ladders.values():
+        if len(rows) < 2:
+            continue
+        scens = [s for _, s in rows]
+
+        # Per clip: only clips present at every rung of this ladder, so the
+        # difference is the same clip's own curve rather than a mix of clips.
+        common = set.intersection(*(set(by_scen[s]) for s in scens))
+        for fn in common:
+            pts = [(by_scen[s][fn]['bitrate'], by_scen[s][fn]['mos'], s)
+                   for s in scens]
+            for scen, k in _slope(pts).items():
+                per_clip[(scen, fn)] = k
+
+        # Per scenario: the old family-average slope, kept only as the fallback
+        # for clips that skip a rung (a decode error anywhere on the ladder).
+        avg = []
+        for s in scens:
+            recs = list(by_scen[s].values())
+            avg.append((sum(r['bitrate'] for r in recs) / len(recs),
+                        sum(r['mos'] for r in recs) / len(recs), s))
+        per_scenario.update(_slope(avg))
+
+    return per_clip, per_scenario
 
 
 def compare(file_a, file_b, bands=False, bands_top=3):
@@ -139,7 +194,7 @@ def compare(file_a, file_b, bands=False, bands_top=3):
         print("No matching clips found between the two result sets.")
         return
 
-    sens = _bit_sensitivity(a)
+    sens_clip, sens_scen = _bit_sensitivity(a)
     adj_totals = []
 
     # Sort scenarios deterministically: by rank/bitrate, then by name
@@ -164,10 +219,23 @@ def compare(file_a, file_b, bands=False, bands_top=3):
               f"avg_br={br_a_avg:.1f}->{br_b_avg:.1f} ({bits_pct:+.2f}%) "
               f"enc_time={t_a_total:.2f}s->{t_b_total:.2f}s ({time_chg:+.0f}%)")
 
-        # Charge the MOS delta for the bits that bought it.
-        k_bits = sens.get(s)
-        if k_bits is not None and abs(bits_pct) >= 0.10:
-            adj = raw_d - k_bits * bits_pct
+        # Charge each clip's MOS delta for the bits that clip spent, at that
+        # clip's own exchange rate, and only then average.
+        adj_rows, ks = [], []
+        for d, k, ma, mb, bra, brb, *_ in rows:
+            # rows carry the matrix key (f"{run_name}_{filename}"); the slope
+            # table is keyed by the recorded filename.
+            k_bits = sens_clip.get((s, a[k].get('filename', k)))
+            if k_bits is None:
+                k_bits = sens_scen.get(s)
+            if k_bits is None or not bra:
+                continue
+            ks.append(k_bits)
+            adj_rows.append(d - k_bits * ((brb / bra - 1) * 100.0))
+
+        if adj_rows and abs(bits_pct) >= 0.10:
+            adj = sum(adj_rows) / len(adj_rows)
+            k_lo, k_hi = min(ks), max(ks)
             note = ""
             if raw_d != 0 and (adj * raw_d <= 0):
                 note = ("   <-- the raw delta is explained by bit spend, not "
@@ -175,7 +243,8 @@ def compare(file_a, file_b, bands=False, bands_top=3):
             elif abs(raw_d - adj) > abs(raw_d) * 0.5:
                 note = "   <-- mostly bit spend"
             print(f"   bits-adjusted avgMOSd={adj:+.4f} "
-                  f"(at {k_bits:+.4f} MOS per +1% bits){note}")
+                  f"(n={len(adj_rows)}, per-clip {k_lo:+.4f}..{k_hi:+.4f} "
+                  f"MOS per +1% bits){note}")
             adj_totals.append((s, raw_d, adj))
 
         # Worst 5
@@ -201,9 +270,11 @@ def compare(file_a, file_b, bands=False, bands_top=3):
         if flipped:
             print("Scenarios whose result is bit spend rather than allocation: "
                   + ", ".join(flipped))
-        print("Adjustment uses the baseline's own bitrate ladder. It is an "
-              "estimate: to settle a close call, re-encode the candidate at a "
-              "scaled -b so actual bytes match the baseline, then compare.")
+        print("Adjustment uses the baseline's own bitrate ladder, one slope "
+              "per clip. It is still an estimate over two rungs: where the "
+              "family has four or more rungs at one object type, prefer "
+              "scripts/bd_rate.py, which holds quality fixed by construction "
+              "rather than by arithmetic.")
         print("")
 
 def main():

@@ -247,8 +247,15 @@ class TestExpandScenarioList(unittest.TestCase):
         self.expand = expand_scenario_list
 
     def test_family_expands_to_its_members(self):
-        self.assertEqual(self.expand("44k1_stereo"),
-                         ["44k1_stereo_64k", "44k1_stereo_128k", "44k1_stereo_192k"])
+        # Derived from config, not hardcoded: rungs get added to a family when a
+        # BD-rate ladder needs a 4th point, and that must not break expansion.
+        from config import SCENARIOS
+        from utils import get_scenario_sort_key, scenario_family
+        members = sorted((n for n in SCENARIOS if scenario_family(n) == "44k1_stereo"),
+                         key=get_scenario_sort_key)
+        self.assertEqual(self.expand("44k1_stereo"), members)
+        self.assertTrue(set(members) >= {"44k1_stereo_64k", "44k1_stereo_128k",
+                                         "44k1_stereo_192k"})
 
     def test_scenario_name_passes_through(self):
         self.assertEqual(self.expand("48k_stereo_128k"), ["48k_stereo_128k"])
@@ -1091,6 +1098,168 @@ class TestOpusLameEncoderCommands(unittest.TestCase):
         lame2 = LameEncoder("LAME (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
         cmd2 = lame2.get_encode_cmd("in.wav", "out.mp3", 128, 2, 48000)
         self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "2", "out.mp3"])
+
+
+def _bd_record(scenario, filename, mos, bitrate, target, object_type):
+    """A result-matrix record with exactly the keys bd_rate.py reads."""
+    return {
+        "scenario": scenario, "filename": filename, "mos": mos,
+        "bitrate": bitrate, "bitrate_target": target,
+        "object_type": object_type, "decode_error": "",
+    }
+
+
+def _bd_ladder(scenario_targets, clips, mos_rows, bitrate_scale=1.0, object_type="lc"):
+    """A flat result matrix for one ladder: one scenario per rung, one row of
+    MOS values per clip (indexed positionally, same order as scenario_targets).
+    Bitrate is the rung's target scaled by bitrate_scale, so a candidate that
+    needs more/fewer bits for identical quality is a one-line change."""
+    matrix = {}
+    for i, (scen, target) in enumerate(scenario_targets):
+        for clip, row in zip(clips, mos_rows):
+            key = f"{scen}|{clip}"
+            matrix[key] = _bd_record(scen, clip, row[i], target * bitrate_scale, target, object_type)
+    return matrix
+
+
+class TestBdRateSelfCheck(unittest.TestCase):
+    def test_self_check_is_zero(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import self_check
+        scenario_targets = [("bdcorp_16", 16), ("bdcorp_24", 24), ("bdcorp_32", 32),
+                            ("bdcorp_48", 48), ("bdcorp_64", 64)]
+        clips = ["c1.wav", "c2.wav", "c3.wav"]
+        mos_rows = [
+            [2.60, 3.00, 3.40, 3.80, 4.10],
+            [2.70, 3.10, 3.50, 3.85, 4.15],
+            [2.50, 2.95, 3.35, 3.75, 4.05],
+        ]
+        matrix = _bd_ladder(scenario_targets, clips, mos_rows)
+        worst, _out = self_check(matrix)
+        # Identical curves must integrate to identical areas whatever the
+        # polynomial does in between -- see self_check()'s own docstring.
+        self.assertLess(worst, 1e-9)
+
+
+class TestBdRateDirection(unittest.TestCase):
+    """Pins the sign convention: positive = candidate needs more bits = worse."""
+
+    SCENARIO_TARGETS = [("bdcorp_16", 16), ("bdcorp_24", 24), ("bdcorp_32", 32),
+                        ("bdcorp_48", 48), ("bdcorp_64", 64)]
+    CLIPS = ["c1.wav", "c2.wav", "c3.wav"]
+    MOS_ROWS = [
+        [2.60, 3.00, 3.40, 3.80, 4.10],
+        [2.70, 3.10, 3.50, 3.85, 4.15],
+        [2.50, 2.95, 3.35, 3.75, 4.05],
+    ]
+
+    def _means(self, bitrate_scale):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import analyze
+        base = _bd_ladder(self.SCENARIO_TARGETS, self.CLIPS, self.MOS_ROWS)
+        cand = _bd_ladder(self.SCENARIO_TARGETS, self.CLIPS, self.MOS_ROWS,
+                          bitrate_scale=bitrate_scale)
+        out = analyze(base, cand)
+        means = [seg["stats"]["mean"] for seg in out["segments"] if seg["stats"]]
+        self.assertTrue(means, "expected at least one scored segment")
+        return means
+
+    def test_more_bits_at_equal_mos_is_positive(self):
+        for m in self._means(1.10):
+            self.assertGreater(m, 0)
+            self.assertAlmostEqual(m, 10.0, delta=0.5)
+
+    def test_fewer_bits_at_equal_mos_is_negative(self):
+        for m in self._means(0.90):
+            self.assertLess(m, 0)
+            self.assertAlmostEqual(m, -10.0, delta=0.5)
+
+
+class TestBdRateSegmentation(unittest.TestCase):
+    def test_object_types_split_into_separate_ladders(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import find_ladders, index_by_scenario
+
+        # Deliberately out of alphabetical order (b, d, c, a) so a pass means
+        # find_ladders sorted by target bitrate, not by scenario name.
+        he_targets = [("segcorp_b", 16), ("segcorp_d", 24),
+                      ("segcorp_c", 32), ("segcorp_a", 40)]
+        lc_targets = [("segcorp_64", 64), ("segcorp_96", 96),
+                      ("segcorp_128", 128), ("segcorp_160", 160)]
+        clips = ["c1.wav", "c2.wav", "c3.wav"]
+        he_mos = [
+            [2.60, 3.00, 3.40, 3.80],
+            [2.70, 3.10, 3.50, 3.85],
+            [2.50, 2.95, 3.35, 3.75],
+        ]
+        lc_mos = [
+            [3.90, 4.00, 4.10, 4.20],
+            [3.92, 4.02, 4.12, 4.22],
+            [3.88, 3.98, 4.08, 4.18],
+        ]
+
+        base = {}
+        base.update(_bd_ladder(he_targets, clips, he_mos, object_type="he"))
+        base.update(_bd_ladder(lc_targets, clips, lc_mos, object_type="lc"))
+        # One rung the two builds disagree about -- must be excluded from
+        # every ladder rather than averaged through (see find_ladders' own
+        # comment: #454's 48k_stereo HE->LC pooling halved the real loss).
+        disputed = [("segcorp_disputed", 50)]
+        disputed_mos = [[3.5], [3.5], [3.5]]
+        base.update(_bd_ladder(disputed, clips, disputed_mos, object_type="he"))
+
+        cand = dict(base)
+        cand.update(_bd_ladder(disputed, clips, disputed_mos, object_type="lc"))
+
+        base_by_scen = index_by_scenario(base)
+        cand_by_scen = index_by_scenario(cand)
+        ladders, notes = find_ladders(base_by_scen, cand_by_scen)
+
+        self.assertEqual(len(ladders), 2)
+        by_ot = {lad["object_type"]: lad for lad in ladders}
+        self.assertEqual(set(by_ot), {"he", "lc"})
+        self.assertEqual(by_ot["he"]["rungs"],
+                         ["segcorp_b", "segcorp_d", "segcorp_c", "segcorp_a"])
+        self.assertEqual(by_ot["lc"]["rungs"],
+                         ["segcorp_64", "segcorp_96", "segcorp_128", "segcorp_160"])
+        self.assertTrue(any("segcorp_disputed" in n for n in notes),
+                        f"expected a note naming the disputed scenario, got: {notes}")
+
+
+class TestBdRateMinRungs(unittest.TestCase):
+    def test_ladder_below_min_rungs_is_skipped(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import find_ladders, index_by_scenario, MIN_RUNGS
+        scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24)]
+        clips = ["c1.wav"]
+        mos_rows = [[2.60, 3.00]]
+        base = _bd_ladder(scenario_targets, clips, mos_rows, object_type="lc")
+        cand = dict(base)
+
+        base_by_scen = index_by_scenario(base)
+        cand_by_scen = index_by_scenario(cand)
+        ladders, notes = find_ladders(base_by_scen, cand_by_scen)
+
+        # Ladders below MIN_RUNGS (e.g. 2 rungs when MIN_RUNGS=3) are skipped.
+        self.assertEqual(ladders, [])
+        self.assertTrue(
+            any("2 rung" in n and str(MIN_RUNGS) in n for n in notes),
+            f"expected a skip note citing the rung count, got: {notes}")
+
+    def test_three_rung_ladder_uses_quadratic_fit(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import analyze
+        scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24), ("mincorp_32", 32)]
+        clips = ["c1.wav"]
+        mos_rows = [[2.60, 3.00, 3.40]]
+        base = _bd_ladder(scenario_targets, clips, mos_rows, object_type="lc")
+        cand = _bd_ladder(scenario_targets, clips, mos_rows, bitrate_scale=1.10, object_type="lc")
+
+        out = analyze(base, cand)
+        self.assertEqual(len(out["segments"]), 1)
+        seg = out["segments"][0]
+        self.assertEqual(seg["order"], 2)
+        self.assertAlmostEqual(seg["stats"]["mean"], 10.0, delta=1.0)
 
 
 if __name__ == "__main__":

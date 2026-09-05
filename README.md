@@ -13,7 +13,7 @@ FAAC is the high-efficiency encoder for the resource-constrained world. This rep
 *   **[Local Usage](docs/usage.md)**: How to run benchmarks locally.
 *   **[Benchmarking Guide](docs/benchmarking.md)**: Details on scenarios, filtering, A/B mode, and sweeps.
 *   **[CI Integration](docs/ci.md)**: Using the benchmark suite in GitHub Actions.
-*   **[Metric Definitions](docs/metrics.md)**: Understanding MOS, Stereo Image Δ, and other metrics.
+*   **[Metric Definitions](docs/metrics.md)**: Understanding MOS, Elementary Stream (ES) Bitrate Accuracy, BD-Rate, Stereo Image Δ, and other metrics.
 *   **[Ad Hoc / Diagnostic Scripts](docs/scripts.md)**: Local tooling under `scripts/` — per-band diagnostics, pre-echo/TNS A/B, VBR-q calibration.
 
 ## Philosophy

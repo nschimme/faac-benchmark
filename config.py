@@ -231,6 +231,24 @@ SCENARIOS = {
         "bitrate": 48,
         "vbr_q": 75,    # PROVISIONAL
         "thresh": 3.0},  # PROVISIONAL
+    # 64k and 80k exist to make the 32 kHz family measurable by BD-rate, which
+    # needs four rungs at ONE object type. Probed against master rather than
+    # derived: AUTO resolves 16k to LC, 24k and 32k to HE-AAC, and everything
+    # from 48k up to LC again -- so HE here is a two-rung island and the usable
+    # ladder is the LC one, 48/64/80/96. Delivered bitrate on the gate clips is
+    # +8.7 / +8.5 / +6.6 / +5.2 percent, all well inside reach.
+    "32k_stereo_64k": {
+        "mode": "audio",
+        "corpus": "audio_32k",
+        "bitrate": 64,
+        "vbr_q": 95,    # PROVISIONAL
+        "thresh": 3.4},  # PROVISIONAL
+    "32k_stereo_80k": {
+        "mode": "audio",
+        "corpus": "audio_32k",
+        "bitrate": 80,
+        "vbr_q": 114,   # PROVISIONAL
+        "thresh": 3.7},  # PROVISIONAL
     "32k_stereo_96k": {
         "mode": "audio",
         "corpus": "audio_32k",
@@ -250,12 +268,29 @@ SCENARIOS = {
         "bitrate": 128,
         "vbr_q": 203,   # PROVISIONAL
         "thresh": 4.0},  # PROVISIONAL
+    # 160k and 256k complete a four-rung LC ladder (128/160/192/256) so this
+    # family is measurable by BD-rate. Probed against master: 64k and 96k
+    # resolve to HE-AAC and everything from 128k up to LC, so the LC group is
+    # the one that can reach four. Delivered bitrate +5.6 / +3.2 / +3.0 / +2.9
+    # percent across those four.
+    "44k1_stereo_160k": {
+        "mode": "audio",
+        "corpus": "audio_44k1",
+        "bitrate": 160,
+        "vbr_q": 284,   # PROVISIONAL
+        "thresh": 4.1},  # PROVISIONAL
     "44k1_stereo_192k": {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 192,
         "vbr_q": 369,   # PROVISIONAL
         "thresh": 4.25},  # PROVISIONAL
+    "44k1_stereo_256k": {
+        "mode": "audio",
+        "corpus": "audio_44k1",
+        "bitrate": 256,
+        "vbr_q": 569,   # PROVISIONAL
+        "thresh": 4.3},  # PROVISIONAL
     # -- 48 kHz stereo -----------------------------------------------------
     "48k_stereo_24k": {
         "mode": "audio",

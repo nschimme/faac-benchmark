@@ -27,6 +27,22 @@ python3 scripts/compare_clips.py base.json cand.json
 python3 scripts/compare_clips.py base.json cand.json --bands [--bands-top N]
 ```
 
+### `scripts/bd_rate.py`
+
+Bjontegaard-delta rate between two `run_benchmark.py` result JSONs: how many
+more/fewer bits the candidate needs for equal quality, fit per clip over a
+bitrate ladder rather than read off a fixed `-b` delta (see
+[metrics.md](metrics.md#bd-rate) for why — this is the metric rate-control
+work is gated on). Positive = candidate needs more bits = worse. Segments by
+`(corpus, object_type)` and needs ≥4 rungs at one object type to fit a
+ladder; mono families (2 rungs) aren't covered and still use
+`compare_clips.py`'s bits-adjusted MOS delta.
+
+```bash
+python3 scripts/bd_rate.py base.json cand.json
+python3 scripts/bd_rate.py base.json --self-check   # BD-rate of a run against itself; must report 0
+```
+
 ### `scripts/band_diag.py`
 
 Per-band log-spectral distortion (RMS dB) of one encode vs its reference, in
