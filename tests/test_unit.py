@@ -1264,5 +1264,87 @@ class TestBdRateMinRungs(unittest.TestCase):
         self.assertAlmostEqual(seg["stats"]["mean"], 10.0, delta=1.0)
 
 
+class TestRenderJobSummary(unittest.TestCase):
+    def test_render_job_summary_abr(self):
+        from render_job_summary import render_job_summary
+        data = {
+            "name": "amd64_abr_cand",
+            "sha": "1234567890abcdef",
+            "faac_git_sha": "fedcba9876543210",
+            "lib_size": 150000,
+            "lib_text_size": 100000,
+            "lib_rodata_size": 30000,
+            "lib_data_size": 20000,
+            "lib_bss_size": 5000,
+            "frontend_size": 50000,
+            "matrix": {
+                "48k_stereo_128k_c1.wav": {
+                    "scenario": "48k_stereo_128k",
+                    "filename": "c1.wav",
+                    "mos": 4.25,
+                    "bitrate": 127.5,
+                    "expected_bitrate": 128.0,
+                    "rate_control_mode": "abr",
+                    "decode_error": None
+                },
+                "48k_stereo_64k_c1.wav": {
+                    "scenario": "48k_stereo_64k",
+                    "filename": "c1.wav",
+                    "mos": 3.85,
+                    "bitrate": 65.0,
+                    "expected_bitrate": 64.0,
+                    "rate_control_mode": "abr",
+                    "decode_error": None
+                }
+            },
+            "throughput": {"overall": 1234567},
+            "throughput_metric": "cachegrind"
+        }
+        summary = render_job_summary(data)
+        self.assertIn("Benchmark Job Summary: amd64_abr_cand", summary)
+        self.assertIn("12345678", summary)
+        self.assertIn("ROM Footprint", summary)
+        self.assertIn("ABR Mode", summary)
+        self.assertIn("Overall Average MOS", summary)
+        self.assertIn("4.050 / 5.000", summary)
+        self.assertIn("48k_stereo_128k", summary)
+        self.assertIn("1,234,567 I-refs", summary)
+        self.assertIn("✅ Clean", summary)
+
+    def test_render_job_summary_vbr_and_decode_errors(self):
+        from render_job_summary import render_job_summary
+        data = {
+            "name": "amd64_vbr_cand",
+            "sha": "abcdef1234567890",
+            "lib_size": 150000,
+            "matrix": {
+                "48k_stereo_128k_c1.wav": {
+                    "scenario": "48k_stereo_128k",
+                    "filename": "c1.wav",
+                    "mos": 4.10,
+                    "bitrate": 130.0,
+                    "expected_bitrate": 128.0,
+                    "rate_control_mode": "vbr",
+                    "decode_error": "corrupt header"
+                }
+            }
+        }
+        summary = render_job_summary(data)
+        self.assertIn("VBR Mode", summary)
+        self.assertIn("1 / 1", summary)
+        self.assertIn("❌ 1 decode err", summary)
+
+    def test_render_job_summary_partial_run(self):
+        from render_job_summary import render_job_summary
+        data = {
+            "name": "footprint_only_run",
+            "lib_size": 150000,
+            "matrix": {}
+        }
+        summary = render_job_summary(data)
+        self.assertIn("Code Footprint", summary)
+        self.assertIn("No encoding matrix executed in this run", summary)
+
+
 if __name__ == "__main__":
     unittest.main()

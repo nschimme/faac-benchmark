@@ -162,3 +162,12 @@ runs:
           "${{ inputs.output-json }}" \
           --coverage "${{ inputs.coverage }}" \
           $EXTRA_ARGS
+
+    - name: Output Job Summary
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+      run: |
+        if [ -f "${{ inputs.output-json }}" ]; then
+          python3 ${{ github.action_path }}/render_job_summary.py "${{ inputs.output-json }}" >> $GITHUB_STEP_SUMMARY
+        fi

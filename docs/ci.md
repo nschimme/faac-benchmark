@@ -98,7 +98,7 @@ jobs:
 
 ### Action: `nschimme/faac-benchmark`
 
-Runs the encoding benchmark and MOS computation for a single configuration.
+Runs the encoding benchmark and MOS computation for a single configuration. Each invocation automatically generates a high-signal job summary (Code Footprint, MOS, Bitrate Accuracy/Bias, Throughput, Decode status, and per-scenario breakdown) and writes it to the job's **GitHub Step Summary** tab via `render_job_summary.py`.
 
 | Input | Description | Required | Default |
 | :--- | :--- | :---: | :--- |
