@@ -32,7 +32,8 @@ import fnmatch
 from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
                    decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
-                   get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy)
+                   get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy,
+                   get_audio_es_bytes, ffmpeg_probe)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -156,20 +157,13 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
 
         mos = None
         aac_size = os.path.getsize(output_path)
+        es_bytes = get_audio_es_bytes(output_path)
         actual_bitrate = None
 
-        try:
-            import ffmpeg
-            try:
-                probe = ffmpeg.probe(input_path)
-                duration = float(probe['format']['duration'])
-                if duration > 0:
-                    # kbps = (bytes * 8) / (seconds * 1000)
-                    actual_bitrate = (aac_size * 8) / (duration * 1000)
-            except Exception as e:
-                print(f" Failed to probe duration for {sample}: {e}")
-        except ImportError:
-            pass
+        audio_duration = ffmpeg_probe(input_path)
+        if audio_duration and audio_duration > 0:
+            # kbps = (elementary_stream_bytes * 8) / (seconds * 1000)
+            actual_bitrate = (es_bytes * 8) / (audio_duration * 1000)
 
         # Decode validation
         valid, decode_err = decode_validate(output_path)

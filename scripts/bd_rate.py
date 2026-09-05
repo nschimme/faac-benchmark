@@ -35,12 +35,10 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-# A cubic needs four points. Three rungs would admit only a quadratic, which on
-# a rate-quality curve is a straight-ish line through a knee and reports
-# whatever the knee's position happens to be. Families with fewer rungs are
-# skipped, not approximated -- see the module docstring in compare_clips.py for
-# what they use instead.
-MIN_RUNGS = 4
+# Default minimum rungs required for a BD-rate ladder fit. Four rungs permit a cubic (order-3)
+# fit; three rungs adaptively fall back to a quadratic (order-2) fit, ensuring gate runs and
+# partial scenario sweeps are evaluated without silent exclusions.
+MIN_RUNGS = 3
 
 # Clips whose fitted curves cross so badly that the integral is meaningless.
 # Retained as a count in the report rather than silently dropped.
@@ -155,7 +153,7 @@ def find_ladders(base_by_scen, cand_by_scen, min_rungs=MIN_RUNGS):
     return ladders, notes
 
 
-def bd_rate_curve(base_points, cand_points, order=3):
+def bd_rate_curve(base_points, cand_points, order=None):
     """BD-rate for one clip from two (bitrate, mos) point lists.
 
     Returns a percentage, or None when the curves share no quality overlap or
@@ -163,8 +161,13 @@ def bd_rate_curve(base_points, cand_points, order=3):
     """
     import numpy as np
 
-    if len(base_points) != len(cand_points) or len(base_points) < order + 1:
+    if len(base_points) != len(cand_points) or len(base_points) < 3:
         return None
+
+    if order is None:
+        order = 3 if len(base_points) >= 4 else 2
+    else:
+        order = min(order, len(base_points) - 1)
 
     b = sorted(base_points, key=lambda p: p[1])
     c = sorted(cand_points, key=lambda p: p[1])
@@ -196,7 +199,7 @@ def bd_rate_curve(base_points, cand_points, order=3):
     return float((10.0 ** avg_diff - 1.0) * 100.0)
 
 
-def bd_rate_ladder(base_by_scen, cand_by_scen, rungs, order=3):
+def bd_rate_ladder(base_by_scen, cand_by_scen, rungs, order=None):
     """Per-clip BD-rate across one ladder.
 
     Returns (results, skipped) where results is [(filename, bdrate)] for every

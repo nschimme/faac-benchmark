@@ -356,6 +356,33 @@ def ffmpeg_probe(path):
     except Exception:
         return None
 
+def get_audio_es_bytes(path):
+    """Calculates pure audio elementary stream payload size in bytes, excluding container metadata & padding.
+
+    MP4/M4A containers add 1.5KB-2KB of ftyp/moov atom overhead. On short benchmark clips,
+    container overhead distorts bitrate metrics. This uses ffprobe packet inspection
+    to sum the exact audio payload bytes. Returns None if inspection fails.
+    """
+    if not path or not os.path.exists(path):
+        return None
+
+    try:
+        cmd = [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "packet=size", "-of", "json", path
+        ]
+        res = safe_run(cmd)
+        data = json.loads(res.stdout)
+        packets = data.get("packets", [])
+        if packets:
+            es_bytes = sum(int(p["size"]) for p in packets if "size" in p)
+            if es_bytes > 0:
+                return es_bytes
+    except Exception:
+        pass
+
+    return None
+
 def decode_validate(path):
     """Validates that an AAC file decodes cleanly with ffmpeg.
 
