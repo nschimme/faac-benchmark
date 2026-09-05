@@ -22,7 +22,8 @@ from collections import defaultdict
 from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path,
                    ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy,
                    corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
-                   scenario_family, family_label, scenario_families, expand_scenario_list)
+                   scenario_family, family_label, scenario_families, expand_scenario_list,
+                   get_audio_es_bytes)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 # Ensure the current directory is in the path for config import
@@ -410,12 +411,13 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
         duration = t_end - t_start
 
         file_size = os.path.getsize(output_path)
+        es_bytes = get_audio_es_bytes(output_path)
 
-        # Calculate actual bitrate
+        # Calculate actual bitrate using pure audio elementary stream bytes
         actual_bitrate = None
         audio_duration = ffmpeg_probe(input_path)
-        if audio_duration:
-            actual_bitrate = (file_size * 8) / (audio_duration * 1000)
+        if audio_duration and audio_duration > 0:
+            actual_bitrate = (es_bytes * 8) / (audio_duration * 1000)
 
         valid, decode_err = decode_validate(output_path)
         out_channels, out_rate = get_audio_info(output_path)
@@ -1098,9 +1100,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         )
         f.write("</details>\n\n")
 
-        # 5. Bitrate Accuracy
+        # 5. Bitrate Accuracy & BD-Rate Efficiency
         f.write("### Bitrate Accuracy (Error %)\n\n")
-        f.write("> **Note**: Deviation from target bitrate. **Lower is Better**.\n\n")
+        f.write("> **Note**: Deviation from target bitrate calculated from pure elementary stream audio bytes. **Lower is Better**.\n\n")
         f.write("<details><summary><b>View Detailed Bitrate Accuracy Table</b></summary>\n\n")
         render_metric_tables(
             lambda rk, s: stats[rk][s]["br_err_sum"] / stats[rk][s]["br_err_count"] if stats[rk][s]["br_err_count"] > 0 else None,
@@ -1108,6 +1110,58 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             lower_is_better=True
         )
         f.write("</details>\n\n")
+
+        # BD-Rate Analysis vs Baseline Encoder (FAAC if present, else first encoder)
+        try:
+            sys.path.insert(0, os.path.join(script_dir, "scripts"))
+            import bd_rate as bdr
+
+            # Find reference baseline encoder key (prefer FAAC LC)
+            base_key = next((rk for rk in all_row_keys if "faac" in rk), all_row_keys[0] if all_row_keys else None)
+            if base_key:
+                base_tool_name = encoder_info[base_key].name if base_key in encoder_info else base_key
+                f.write(f"### BD-Rate Relative Efficiency (vs {base_tool_name})\n\n")
+                f.write("> **Note**: Bjontegaard-delta rate (BD-rate) measures the average percentage difference in bitrate for equal perceptual quality (MOS). "
+                        "**Negative % = candidate is more efficient** (uses fewer bits for same quality). "
+                        "BD-rate holds quality fixed by construction, avoiding bitrate-bias traps of raw fixed-rate MOS deltas.\n\n")
+
+                base_recs = [r for r in results if r["row_key"] == base_key and r.get("mos") is not None and r.get("actual_bitrate")]
+                base_mat = {f"{r['scenario']}_{r['filename']}": {
+                    "scenario": r["scenario"], "filename": r["filename"],
+                    "mos": r["mos"], "bitrate": r["actual_bitrate"],
+                    "bitrate_target": r["target_bitrate"],
+                    "object_type": r.get("profile", "lc")
+                } for r in base_recs}
+
+                bd_rows = []
+                for cand_key in all_row_keys:
+                    if cand_key == base_key:
+                        continue
+                    cand_recs = [r for r in results if r["row_key"] == cand_key and r.get("mos") is not None and r.get("actual_bitrate")]
+                    cand_mat = {f"{r['scenario']}_{r['filename']}": {
+                        "scenario": r["scenario"], "filename": r["filename"],
+                        "mos": r["mos"], "bitrate": r["actual_bitrate"],
+                        "bitrate_target": r["target_bitrate"],
+                        "object_type": r.get("profile", "lc")
+                    } for r in cand_recs}
+
+                    analysis = bdr.analyze(base_mat, cand_mat)
+                    scored = [seg for seg in analysis.get("segments", []) if seg.get("stats")]
+                    if scored:
+                        avg_bd = sum(seg["stats"]["mean"] for seg in scored) / len(scored)
+                        cand_obj = encoder_info.get(cand_key)
+                        c_label = f"{cand_obj.name} ({profile_label(cand_obj.profile)})" if cand_obj else cand_key
+                        bd_rows.append((c_label, avg_bd, len(scored)))
+
+                if bd_rows:
+                    f.write(f"| Candidate Encoder | Mean BD-Rate vs {base_tool_name} | Valid Ladders |\n")
+                    f.write("| :--- | :---: | :---: |\n")
+                    for c_label, avg_bd, n_ladders in sorted(bd_rows, key=lambda x: x[1]):
+                        icon = "🚀" if avg_bd < -0.5 else "📉" if avg_bd > 0.5 else "🎯"
+                        f.write(f"| {c_label} | **{avg_bd:+.2f}%** {icon} | {n_ladders} |\n")
+                    f.write("\n")
+        except Exception as e:
+            pass
 
         # 6. Efficiency & Footprint
         f.write("### Encoder Efficiency & Footprint\n\n")

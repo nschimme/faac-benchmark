@@ -1230,9 +1230,9 @@ class TestBdRateMinRungs(unittest.TestCase):
     def test_ladder_below_min_rungs_is_skipped(self):
         sys.path.insert(0, os.path.join(REPO, "scripts"))
         from bd_rate import find_ladders, index_by_scenario, MIN_RUNGS
-        scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24), ("mincorp_32", 32)]
+        scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24)]
         clips = ["c1.wav"]
-        mos_rows = [[2.60, 3.00, 3.40]]
+        mos_rows = [[2.60, 3.00]]
         base = _bd_ladder(scenario_targets, clips, mos_rows, object_type="lc")
         cand = dict(base)
 
@@ -1240,12 +1240,26 @@ class TestBdRateMinRungs(unittest.TestCase):
         cand_by_scen = index_by_scenario(cand)
         ladders, notes = find_ladders(base_by_scen, cand_by_scen)
 
-        # A cubic needs four points; three rungs are skipped, not fitted with
-        # a lower-order curve that would just report a knee's position.
+        # Ladders below MIN_RUNGS (e.g. 2 rungs when MIN_RUNGS=3) are skipped.
         self.assertEqual(ladders, [])
         self.assertTrue(
-            any("3 rung" in n and str(MIN_RUNGS) in n for n in notes),
+            any("2 rung" in n and str(MIN_RUNGS) in n for n in notes),
             f"expected a skip note citing the rung count, got: {notes}")
+
+    def test_three_rung_ladder_uses_quadratic_fit(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import analyze
+        scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24), ("mincorp_32", 32)]
+        clips = ["c1.wav"]
+        mos_rows = [[2.60, 3.00, 3.40]]
+        base = _bd_ladder(scenario_targets, clips, mos_rows, object_type="lc")
+        cand = _bd_ladder(scenario_targets, clips, mos_rows, bitrate_scale=1.10, object_type="lc")
+
+        out = analyze(base, cand)
+        self.assertEqual(len(out["segments"]), 1)
+        seg = out["segments"][0]
+        self.assertEqual(seg["order"], 2)
+        self.assertAlmostEqual(seg["stats"]["mean"], 10.0, delta=1.0)
 
 
 if __name__ == "__main__":

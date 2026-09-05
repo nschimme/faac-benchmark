@@ -79,13 +79,21 @@ Throughput measures the speed of the encoder on fixed throughput stimuli.
 - **Wall-Clock Timing (Fallback when valgrind is absent)**: Measures single-core wall-clock timing minimum across repetitions on fixed stimuli.
 - **Difference from Leaderboard Speed (xRT)**: Throughput Δ evaluates relative candidate-vs-baseline performance on fixed benchmark stimuli in `phase1_encode.py`. The multi-encoder leaderboard (`compare_encoders.py`), by contrast, reports **Speed (xRT)** (realtime factor = audio duration / encode duration) across the full scenario corpus.
 
-## Rate Control: ABR vs. VBR Semantics
+## Rate Control & Bitrate Accuracy: Elementary Stream (ES) Payload Bitrate
 
-The benchmark suite evaluates ABR (Average Bitrate) and VBR (Variable Bitrate) using fundamentally different metrics to maximize Signal-to-Noise Ratio (SNR) and avoid false positives.
+The benchmark suite evaluates ABR (Average Bitrate) and VBR (Variable Bitrate) using elementary stream (ES) payload calculations to maximize Signal-to-Noise Ratio (SNR) and eliminate container padding noise.
+
+### Elementary Stream (ES) Bitrate Calculation
+Container overhead (such as MP4 `ftyp`, `moov`, and `stbl` atoms or ID3 metadata) adds ~1.5–2.0 KB of fixed non-audio byte padding. On short benchmark clips (e.g. 5–10 second clips at 16–32 kbps), container overhead introduces a spurious +7% to +15% bitrate overshoot error that the encoder's rate-control module is not responsible for.
+
+To isolate pure codec bit distribution:
+- **Audio Payload Bytes**: Calculated via `utils.get_audio_es_bytes()`, which uses `ffprobe` packet inspection (`-show_entries packet=size`) to sum the exact size of all audio elementary stream packets.
+- **Audio Duration**: Anchored to the reference unpadded WAV input duration (`ffmpeg_probe(input_path)`), eliminating priming and trailing zero-padding duration skew.
+- **Formula**: $\text{actual\_bitrate (kbps)} = \frac{\text{es\_bytes} \times 8}{\text{audio\_duration} \times 1000}$.
 
 ### ABR Mode (`-b <bitrate>`)
 - **Objective**: Target a fixed target average bitrate across content, utilizing the bit reservoir to smooth frame-to-frame bitrate variations.
-- **Bitrate Accuracy & Bias**: Measures how closely output bitrates hit the nominal target `cfg["bitrate"]`. Accuracy is reported as `(1.0 - |actual - target| / target) * 100%`, and Bias measures systematic overshooting or undershooting.
+- **Bitrate Accuracy & Bias**: Measures how closely output ES bitrates hit the nominal target `cfg["bitrate"]`. Accuracy is reported as `(1.0 - |actual - target| / target) * 100%`, and Bias measures systematic overshooting or undershooting.
 
 ### VBR Mode (`-q <vbr_q>`)
 - **Objective**: Maintain a constant perceptual quality level across clips. Clip bitrates naturally fluctuate based on spectral and transient complexity (e.g. complex/noisy clips spend significantly more bits than quiet/simple clips).
@@ -155,9 +163,9 @@ BD-rate +0.8%); only BD-rate holds bitrate fixed by construction rather than
 by after-the-fact arithmetic, which is why rate-control work is gated on it.
 
 The fit: per clip, MOS is the independent variable and `log10(bitrate)` the
-dependent one, a cubic is fitted to each build's rate-quality curve, both are
-integrated over the MOS range the two curves share, and the mean log-rate
-difference is converted back to a percentage.
+dependent one; a polynomial is fitted to each build's rate-quality curve (order-3 cubic for ladders with $\ge 4$ rungs, adaptively falling back to order-2 quadratic for 3-rung ladders), both are integrated over the MOS range the two curves share, and the mean log-rate difference is converted back to a percentage.
+
+BD-rate is featured across both A/B result reports (`compare_results.py`) and multi-encoder leaderboards (`compare_encoders.py`), providing maintainers with high-signal, bitrate-unbiased quality verdicts.
 
 **Must be segmented by object type.** A ladder that crosses an AUTO
 object-type switch (e.g. the `48k_stereo` HE→LC crossover between 96k and
