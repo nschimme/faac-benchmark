@@ -247,6 +247,7 @@ def run_benchmark(
         exact_rom_size = get_binary_size(lib_path)
 
     results = {
+        "name": precision,
         "sha": sha,
         "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
         "faac_precision": os.environ.get("FAAC_PRECISION"),
