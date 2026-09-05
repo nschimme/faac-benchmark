@@ -371,7 +371,7 @@ def get_audio_es_bytes(path):
             "ffprobe", "-v", "error", "-select_streams", "a:0",
             "-show_entries", "packet=size", "-of", "json", path
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = safe_run(cmd)
         data = json.loads(res.stdout)
         packets = data.get("packets", [])
         if packets:
