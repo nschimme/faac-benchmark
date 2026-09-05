@@ -41,7 +41,7 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
-| `--rate-control abr\|vbr` | Choose rate control mode (`abr` using `-b` bitrates, or `vbr` using `-q` quality targets) |
+| `--rate-control abr\|vbr\|cbr` | Choose rate control mode (`abr` using `-b` bitrates, `vbr` using `-q` quality targets, or `cbr` using `-b --cbr`: the bit reservoir holds the rate exactly, so `bias_percent` is a hard target there) |
 | `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
 | `--gate` | Use the small fixed gate subset for ~30s iteration (see below) |
