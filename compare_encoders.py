@@ -1125,7 +1125,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         "**Negative % = candidate is more efficient** (uses fewer bits for same quality). "
                         "BD-rate holds quality fixed by construction, avoiding bitrate-bias traps of raw fixed-rate MOS deltas.\n\n")
 
-                base_recs = [r for r in results if r["row_key"] == base_key and r.get("mos") is not None and r.get("actual_bitrate")]
+                base_recs = [r for r in results if r["row_key"] == base_key and r.get("decode_valid") and r.get("mos") is not None and r.get("actual_bitrate")]
                 base_mat = {f"{r['scenario']}_{r['filename']}": {
                     "scenario": r["scenario"], "filename": r["filename"],
                     "mos": r["mos"], "bitrate": r["actual_bitrate"],
@@ -1137,7 +1137,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 for cand_key in all_row_keys:
                     if cand_key == base_key:
                         continue
-                    cand_recs = [r for r in results if r["row_key"] == cand_key and r.get("mos") is not None and r.get("actual_bitrate")]
+                    cand_recs = [r for r in results if r["row_key"] == cand_key and r.get("decode_valid") and r.get("mos") is not None and r.get("actual_bitrate")]
                     cand_mat = {f"{r['scenario']}_{r['filename']}": {
                         "scenario": r["scenario"], "filename": r["filename"],
                         "mos": r["mos"], "bitrate": r["actual_bitrate"],
@@ -1160,8 +1160,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         icon = "🚀" if avg_bd < -0.5 else "📉" if avg_bd > 0.5 else "🎯"
                         f.write(f"| {c_label} | **{avg_bd:+.2f}%** {icon} | {n_ladders} |\n")
                     f.write("\n")
+                else:
+                    f.write("_No valid BD-rate ladders found between baseline and candidate encoders._\n\n")
         except Exception as e:
-            pass
+            f.write(f"### BD-Rate Relative Efficiency\n\n_BD-rate evaluation skipped due to error: {e}_\n\n")
 
         # 6. Efficiency & Footprint
         f.write("### Encoder Efficiency & Footprint\n\n")

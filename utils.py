@@ -361,10 +361,10 @@ def get_audio_es_bytes(path):
 
     MP4/M4A containers add 1.5KB-2KB of ftyp/moov atom overhead. On short benchmark clips,
     container overhead distorts bitrate metrics. This uses ffprobe packet inspection
-    to sum the exact audio payload bytes.
+    to sum the exact audio payload bytes. Returns None if inspection fails.
     """
     if not path or not os.path.exists(path):
-        return 0
+        return None
 
     try:
         cmd = [
@@ -381,8 +381,7 @@ def get_audio_es_bytes(path):
     except Exception:
         pass
 
-    # Fallback to whole-file size if ffprobe packet inspection fails
-    return os.path.getsize(path)
+    return None
 
 def decode_validate(path):
     """Validates that an AAC file decodes cleanly with ffmpeg.
