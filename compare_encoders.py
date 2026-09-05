@@ -26,8 +26,14 @@ from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_
                    get_audio_es_bytes)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
-# Ensure the current directory is in the path for config import
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Ensure SCRIPT_DIR and scripts directory are in sys.path
+if SCRIPT_DIR not in sys.path:
+    sys.path.append(SCRIPT_DIR)
+scripts_dir = os.path.join(SCRIPT_DIR, "scripts")
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
 
 def find_linked_lib(binary_path, name_substr):
     """Resolve the on-disk path of a shared library linked into binary_path."""
@@ -483,9 +489,8 @@ def main():
 
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
-    output_dir = os.path.join(script_dir, "output", "comparison")
+    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
+    output_dir = os.path.join(SCRIPT_DIR, "output", "comparison")
     os.makedirs(output_dir, exist_ok=True)
 
     encoders = detect_encoders(args)
@@ -580,7 +585,7 @@ def main():
         with open(bridge_json, "w") as f:
             json.dump(bridge_data, f, indent=2)
 
-        phase2_script = os.path.join(script_dir, "phase2_mos.py")
+        phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
         cmd_phase2 = [
             sys.executable, phase2_script,
             bridge_json,
@@ -630,7 +635,7 @@ def main():
         with open(bridge_json_stereo, "w") as f:
             json.dump(bridge_data, f, indent=2)
 
-        phase3_script = os.path.join(script_dir, "phase3_stereo.py")
+        phase3_script = os.path.join(SCRIPT_DIR, "phase3_stereo.py")
         cmd_phase3 = [
             sys.executable, phase3_script,
             bridge_json_stereo,
@@ -1113,7 +1118,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         # BD-Rate Analysis vs Baseline Encoder (FAAC if present, else first encoder)
         try:
-            sys.path.insert(0, os.path.join(script_dir, "scripts"))
             import bd_rate as bdr
 
             # Find reference baseline encoder key (prefer FAAC LC)

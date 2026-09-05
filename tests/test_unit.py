@@ -1025,6 +1025,8 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
             self.assertIn("#### LC Profile", content)
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)
+            self.assertIn("### BD-Rate Relative Efficiency", content)
+            self.assertNotIn("BD-rate evaluation skipped due to error", content)
 
     def test_leaderboard_title_and_standard_profile_with_non_aac(self):
         from compare_encoders import generate_leaderboard, Encoder, OpusEncoder, LameEncoder
