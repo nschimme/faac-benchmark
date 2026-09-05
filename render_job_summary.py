@@ -35,9 +35,9 @@ def format_bytes(b):
     return f"{b} B"
 
 
-def render_job_summary(data):
+def render_job_summary(data, name_override=None):
     lines = []
-    run_name = data.get("name") or "Benchmark Run"
+    run_name = name_override or data.get("name") or "Benchmark Run"
     sha = data.get("sha")
     faac_git_sha = data.get("faac_git_sha")
 
@@ -115,16 +115,17 @@ def render_job_summary(data):
             total_mos_sum += sum(mos_vals)
             mos_clip_count += len(mos_vals)
 
-        target_brs = [s["expected_bitrate"] for s in samples if s.get("expected_bitrate") is not None]
-        actual_brs = [s["bitrate"] for s in samples if s.get("bitrate") is not None]
+        paired_samples = [s for s in samples if s.get("expected_bitrate") is not None and s.get("bitrate") is not None]
+        target_brs = [s["expected_bitrate"] for s in paired_samples]
+        actual_brs = [s["bitrate"] for s in paired_samples]
 
         mean_target_br = (sum(target_brs) / len(target_brs)) if target_brs else None
         mean_actual_br = (sum(actual_brs) / len(actual_brs)) if actual_brs else None
 
-        if mean_target_br and mean_actual_br:
+        if mean_target_br is not None and mean_actual_br is not None:
             total_target_br += sum(target_brs)
             total_actual_br += sum(actual_brs)
-            br_count += len(actual_brs)
+            br_count += len(paired_samples)
 
         # Sc_errors
         sc_errs = sum(1 for s in samples if s.get("decode_error"))
@@ -204,6 +205,7 @@ def render_job_summary(data):
 def main():
     parser = argparse.ArgumentParser(description="Render Job Summary to Markdown for GitHub Step Summary")
     parser.add_argument("result_json", help="Path to result JSON file")
+    parser.add_argument("--name", help="Override name for this benchmark run")
     parser.add_argument("--output", help="Path to output Markdown file (default: stdout)")
 
     args = parser.parse_args()
@@ -215,7 +217,7 @@ def main():
     with open(args.result_json, "r") as f:
         data = json.load(f)
 
-    summary_md = render_job_summary(data)
+    summary_md = render_job_summary(data, name_override=args.name)
 
     if args.output:
         with open(args.output, "w") as f:

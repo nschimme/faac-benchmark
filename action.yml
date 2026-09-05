@@ -169,5 +169,5 @@ runs:
         PYTHONPATH: ${{ github.action_path }}
       run: |
         if [ -f "${{ inputs.output-json }}" ]; then
-          python3 ${{ github.action_path }}/render_job_summary.py "${{ inputs.output-json }}" >> $GITHUB_STEP_SUMMARY
+          python3 ${{ github.action_path }}/render_job_summary.py "${{ inputs.output-json }}" --name "${{ inputs.run-name }}" >> $GITHUB_STEP_SUMMARY
         fi

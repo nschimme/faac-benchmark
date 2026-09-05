@@ -1314,7 +1314,6 @@ class TestRenderJobSummary(unittest.TestCase):
     def test_render_job_summary_vbr_and_decode_errors(self):
         from render_job_summary import render_job_summary
         data = {
-            "name": "amd64_vbr_cand",
             "sha": "abcdef1234567890",
             "lib_size": 150000,
             "matrix": {
@@ -1329,10 +1328,35 @@ class TestRenderJobSummary(unittest.TestCase):
                 }
             }
         }
-        summary = render_job_summary(data)
+        summary = render_job_summary(data, name_override="amd64_vbr_cand")
+        self.assertIn("Benchmark Job Summary: amd64_vbr_cand", summary)
         self.assertIn("VBR Mode", summary)
         self.assertIn("1 / 1", summary)
         self.assertIn("❌ 1 decode err", summary)
+
+    def test_render_job_summary_unpaired_bitrate_samples(self):
+        from render_job_summary import render_job_summary
+        data = {
+            "name": "unpaired_test",
+            "matrix": {
+                "s1_c1.wav": {
+                    "scenario": "48k_stereo_128k",
+                    "filename": "c1.wav",
+                    "expected_bitrate": 128.0,
+                    "bitrate": 128.0,
+                    "rate_control_mode": "abr"
+                },
+                "s1_c2.wav": {
+                    "scenario": "48k_stereo_128k",
+                    "filename": "c2.wav",
+                    "expected_bitrate": 128.0,
+                    "bitrate": None,
+                    "rate_control_mode": "abr"
+                }
+            }
+        }
+        summary = render_job_summary(data)
+        self.assertIn("Mean Bitrate**: `128.00 kbps` (Target: `128.00 kbps`", summary)
 
     def test_render_job_summary_partial_run(self):
         from render_job_summary import render_job_summary
