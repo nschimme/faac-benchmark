@@ -145,6 +145,9 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
         cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
     else:
         cmd.extend(["-b", str(cfg["bitrate"])])
+        # CBR is ABR's target held by a bit reservoir: same scenarios, one flag.
+        if rate_control == "cbr":
+            cmd.append("--cbr")
     if extra_args:
         cmd.extend(extra_args)
 
@@ -171,7 +174,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             print(f"    [DECODE ERROR] {sample}: {decode_err}")
 
         # Rate control bias & accuracy calculations per SOP
-        rc_mode = "abr" if rate_control == "abr" else "vbr"
+        rc_mode = rate_control
         expected_rate = cfg.get("bitrate")
         bias_ratio = None
         bias_percent = None
@@ -183,7 +186,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             bias_percent = (bias_ratio - 1.0) * 100
             accuracy_score = max(0.0, 1.0 - abs((actual_bitrate - expected_rate) / expected_rate))
 
-            if rc_mode == "abr":
+            if rc_mode in ("abr", "cbr"):
                 if bias_ratio > 1.05:
                     bias_status = "Overshoot"
                 elif bias_ratio < 0.95:
@@ -388,6 +391,8 @@ def run_benchmark(
             variants = []
             # LC profile variant
             lc_flags = ["-q", str(vbr_q_128k)] if rate_control == "vbr" else ["-b", "128"]
+            if rate_control == "cbr":
+                lc_flags.append("--cbr")
             if not is_legacy:
                 lc_flags.extend(["--object-type", "lc"])
             variants.append(("_lc", lc_flags))
@@ -395,6 +400,8 @@ def run_benchmark(
             # HE profile variant (if non-legacy)
             if not is_legacy:
                 he_flags = ["-q", str(vbr_q_32k)] if rate_control == "vbr" else ["-b", "32"]
+                if rate_control == "cbr":
+                    he_flags.append("--cbr")
                 he_flags.extend(["--object-type", "he-aac-v1"])
                 variants.append(("_he", he_flags))
 
@@ -474,7 +481,8 @@ if __name__ == "__main__":
     parser.add_argument("--exclude-tests", help="Comma-separated exclude globs")
     parser.add_argument("--extra-args", nargs="*", help="Extra arguments to pass to faac encoder (e.g. '--tns')")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
-    parser.add_argument("--rate-control", choices=["abr", "vbr"], default="abr", help="Rate control mode (abr or vbr)")
+    parser.add_argument("--rate-control", choices=["abr", "vbr", "cbr"], default="abr",
+                        help="Rate control mode: abr (-b), vbr (-q), or cbr (-b --cbr: bit reservoir, exact rate)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--throughput-only", action="store_true",
                         help="Measure only throughput and merge it into an existing output JSON. "

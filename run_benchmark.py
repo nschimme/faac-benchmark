@@ -41,7 +41,8 @@ def main():
     parser.add_argument("--compare", nargs="+", help="A/B comparison mode: 'A:--args' 'B:--args'")
     parser.add_argument("--sweep", help="Parameter sweep mode: 'KEY=v1,v2,...' where KEY is a faac flag (e.g. --pns) or an env var")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset (config.GATE_CLIPS)")
-    parser.add_argument("--rate-control", choices=["abr", "vbr"], default="abr", help="Rate control mode (abr or vbr)")
+    parser.add_argument("--rate-control", choices=["abr", "vbr", "cbr"], default="abr",
+                        help="Rate control mode: abr (-b), vbr (-q), or cbr (-b --cbr: bit reservoir, exact rate)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
     parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
