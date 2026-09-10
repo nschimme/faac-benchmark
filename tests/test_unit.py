@@ -862,6 +862,26 @@ class TestCompareResultsRendering(unittest.TestCase):
             self.assertIn("48k_stereo_64k: c1.wav", res["vbr_anomalies"][0][0])
             self.assertAlmostEqual(res["vbr_anomalies"][0][1], 25.0)
 
+    def test_scenario_performance_details_block(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            results_dir = os.path.join(td, "results")
+            os.makedirs(results_dir)
+            save_results(os.path.join(results_dir, "test_base.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+            save_results(os.path.join(results_dir, "test_cand.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+            out_file = os.path.join(td, "report.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+            with open(out_file) as f:
+                content = f.read()
+            self.assertIn("<details><summary><b>📋 View Scenario Performance Details</b></summary>", content)
+
 
 class TestAttackCentroidShift(unittest.TestCase):
     """Ground-truth checks for transient.py's attack-centroid-shift metric,
@@ -1301,8 +1321,10 @@ class TestRenderJobSummary(unittest.TestCase):
             "throughput_metric": "cachegrind"
         }
         summary = render_job_summary(data)
+        self.assertIn("<details><summary><b>📊 Benchmark Job Details: amd64_abr_cand</b></summary>", summary)
         self.assertIn("Benchmark Job Summary: amd64_abr_cand", summary)
         self.assertIn("12345678", summary)
+        self.assertIn("</details>", summary)
         self.assertIn("ROM Footprint", summary)
         self.assertIn("ABR Mode", summary)
         self.assertIn("Overall Average MOS", summary)

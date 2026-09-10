@@ -960,6 +960,44 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
         top_tools = chart_tools[:5]      # Top 5 for clean line display
 
+        avg_mos = (lambda rk, sc: stats[rk][sc]["mos_sum"] / stats[rk][sc]["mos_count"]
+                   if stats[rk][sc]["mos_count"] > 0 else None)
+        worst_mos = (lambda rk, sc: stats[rk][sc]["mos_min"]
+                     if stats[rk][sc]["mos_count"] > 0 else None)
+        stereo_fid = (lambda rk, sc: 1.0 - (stats[rk][sc]["ic_sum"] / stats[rk][sc]["ic_count"])
+                      if stats[rk][sc]["ic_count"] > 0 else None)
+
+        def is_suboptimal(rk, s_name):
+            if rk not in overall:
+                return False
+            enc_obj = encoder_info.get(rk)
+            tool_name = enc_obj.name if enc_obj else overall[rk]["tool"]
+            prof = overall[rk]["profile"]
+
+            cfg = SCENARIOS.get(s_name, {})
+            ch = scenario_channels(cfg) if cfg else 2
+            sr = scenario_rate(cfg) if cfg else 48000
+            br = cfg.get("bitrate", 0) if cfg else 0
+
+            # 1. Out-of-spec check for HE/HE-v2 profiles (exempt AFConvertEncoder)
+            if not isinstance(enc_obj, AFConvertEncoder):
+                if prof == "he" and not use_he_aac(br, ch, sr):
+                    return True
+                if prof == "hev2" and not use_he_v2_aac(br, ch, sr):
+                    return True
+
+            # 2. Quality inversion check: another profile of the same tool achieved higher MOS
+            candidates = tool_row_keys[tool_name]
+            mos_this = avg_mos(rk, s_name)
+            if mos_this is not None:
+                for other_rk in candidates:
+                    if other_rk == rk:
+                        continue
+                    other_mos = avg_mos(other_rk, s_name)
+                    if other_mos is not None and other_mos > mos_this + 0.005:
+                        return True
+
+            return False
 
         def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
             if val is None or max_val <= 0:
@@ -972,6 +1010,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None):
             scen_list = filter_scenarios if filter_scenarios is not None else scenarios
+            table_used_strikethrough = False
             for p in profile_order:
                 # Filter out encoder keys that have no valid data for this scenario subset
                 keys = [rk for rk in profile_keys[p] if any(extract_val_fn(rk, s) is not None for s in scen_list)]
@@ -992,26 +1031,36 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 for s in scen_list:
                     row_vals = [extract_val_fn(rk, s) for rk in keys]
-                    valid_vals = [v for v in row_vals if v is not None]
+                    valid_vals = [v for rk, v in zip(keys, row_vals) if v is not None and not is_suboptimal(rk, s)]
+                    if not valid_vals:
+                        valid_vals = [v for v in row_vals if v is not None]
 
                     best_val = None
                     if valid_vals:
                         best_val = min(valid_vals) if lower_is_better else max(valid_vals)
 
                     line = f"| {s} |"
-                    for val in row_vals:
+                    for rk, val in zip(keys, row_vals):
                         if val is None:
                             line += " N/A |"
                         else:
                             formatted = fmt_fn(val)
+                            subopt = is_suboptimal(rk, s)
+                            if subopt:
+                                formatted = f"~~{formatted}~~*"
+                                table_used_strikethrough = True
                             bar_str = make_progress_bar(val, table_max_scale, lower_is_better=lower_is_better)
-                            is_best = (val == best_val)
+                            is_best = (val == best_val and not subopt)
                             line += f" **{formatted}**{bar_str} |" if is_best else f" {formatted}{bar_str} |"
                     f.write(line + "\n")
 
                 f.write("\n")
 
-        f.write("\n## Per-Scenario Breakdown & Visualizations\n\n")
+            if table_used_strikethrough:
+                f.write("_\\* Struck-out scores indicate sub-optimal profile performance superseded by another profile from the same encoder at this bitrate._\n\n")
+
+        f.write("\n<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
+        f.write("## Per-Scenario Breakdown & Visualizations\n\n")
 
         # 1-3. Quality per rate family.
         #
@@ -1050,13 +1099,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     vals.append(f"{v:.4f}" if v is not None else "0.0")
                 f.write(f'    line "{t}" [{", ".join(vals)}]\n')
             f.write("```\n\n")
-
-        avg_mos = (lambda rk, sc: stats[rk][sc]["mos_sum"] / stats[rk][sc]["mos_count"]
-                   if stats[rk][sc]["mos_count"] > 0 else None)
-        worst_mos = (lambda rk, sc: stats[rk][sc]["mos_min"]
-                     if stats[rk][sc]["mos_count"] > 0 else None)
-        stereo_fid = (lambda rk, sc: 1.0 - (stats[rk][sc]["ic_sum"] / stats[rk][sc]["ic_count"])
-                      if stats[rk][sc]["ic_count"] > 0 else None)
 
         for fam in scenario_families(scenarios):
             fam_scenarios = sorted(
@@ -1202,15 +1244,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             lambda v: f"{v:.1f}x"
         )
         f.write("</details>\n\n")
+        f.write("</details>\n\n")
 
         if error_counts:
-            f.write("\n## Failure Analysis\n\n")
+            f.write("\n<details><summary><b>❌ View Failure Analysis</b></summary>\n\n")
+            f.write("## Failure Analysis\n\n")
             f.write("| Encoder: Error Type | Occurrences |\n")
             f.write("| :--- | :---: |\n")
             for row_k, err in sorted(error_counts.keys(), key=lambda k: error_counts[k], reverse=True):
                 enc_obj = encoder_info.get(row_k)
                 label = f"{enc_obj.name} {profile_label(enc_obj.profile)}" if enc_obj else row_k
                 f.write(f"| {label}: {err} | {error_counts[(row_k, err)]} |\n")
+            f.write("\n</details>\n\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")

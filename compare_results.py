@@ -1211,7 +1211,8 @@ def main():
 
     if not summary_only:
         # Scenario Performance Tables separated per rate control mode
-        report.append("\n### Scenario Performance")
+        report.append("\n<details><summary><b>📋 View Scenario Performance Details</b></summary>\n")
+        report.append("### Scenario Performance")
         has_sig_mark = False
 
         for mode in modes_present:
@@ -1304,6 +1305,7 @@ def main():
         report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
         if has_sig_mark:
             report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
+        report.append("\n</details>")
 
         # 1. Collapsible Details: Regressions
         total_regressions = global_metrics["total_regressions"]
