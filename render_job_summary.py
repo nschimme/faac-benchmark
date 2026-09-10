@@ -41,7 +41,9 @@ def render_job_summary(data, name_override=None):
     sha = data.get("sha")
     faac_git_sha = data.get("faac_git_sha")
 
-    title = f"## 📊 Benchmark Job Summary: {run_name}"
+    lines.append(f"<details><summary><b>📊 Benchmark Job Details: {run_name}</b></summary>\n")
+
+    title = f"#### 📊 Benchmark Job Summary: {run_name}"
     lines.append(title)
 
     meta_bits = []
@@ -61,7 +63,7 @@ def render_job_summary(data, name_override=None):
     bss_sz = data.get("lib_bss_size", lib_sections.get(".bss", 0))
     frontend_sz = data.get("frontend_size", 0)
 
-    lines.append("### 💾 Code Footprint")
+    lines.append("##### 💾 Code Footprint")
     lines.append("| Component | Size | Breakdown |")
     lines.append("| :--- | :--- | :--- |")
     lines.append(f"| **ROM Footprint** (`.text` + `.rodata` + `.data`) | **{format_bytes(lib_size)}** | Text: {format_bytes(text_sz)}, Rodata: {format_bytes(rodata_sz)}, Data: {format_bytes(data_sz)} |")
@@ -75,6 +77,7 @@ def render_job_summary(data, name_override=None):
     matrix = data.get("matrix", {})
     if not matrix:
         lines.append("*No encoding matrix executed in this run (Footprint/Throughput-only).*")
+        lines.append("\n</details>")
         return "\n".join(lines)
 
     # Group matrix entries by scenario
@@ -145,7 +148,7 @@ def render_job_summary(data, name_override=None):
     overall_target_br = (total_target_br / br_count) if br_count > 0 else None
     overall_actual_br = (total_actual_br / br_count) if br_count > 0 else None
 
-    lines.append(f"### 🎯 Performance & Bitrate Summary ({rc_mode_str} Mode)")
+    lines.append(f"##### 🎯 Performance & Bitrate Summary ({rc_mode_str} Mode)")
 
     summary_bullets = []
     if overall_mos is not None:
@@ -180,7 +183,7 @@ def render_job_summary(data, name_override=None):
     lines.append("")
 
     # Per-scenario Table
-    lines.append("#### Per-Scenario Breakdown")
+    lines.append("###### Per-Scenario Breakdown")
     if "ABR" in rc_mode_str:
         lines.append("| Scenario | Clips | Target Bitrate | Actual Bitrate | MOS | Status |")
         lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
@@ -198,6 +201,7 @@ def render_job_summary(data, name_override=None):
             lines.append(f"| `{r['name']}` | {r['clips']} | {actual_str} | {mos_str} | {r['status']} |")
 
     lines.append("")
+    lines.append("</details>")
 
     return "\n".join(lines)
 

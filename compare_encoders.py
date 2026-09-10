@@ -1011,7 +1011,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 f.write("\n")
 
-        f.write("\n## Per-Scenario Breakdown & Visualizations\n\n")
+        f.write("\n<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
+        f.write("## Per-Scenario Breakdown & Visualizations\n\n")
 
         # 1-3. Quality per rate family.
         #
@@ -1202,15 +1203,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             lambda v: f"{v:.1f}x"
         )
         f.write("</details>\n\n")
+        f.write("</details>\n\n")
 
         if error_counts:
-            f.write("\n## Failure Analysis\n\n")
+            f.write("\n<details><summary><b>❌ View Failure Analysis</b></summary>\n\n")
+            f.write("## Failure Analysis\n\n")
             f.write("| Encoder: Error Type | Occurrences |\n")
             f.write("| :--- | :---: |\n")
             for row_k, err in sorted(error_counts.keys(), key=lambda k: error_counts[k], reverse=True):
                 enc_obj = encoder_info.get(row_k)
                 label = f"{enc_obj.name} {profile_label(enc_obj.profile)}" if enc_obj else row_k
                 f.write(f"| {label}: {err} | {error_counts[(row_k, err)]} |\n")
+            f.write("\n</details>\n\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
