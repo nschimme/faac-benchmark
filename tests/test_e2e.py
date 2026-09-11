@@ -149,7 +149,9 @@ class TestE2EMock(unittest.TestCase):
         with open(summary_md) as f:
             summary = f.read()
         self.assertIn("Regressions", summary)
-        self.assertTrue(any(x in summary for x in ("Throughput", "TP")), "Throughput/TP missing in summary")
+        self.assertTrue(any(x in summary for x in ("Throughput", "TP", "Performance")), "Throughput/TP/Performance missing in summary")
+        self.assertIn("Executive 3-Pillar Balance", summary)
+        self.assertIn("```mermaid", summary)
 
     # ------------------------------------------------------------------
     # Test
