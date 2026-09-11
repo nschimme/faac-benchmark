@@ -882,6 +882,43 @@ class TestCompareResultsRendering(unittest.TestCase):
                 content = f.read()
             self.assertIn("<details><summary><b>📋 View Scenario Performance Details</b></summary>", content)
 
+    def test_mermaid_charts_rendering_and_skip_graphs_option(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            results_dir = os.path.join(td, "results")
+            os.makedirs(results_dir)
+            save_results(os.path.join(results_dir, "test_base.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+            save_results(os.path.join(results_dir, "test_cand.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+
+            # Test default run with Mermaid graphs enabled
+            out_file = os.path.join(td, "report.md")
+            summary_file = os.path.join(td, "summary.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file, "--summary-output", summary_file]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+
+            with open(out_file) as f:
+                content = f.read()
+            self.assertIn("```mermaid", content)
+            self.assertIn("Executive 3-Pillar Balance", content)
+
+            # Test run with --skip-graphs flag
+            out_file_no_graphs = os.path.join(td, "report_no_graphs.md")
+            summary_file_no_graphs = os.path.join(td, "summary_no_graphs.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file_no_graphs, "--summary-output", summary_file_no_graphs, "--skip-graphs"]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+
+            with open(out_file_no_graphs) as f:
+                content_no_graphs = f.read()
+            self.assertNotIn("```mermaid", content_no_graphs)
+            self.assertIn("Executive 3-Pillar Balance", content_no_graphs)
+
 
 class TestAttackCentroidShift(unittest.TestCase):
     """Ground-truth checks for transient.py's attack-centroid-shift metric,

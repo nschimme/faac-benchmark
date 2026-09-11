@@ -1057,8 +1057,11 @@ def main():
     parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
                         help="Accept up to BYTES of .text+.rodata growth without failing. "
                              "For changes whose size cost is intended and stated in the PR.")
+    parser.add_argument("--skip-graphs", action="store_true",
+                        help="Skip generating Mermaid.js charts in the report.")
 
     args = parser.parse_args()
+    skip_graphs = args.skip_graphs
 
     global STRICT_DECODE
     STRICT_DECODE = args.strict_decode
@@ -1138,6 +1141,8 @@ def main():
     failed_gates = sorted({g["name"] for d in all_suite_data.values()
                            for g in d.get("gates", []) if g["status"] == "fail"})
 
+    has_failed_or_warned = overall_regression or worst_tp_delta < -5.0 or (overall_missing and ENABLED_GATES is None)
+
     summary_lines = []
     if overall_regression:
         what = ", ".join(g.capitalize() for g in failed_gates) or "Quality"
@@ -1160,11 +1165,47 @@ def main():
 
     mos_label = "MOS"
 
-    summary_lines.append("\n### Summary")
+    # Executive 3-Pillar Balance View (Quality, Performance, Footprint)
+    summary_lines.append("\n### Executive 3-Pillar Balance")
+
+    avg_mos_delta_val = (global_metrics["total_mos_delta"] / global_metrics["total_mos_count"]) if global_metrics["total_mos_count"] > 0 else 0.0
+    mos_status = "✅ Pass" if avg_mos_delta_val >= -0.005 else "❌ Fail" if avg_mos_delta_val < -0.05 else "⚠️ Minor Drop"
+    tp_status = "✅ Pass" if global_metrics["avg_tp_reduction"] >= -1.0 else "⚠️ Slowdown"
+    lib_status = "✅ Pass" if global_metrics["avg_lib_chg"] <= 0.5 else "⚠️ Growth"
+
+    mos_str_val = f"{avg_mos_delta_val:+.3f} MOS" if global_metrics["total_mos_count"] > 0 else "N/A"
+    tp_str_val = f"{global_metrics['avg_tp_reduction']:+.1f}%"
+    lib_str_val = f"{global_metrics['avg_lib_chg']:+.2f}%"
+
+    summary_lines.append("| Pillar | Metric | Change vs Baseline | Status |")
+    summary_lines.append("| :--- | :--- | :---: | :---: |")
+    summary_lines.append(f"| 🎧 **Quality** | Perceptual MOS Δ | `{mos_str_val}` | {mos_status} |")
+    summary_lines.append(f"| ⚡ **Performance** | Speed (Throughput Δ) | `{tp_str_val}` | {tp_status} |")
+    summary_lines.append(f"| 📦 **Footprint** | Code Footprint Δ | `{lib_str_val}` | {lib_status} |")
+
+    # Render Executive 3-Pillar Balance Mermaid Chart
+    if not skip_graphs:
+        # Scale MOS delta to % relative to 5.0 MOS scale for normalized 3-pillar graph
+        mos_pct = (avg_mos_delta_val / 5.0) * 100
+        tp_pct = global_metrics["avg_tp_reduction"]
+        # Invert footprint size change so negative size change (reduction) appears as a positive improvement bar
+        footprint_improvement_pct = -global_metrics["avg_lib_chg"]
+
+        chart_vals = [mos_pct, tp_pct, footprint_improvement_pct]
+        max_val = max(abs(v) for v in chart_vals)
+        bound = max(int(max_val * 1.5) + 1, 5)
+
+        summary_lines.append("\n```mermaid")
+        summary_lines.append("xychart-beta")
+        summary_lines.append('    title "Executive 3-Pillar Balance (% Change vs Baseline)"')
+        summary_lines.append('    x-axis ["Quality (MOS Δ %)", "Speed (Throughput Δ %)", "Footprint (-Size Δ %)"]')
+        summary_lines.append(f'    y-axis "Improvement %" {-bound} --> {bound}')
+        summary_lines.append(f'    bar [{mos_pct:.2f}, {tp_pct:.2f}, {footprint_improvement_pct:.2f}]')
+        summary_lines.append("```\n")
+
+    summary_lines.append("\n### Summary Details")
     if len(modes_present) > 1:
-        # Both ABR and VBR ran: one table per mode, so a maintainer can see
-        # at a glance whether either mode specifically regressed instead of
-        # reading one number that pools both together.
+        # Both ABR and VBR ran: one table per mode
         for mode in modes_present:
             mode_items = sorted((n, d) for n, d in all_suite_data.items()
                                  if d.get("rate_control_mode", "abr") == mode)
@@ -1174,10 +1215,7 @@ def main():
     else:
         summary_lines.extend(render_summary_table(global_metrics, mos_label, modes_present[0].upper()))
 
-    # Per-family MOS rollup. With five rate families in the matrix, "did any
-    # family regress?" should be answerable without scanning every row of the
-    # scenario table below -- that table only needs reading once something
-    # here is red.
+    # Per-family MOS rollup
     family_deltas = defaultdict(list)
     for suite_data in all_suite_data.values():
         for sc_name, sc_stats in suite_data["scenario_stats"].items():
@@ -1187,6 +1225,21 @@ def main():
                           if family_deltas[f]]
     if len(families_with_data) > 1:
         summary_lines.append(f"\n#### {mos_label} Δ by Rate Family")
+        if not skip_graphs:
+            fam_labels = [f'"{family_label(fam)}"' for fam in families_with_data]
+            fam_means = [(sum(family_deltas[fam]) / len(family_deltas[fam])) for fam in families_with_data]
+            fam_vals = [f"{m:+.3f}" for m in fam_means]
+            max_fam_m = max(abs(m) for m in fam_means) if fam_means else 0.1
+            f_bound = max(round(max_fam_m * 1.5, 2), 0.05)
+
+            summary_lines.append("```mermaid")
+            summary_lines.append("xychart-beta")
+            summary_lines.append(f'    title "MOS Δ by Rate Family"')
+            summary_lines.append(f"    x-axis [{', '.join(fam_labels)}]")
+            summary_lines.append(f'    y-axis "MOS Δ" {-f_bound:.2f} --> {f_bound:.2f}')
+            summary_lines.append(f"    bar [{', '.join(fam_vals)}]")
+            summary_lines.append("```\n")
+
         summary_lines.append(f"| Family | {mos_label} Δ | 95% Conf. Interval | Clips |")
         summary_lines.append("| :--- | :---: | :---: | :---: |")
         for fam in families_with_data:
@@ -1198,6 +1251,21 @@ def main():
                 ci_str += " ✳"
             summary_lines.append(
                 f"| {family_label(fam)} | {mean:+.3f} | {ci_str} | {len(deltas)} |")
+
+    # Smart Adaptive Visibility: If a failure or regression exists, surface
+    # regression details and failed gates directly in the top view!
+    if has_failed_or_warned:
+        total_regressions = global_metrics["total_regressions"]
+        if total_regressions > 0:
+            summary_lines.append(f"\n### ❌ Regression Details ({total_regressions})")
+            for name, data in sorted(all_suite_data.items()):
+                if data["regressions"]:
+                    summary_lines.append(f"\n#### {name}")
+                    summary_lines.append(
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    summary_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                    for r in data["regressions"]:
+                        summary_lines.append(r["line"])
 
     # Build the full report
     report = list(summary_lines)
@@ -1374,6 +1442,18 @@ def main():
 
             if data.get("object_movers"):
                 report.append("\n**Object .text movers**")
+                if not skip_graphs and data["object_movers"]:
+                    objs = [f'"{obj}"' for _, obj in data["object_movers"][:6]]
+                    diffs = [f"{d}" for d, _ in data["object_movers"][:6]]
+                    max_d = max(abs(d) for d, _ in data["object_movers"][:6]) if data["object_movers"] else 100
+                    d_bound = max(int(max_d * 1.25) + 1, 10)
+                    report.append("```mermaid")
+                    report.append("xychart-beta")
+                    report.append('    title "Object File .text Size Movers (Bytes)"')
+                    report.append(f"    x-axis [{', '.join(objs)}]")
+                    report.append(f'    y-axis "Byte Change" {-d_bound} --> {d_bound}')
+                    report.append(f"    bar [{', '.join(diffs)}]")
+                    report.append("```\n")
                 report.append(", ".join(
                     f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))
 
