@@ -65,6 +65,19 @@ bookkeeping — just a quick number). Reuses `phase2_mos.py`'s scoring logic
 python3 scripts/score_clip.py reference.wav encoded.aac --mode audio|speech
 ```
 
+### `scripts/winseq.py`
+
+Histogram of the `window_sequence` each ADTS frame actually carries (first
+SCE/CPE), or one line per frame with `--frames`. Use it instead of the
+encoder's `FAAC_STATS` block-type counters when the question is what reached
+the bitstream; it parses past the SCE `global_gain` and a CPE without
+`common_window`, which precede `ics_info`.
+
+```bash
+python3 scripts/winseq.py out.aac [more.aac ...]
+python3 scripts/winseq.py --frames out.aac
+```
+
 ## Transient fidelity / TNS tooling
 
 ### `scripts/score_transient.py`
