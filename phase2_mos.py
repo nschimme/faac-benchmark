@@ -222,17 +222,22 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
 
                 n = min(len(ref_aligned), len(dec_aligned))
                 num_channels = ref_aligned.shape[1]
-                per_channel_mos = [
-                    float(zimtohrli.mos_from_zimtohrli(
-                        z_engine.distance(
-                            np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
-                            np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
-                        )
-                    ))
+                per_channel_dist = [
+                    z_engine.distance(
+                        np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
+                        np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
+                    )
                     for ch in range(num_channels)
                 ]
-                mean_mos = float(np.mean(per_channel_mos))
-                return mean_mos, "zimtohrli"
+                if num_channels > 2:
+                    per_channel_mos = [
+                        float(zimtohrli.mos_from_zimtohrli(d))
+                        for d in per_channel_dist
+                    ]
+                    return float(np.mean(per_channel_mos)), "zimtohrli"
+                else:
+                    dist = math.sqrt(sum(d * d for d in per_channel_dist))
+                    return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
         print("  ERROR: zimtohrli is required for audio scoring but not available.")
         return None, "zimtohrli"
 
