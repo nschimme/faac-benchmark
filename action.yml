@@ -64,14 +64,14 @@ runs:
       run: |
         pip install -r ${{ github.action_path }}/requirements.txt
 
-    # Throughput is Cachegrind instruction counts when valgrind is present and
-    # wall-clock time otherwise; on a shared runner the latter moves by a few
-    # percent between byte-identical builds.
-    - name: Install valgrind
+    # ffmpeg decodes and validates every encode; valgrind makes Throughput a
+    # Cachegrind instruction count rather than wall-clock time, which on a
+    # shared runner moves by a few percent between byte-identical builds.
+    - name: Install system dependencies
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y valgrind
+        sudo apt-get install -y ffmpeg valgrind
 
     # hashFiles() only resolves paths under GITHUB_WORKSPACE, and action_path
     # is outside it, so the expression form of this key evaluated to the empty
