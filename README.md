@@ -31,6 +31,7 @@ We are grateful to the following projects for providing high-quality research ma
 *   **TCD-VoIP (Sigmedia-VoIP)**: [Listener Test Database](https://www.sigmedia.tv/datasets/tcd_voip_ltd/) — designed for assessing quality in VoIP applications. Supplies both the clean reference recordings (the speech quality ladder) and the degraded test set (the VoIP spot check).
 *   **PMLT2014**: [Public Multiformat Listening Test](https://listening-test.coresv.net/) — a community-defined comprehensive multi-codec benchmark.
 *   **SoundExpert**: [Sound Samples](https://soundexpert.org/sound-samples) — high-precision EBU SQAM CD excerpts for transparency testing.
+*   **FFmpeg Multichannel**: [Samples](https://samples.ffmpeg.org/multichannel/) — 6-channel surround sound identification reference audio.
 
 ## License
 

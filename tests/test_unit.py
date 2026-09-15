@@ -740,6 +740,71 @@ class TestZimtohrliScoring(unittest.TestCase):
             self.assertEqual(len(call_lengths), 2, "expected one distance() call per channel")
 
 
+class TestMultichannel51(unittest.TestCase):
+    """Checks for 5.1 surround corpus, scenario configuration, and multi-channel scoring."""
+
+    def test_51_corpus_and_scenarios_configured(self):
+        from config import CORPORA, SCENARIOS, FAMILY_ORDER
+        self.assertIn("audio_51", CORPORA)
+        c51 = CORPORA["audio_51"]
+        self.assertEqual(c51["channels"], 6)
+        self.assertEqual(c51["rate"], 44100)
+        self.assertEqual(c51["family"], "44k1_51")
+        self.assertIn("44k1_51", FAMILY_ORDER)
+
+        scen_51 = [name for name, cfg in SCENARIOS.items() if cfg["corpus"] == "audio_51"]
+        self.assertGreaterEqual(len(scen_51), 6)
+        self.assertIn("44k1_51_96k", SCENARIOS)
+        self.assertIn("44k1_51_384k", SCENARIOS)
+
+    def test_phase2_per_channel_mos_averaging_6ch(self):
+        import phase2_mos
+        if not phase2_mos.HAS_ZIMTOHRLI:
+            self.skipTest("zimtohrli not installed")
+
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref_51.wav")
+            deg = os.path.join(td, "deg_51.wav")
+            write_wav(ref, seconds=1, sr=44100, ch=6)
+            write_wav(deg, seconds=1, sr=44100, ch=6)
+
+            real_engine = phase2_mos.get_process_zimtohrli()
+            original_distance = real_engine.distance
+            call_lengths = []
+
+            def counting_distance(a, b):
+                call_lengths.append(len(a))
+                return original_distance(a, b)
+
+            with patch.object(real_engine, "distance", side_effect=counting_distance):
+                mos, backend = phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=44100)
+
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNotNone(mos)
+            self.assertEqual(len(call_lengths), 6, "expected exactly 6 distance() calls for 6-channel audio")
+            self.assertGreaterEqual(mos, 1.0)
+            self.assertLessEqual(mos, 5.0)
+
+    def test_phase3_multichannel_coherence_and_transient_6ch(self):
+        import phase3_stereo
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref_51.wav")
+            deg = os.path.join(td, "deg_51.wav")
+            write_wav(ref, seconds=1, sr=48000, ch=6)
+            write_wav(deg, seconds=1, sr=48000, ch=6)
+
+            # Test coherence_error on 6-channel wav
+            err = phase3_stereo.coherence_error(ref, deg)
+            self.assertIsNotNone(err)
+            self.assertAlmostEqual(err, 0.0, delta=0.01)
+
+            # Test compute_single with 6 channels
+            k, ic, centroid_ms = phase3_stereo.compute_single("test_key", deg, ref, td, channels=6)
+            self.assertEqual(k, "test_key")
+            self.assertIsNotNone(ic)
+            self.assertAlmostEqual(ic, 0.0, delta=0.01)
+
+
 class TestCompareResultsRendering(unittest.TestCase):
     def test_summary_table_mos_delta_rendering(self):
         import compare_results as C

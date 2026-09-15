@@ -61,30 +61,36 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from config import SCENARIOS
-from utils import get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels
+from utils import get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir
 from transient import attack_centroid_deltas
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
 
 
-def decode_stereo(path, tmpdir, tag, rate=48000):
-    """Decode/transcode any audio file to 48 kHz 16-bit stereo wav."""
+def decode_audio(path, tmpdir, tag, rate=48000, channels=2):
+    """Decode/transcode any audio file to 48 kHz 16-bit wav with specified channels."""
     out = os.path.join(tmpdir, f"{tag}.wav")
-    if wav_conv(path, out, rate=rate, channels=2):
+    if wav_conv(path, out, rate=rate, channels=channels):
         return out
     return None
 
 
-def read_stereo(path):
+def read_audio_channels(path):
     with wave.open(path, "rb") as w:
         ch = w.getnchannels()
         raw = w.readframes(w.getnframes())
     a = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
     if ch >= 2:
-        a = a.reshape(-1, ch)
+        return a.reshape(-1, ch)
+    return a.reshape(-1, 1)
+
+
+def read_stereo(path):
+    a = read_audio_channels(path)
+    if a.shape[1] >= 2:
         return a[:, 0], a[:, 1]
-    return a, a  # mono source: both channels identical
+    return a[:, 0], a[:, 0]
 
 
 def estimate_delay(ref, deg, win=50000, maxlag=4096):
@@ -118,50 +124,72 @@ def coherence_vectorized(L, R, frame_size):
 
 
 def coherence_error(ref_path, deg_path):
-    """Mean per-frame |coherence(ref) - coherence(deg)|, time-aligned.
+    """Mean per-frame |coherence(ref) - coherence(deg)| across channel pairs, time-aligned.
     Note: Lower error is better. Reporting layers invert this to Fidelity (1.0 - error).
 
-    Returns None if the reference is mono (no stereo image to measure)."""
-    rL, rR = read_stereo(ref_path)
-    dL, dR = read_stereo(deg_path)
+    Returns None if the reference is mono (no inter-channel image to measure)."""
+    r_data = read_audio_channels(ref_path)
+    d_data = read_audio_channels(deg_path)
 
-    # Mono reference: nothing to measure.
-    if np.array_equal(rL, rR):
+    ch = r_data.shape[1]
+    if ch < 2:
         return None
 
-    lag = estimate_delay(rL, dL)
-    dL, dR = dL[lag:], dR[lag:]
-    m = min(len(rL), len(dL))
-    rL, rR, dL, dR = rL[:m], rR[:m], dL[:m], dR[:m]
+    # Mono reference (all channels identical): nothing to measure.
+    if all(np.array_equal(r_data[:, 0], r_data[:, i]) for i in range(1, ch)):
+        return None
 
-    ref_coh = coherence_vectorized(rL, rR, FRAME)
-    deg_coh = coherence_vectorized(dL, dR, FRAME)
+    lag = estimate_delay(r_data[:, 0], d_data[:, 0])
+    if lag > 0:
+        d_data = d_data[lag:, :]
+    elif lag < 0:
+        r_data = r_data[-lag:, :]
 
-    if ref_coh.size > 0 and deg_coh.size > 0:
-        errs = np.abs(ref_coh - deg_coh)
+    m = min(len(r_data), len(d_data))
+    r_data, d_data = r_data[:m, :], d_data[:m, :]
+
+    # Determine channel pairs (e.g. Front L/R and Surround Ls/Rs for 5.1 surround)
+    if ch >= 6:
+        pairs = [(0, 1), (4, 5)]
     else:
-        # Fallback for short clips: compute coherence over the whole available segment.
-        def simple_coherence(L, R):
-            den = np.sqrt(np.sum(L * L) * np.sum(R * R)) + 1e-9
-            return np.sum(L * R) / den
-        errs = np.array([abs(simple_coherence(rL, rR) - simple_coherence(dL, dR))])
+        pairs = [(0, 1)]
 
-    return float(np.mean(errs)) if errs.size > 0 else None
+    pair_errs = []
+    for c1, c2 in pairs:
+        if c1 < ch and c2 < ch:
+            rL, rR = r_data[:, c1], r_data[:, c2]
+            dL, dR = d_data[:, c1], d_data[:, c2]
+
+            ref_coh = coherence_vectorized(rL, rR, FRAME)
+            deg_coh = coherence_vectorized(dL, dR, FRAME)
+
+            if ref_coh.size > 0 and deg_coh.size > 0:
+                errs = np.abs(ref_coh - deg_coh)
+            else:
+                def simple_coherence(L, R):
+                    den = np.sqrt(np.sum(L * L) * np.sum(R * R)) + 1e-9
+                    return np.sum(L * R) / den
+                errs = np.array([abs(simple_coherence(rL, rR) - simple_coherence(dL, dR))])
+
+            if errs.size > 0:
+                pair_errs.append(float(np.mean(errs)))
+
+    return float(np.mean(pair_errs)) if pair_errs else None
 
 
 def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None,
-                    ref_cache_dir=None, want_ic=True, want_transient=True):
+                    ref_cache_dir=None, want_ic=True, want_transient=True, channels=2):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
         elif ref_cache_dir and ref_path and os.path.exists(ref_path):
-            ref_wav = get_cached_ref_wav(ref_cache_dir, ref_path, 48000, 2)
+            ref_wav = get_cached_ref_wav(ref_cache_dir, ref_path, 48000, channels)
         else:
             if not ref_path or not os.path.exists(ref_path):
                 return key, None, None
-            ref_wav = decode_stereo(ref_path, td, "ref")
+            ref_wav = decode_audio(ref_path, td, "ref", channels=channels)
 
-        deg_wav = decode_stereo(aac_path, td, "deg")
+        deg_wav = decode_audio(aac_path, td, "deg", channels=channels)
         if not ref_wav or not deg_wav:
             return key, None, None
 
@@ -175,10 +203,10 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
         centroid_ms = None
         if want_transient:
             try:
-                rL, rR = read_stereo(ref_wav)
-                dL, dR = read_stereo(deg_wav)
-                ref_mono = (rL + rR) / 2.0
-                dec_mono = (dL + dR) / 2.0
+                r_data = read_audio_channels(ref_wav)
+                d_data = read_audio_channels(deg_wav)
+                ref_mono = r_data.mean(axis=1)
+                dec_mono = d_data.mean(axis=1)
                 centroid_ms = attack_centroid_deltas(ref_mono, dec_mono, 48000)
             except Exception as e:
                 print(f"  attack-centroid-shift error for {key}: {e}")
@@ -233,8 +261,14 @@ def main():
         print("No pending stereo/transient computations.")
         return
 
-    # Identify unique reference files for caching
-    unique_refs = sorted(list(set(v.get("filename") for v in pending.values())))
+    # Identify unique (filename, channels, corpus_dir) tuples for reference caching
+    unique_ref_tuples = sorted(list(set(
+        (v.get("filename"),
+         scenario_channels(SCENARIOS.get(v.get("scenario"), {})),
+         corpus_dir(SCENARIOS.get(v.get("scenario"), {}), args.external_data_dir))
+        for v in pending.values()
+        if v.get("filename")
+    )))
 
     num_cpus = os.cpu_count() or 1
     print(f"Computing stereo/transient fidelity for {len(pending)} samples "
@@ -255,30 +289,31 @@ def main():
     centroid_results = {}
     with tempfile.TemporaryDirectory() as ref_cache_dir:
         ref_wav_map = {}
-        if len(unique_refs) < len(resolved):
-            print(f"Pre-decoding {len(unique_refs)} unique reference files (parallel)...")
+        if len(unique_ref_tuples) < len(resolved):
+            print(f"Pre-decoding {len(unique_ref_tuples)} unique reference files (parallel)...")
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 ref_futs = {}
-                for filename in unique_refs:
-                    ref_path = os.path.join(args.external_data_dir, "audio", filename)
+                for filename, chans, c_dir in unique_ref_tuples:
+                    ref_path = os.path.join(c_dir, filename)
                     if os.path.exists(ref_path):
-                        ref_futs[pool.submit(get_cached_ref_wav, ref_cache_dir, ref_path, 48000, 2)] = filename
+                        ref_futs[pool.submit(get_cached_ref_wav, ref_cache_dir, ref_path, 48000, chans)] = (filename, chans)
                 for fut in concurrent.futures.as_completed(ref_futs):
-                    filename = ref_futs[fut]
+                    key_tuple = ref_futs[fut]
                     wav_path = fut.result()
                     if wav_path:
-                        ref_wav_map[filename] = wav_path
+                        ref_wav_map[key_tuple] = wav_path
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
             futures = {
                 executor.submit(
                     compute_single, k, aac_path,
-                    ref_wav_map.get(entry.get("filename")),
+                    ref_wav_map.get((entry.get("filename"), scenario_channels(SCENARIOS.get(entry.get("scenario"), {})))),
                     args.external_data_dir,
-                    os.path.join(args.external_data_dir, "audio", entry.get("filename", "")),
+                    os.path.join(corpus_dir(SCENARIOS.get(entry.get("scenario"), {}), args.external_data_dir), entry.get("filename", "")),
                     ref_cache_dir,
                     want_ic and entry.get("ic_err") is None,
                     want_transient and entry.get("attack_centroid_ms") is None,
+                    scenario_channels(SCENARIOS.get(entry.get("scenario"), {})),
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }

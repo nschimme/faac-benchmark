@@ -229,8 +229,15 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                     )
                     for ch in range(num_channels)
                 ]
-                dist = math.sqrt(sum(d * d for d in per_channel_dist))
-                return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
+                if num_channels > 2:
+                    per_channel_mos = [
+                        float(zimtohrli.mos_from_zimtohrli(d))
+                        for d in per_channel_dist
+                    ]
+                    return float(np.mean(per_channel_mos)), "zimtohrli"
+                else:
+                    dist = math.sqrt(sum(d * d for d in per_channel_dist))
+                    return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
         print("  ERROR: zimtohrli is required for audio scoring but not available.")
         return None, "zimtohrli"
 
