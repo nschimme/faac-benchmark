@@ -106,7 +106,7 @@ CORPORA = {
 # stereo (ascending rate). Also drives the sort key in utils.
 FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo"]
 
-# vbr_q: FAAC's -q (percent quantizer quality, min 10) chosen so its VBR
+# vbr_q: FAAC's -q (quantizer quality, 1..5000) chosen so its VBR
 # output lands near this scenario's "bitrate" for representative content --
 # NOT a linear guess. The old table (q = bitrate * 1.25-ish) was never
 # checked against real faac output: it undershot by 18-67%, worse at higher
