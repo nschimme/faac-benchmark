@@ -15,6 +15,8 @@ import time
 import argparse
 import subprocess
 import shutil
+import tempfile
+import wave
 import concurrent.futures
 import multiprocessing
 from collections import defaultdict
@@ -337,6 +339,44 @@ def probe_version(bin_path, flag_list, patterns, env=None):
             pass
     return None
 
+def probe_faac_version(faac_path, lib_override=None):
+    """faac never prints its version via --help/-h (the banner is only
+    emitted mid-encode, gated behind having a real input file -- see
+    is_faac_legacy), so the only way to learn it is to actually run a
+    throwaway encode and scrape "FAAC x.y.z" out of stderr."""
+    if not faac_path or not os.path.exists(faac_path):
+        return None
+    env = None
+    if lib_override:
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+
+    tmp_dir = tempfile.mkdtemp(prefix="faac_ver_")
+    try:
+        wav_path = os.path.join(tmp_dir, "silence.wav")
+        out_path = os.path.join(tmp_dir, "silence.m4a")
+        with wave.open(wav_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 800)
+        res = subprocess.run([faac_path, "-o", out_path, "--overwrite", wav_path],
+                              capture_output=True, text=True, timeout=10, env=env)
+        text = (res.stdout or "") + "\n" + (res.stderr or "")
+        m = re.search(r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", text, re.IGNORECASE)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 def make_unique_encoder_name_and_id(base_name, version, base_id, existing_names, existing_ids):
     display_name = f"{base_name} {version}" if version else base_name
     candidate_name = display_name
@@ -373,6 +413,8 @@ def detect_encoders(args):
         legacy = is_faac_legacy(f_bin, lib_override=f_lib)
         ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
                             [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+        if not ver:
+            ver = probe_faac_version(f_bin, lib_override=f_lib)
         if not ver and legacy:
             ver = "1.x"
         name, tool_id = make_unique_encoder_name_and_id("FAAC", ver, "faac", existing_names, existing_ids)
@@ -460,7 +502,7 @@ def detect_encoders(args):
             afconvert_bins = [which_afc]
 
     for afc_bin in afconvert_bins:
-        ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version\s+([0-9.]+)"])
+        ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version:?\s+([0-9.]+)"])
         name, tool_id = make_unique_encoder_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
         encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="lc"))
         encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="he"))
