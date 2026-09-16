@@ -377,6 +377,36 @@ def probe_faac_version(faac_path, lib_override=None):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
+def probe_encoder_capability(encoder, bitrate_kbps=64, channels=2, sample_rate=44100):
+    """Some libfdk-aac builds (e.g. Ubuntu's apt fdkaac 1.0.0) silently reject
+    AOT 5/29 (HE-AAC / HE-AAC v2) via aacEncoder_SetParam, failing on every
+    single clip at every bitrate -- see https://github.com/nu774/fdkaac/issues/57.
+    Rather than let that show up as a wall of per-clip "encoding error" noise
+    indistinguishable from a real bug, verify each profile actually works with
+    one throwaway silent-WAV encode at detection time. Returns (ok, reason)."""
+    tmp_dir = tempfile.mkdtemp(prefix="cap_probe_")
+    try:
+        wav_path = os.path.join(tmp_dir, "silence.wav")
+        out_path = os.path.join(tmp_dir, "silence" + getattr(encoder, "file_ext", ".m4a"))
+        with wave.open(wav_path, "wb") as w:
+            w.setnchannels(channels)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(b"\x00\x00" * channels * sample_rate)  # 1s of silence
+
+        cmd = encoder.get_encode_cmd(wav_path, out_path, bitrate_kbps, channels, sample_rate)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=encoder.get_run_env() or None)
+        if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return True, ""
+
+        text = ((res.stderr or "") + "\n" + (res.stdout or "")).strip()
+        reason = next((l for l in reversed(text.splitlines()) if l.strip()), f"exit code {res.returncode}")
+        return False, reason
+    except Exception as e:
+        return False, str(e)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
 def make_unique_encoder_name_and_id(base_name, version, base_id, existing_names, existing_ids):
     display_name = f"{base_name} {version}" if version else base_name
     candidate_name = display_name
@@ -465,8 +495,13 @@ def detect_encoders(args):
                             [r"fdkaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_encoder_name_and_id("fdkaac", ver, "fdkaac", existing_names, existing_ids)
         encoders.append(FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile="lc"))
-        encoders.append(FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile="he"))
-        encoders.append(FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile="hev2"))
+        for profile in ("he", "hev2"):
+            candidate = FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     aacenc_bins = flatten_arg_list(getattr(args, "aac_enc_bin", None))
     explicit_aacenc = bool(getattr(args, "aac_enc_bin", None))
@@ -480,8 +515,13 @@ def detect_encoders(args):
                             [r"aac-enc\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_encoder_name_and_id("aac-enc", ver, "aac_enc", existing_names, existing_ids)
         encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="lc"))
-        encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="he"))
-        encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="hev2"))
+        for profile in ("he", "hev2"):
+            candidate = AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     falabaac_bins = flatten_arg_list(getattr(args, "falabaac_bin", None))
     if not falabaac_bins:
@@ -619,7 +659,13 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             "aac_path": output_path
         }
     except Exception as e:
-        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {e}")
+        detail = str(e)
+        if isinstance(e, subprocess.CalledProcessError):
+            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
+            if stderr_tail:
+                detail = f"exit code {e.returncode}: {stderr_tail}"
+        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {detail}")
         return {
             "tool": encoder.name,
             "profile": encoder.profile,
@@ -632,7 +678,7 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             "actual_bitrate": None,
             "target_bitrate": cfg["bitrate"],
             "decode_valid": False,
-            "decode_error": f"Encoding failed: {str(e)}",
+            "decode_error": f"Encoding failed: {detail}",
             "aac_path": None
         }
 
