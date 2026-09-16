@@ -23,6 +23,7 @@ from collections import defaultdict
 
 from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path,
                    ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy,
+                   resolve_wrapper_target, guess_lib_version_from_path,
                    corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families, expand_scenario_list,
                    get_audio_es_bytes)
@@ -98,7 +99,14 @@ class Encoder:
         # Footprint is the codec *library* size, not the CLI/host binary size.
         # If the codec is linked dynamically, measure the shared library on disk;
         # otherwise (static linking) fall back to the binary itself.
-        lib_path = lib_override or (find_linked_lib(binary_path, lib_name_substr) if lib_name_substr else None)
+        #
+        # binary_path may be a shell wrapper (e.g. scripts/build_faac_matrix.sh
+        # writes one to fix up a dylib search path before exec'ing the real
+        # binary) -- resolve through it first, or otool/ldd finds nothing on
+        # a shell script and footprint measurement falls back to the
+        # wrapper's own few-hundred-byte size instead of the real binary's.
+        measure_bin = resolve_wrapper_target(binary_path) if binary_path else binary_path
+        lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
         if lib_path and not lib_override and is_system_library(lib_path):
@@ -108,11 +116,11 @@ class Encoder:
             measured_path = lib_path
         else:
             # Fallback to binary size if no library found, but ignore system binaries
-            if is_system_library(binary_path):
+            if is_system_library(measure_bin):
                 self.size = 0
             else:
-                self.size = get_binary_size(binary_path) if binary_path else 0
-                measured_path = binary_path if binary_path and not is_system_library(binary_path) else None
+                self.size = get_binary_size(measure_bin) if measure_bin else 0
+                measured_path = measure_bin if measure_bin and not is_system_library(measure_bin) else None
 
         sec_sizes = get_elf_section_sizes(measured_path) if measured_path else {"text": 0, "rodata": 0, "bss": 0, "data": 0}
         self.file_ext = ".m4a"
@@ -123,7 +131,17 @@ class Encoder:
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         """Returns (supported: bool, reason: str). HE profiles inherently require
-        sufficient sample rates (>=32kHz for SBR) and HE-v2 requires stereo (>=2ch)."""
+        sufficient sample rates (>=32kHz for SBR) and HE-v2 requires stereo (>=2ch).
+
+        Bitrate ceilings are deliberately NOT checked with a fixed heuristic
+        range here: they're a real capability limit, but one that varies by
+        binary, not by profile -- afconvert hard-rejects HE-AAC above ~48
+        kbps/channel ("Couldn't set audio converter property"), while fdkaac
+        happily encodes HE-AAC at 64 kbps/channel on the same clip (verified
+        by hand). A fixed range would either wrongly skip fdkaac at bitrates
+        it actually supports, or wrongly attempt afconvert at bitrates it
+        doesn't. See the per-scenario capability probe in the main loop,
+        which checks the real binary at the real scenario bitrate instead."""
         if self.profile in ("he", "hev2") and sample_rate < 32000:
             return False, f"sample rate {sample_rate} Hz < 32 kHz required for SBR ({profile_label(self.profile)})"
         if self.profile == "hev2" and channels < 2:
@@ -344,6 +362,17 @@ def probe_version(bin_path, flag_list, patterns, env=None):
             pass
     return None
 
+def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
+    """Version label for a third-party codec FFmpeg hosts (libopus,
+    libmp3lame, libfdk-aac, vo-aacenc): ffmpeg -version never reports it, so
+    prefer the real library version recovered from its on-disk path
+    (guess_lib_version_from_path), falling back to labeling the version as
+    ffmpeg's explicitly -- rather than a bare number that would otherwise
+    look like the codec's own -- when that's not recoverable (no Homebrew
+    Cellar segment, no dpkg)."""
+    real_ver = guess_lib_version_from_path(find_linked_lib(ff_bin, lib_substr))
+    return real_ver if real_ver else (f"(ffmpeg {ffmpeg_ver})" if ffmpeg_ver else None)
+
 def probe_faac_version(faac_path, lib_override=None):
     """faac never prints its version via --help/-h (the banner is only
     emitted mid-encode, gated behind having a real input file -- see
@@ -375,7 +404,7 @@ def probe_faac_version(faac_path, lib_override=None):
         res = subprocess.run([faac_path, "-o", out_path, "--overwrite", wav_path],
                               capture_output=True, text=True, timeout=10, env=env)
         text = (res.stdout or "") + "\n" + (res.stderr or "")
-        m = re.search(r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", text, re.IGNORECASE)
+        m = re.search(r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)", text, re.IGNORECASE)
         return m.group(1).strip() if m else None
     except Exception:
         return None
@@ -449,6 +478,16 @@ def detect_encoders(args):
 
     faac_bins = flatten_arg_list(getattr(args, "faac_bin", None))
     faac_libs = flatten_arg_list(getattr(args, "faac_lib", None))
+    # Explicit, positional override for --faac-bin's probed version. Needed
+    # because faac's own banner is a static string baked in at build time
+    # (meson.build's project(version: ...)) -- a dev checkout many commits
+    # past its last version bump prints the exact same "FAAC 2.1.0" as the
+    # actual 2.1 release, so probing gives compare_encoders.py no way to
+    # tell a HEAD snapshot from the tag it's ahead of. The caller (e.g.
+    # scripts/build_faac_matrix.sh) knows the real git identity of each
+    # binary it built and can pass it here instead of leaving two rows to
+    # collide down to a meaningless "(#2)" suffix.
+    faac_vers = flatten_arg_list(getattr(args, "faac_bin_version", None))
     if not faac_bins:
         which_faac = shutil.which("faac")
         if which_faac:
@@ -457,8 +496,16 @@ def detect_encoders(args):
     for idx, f_bin in enumerate(faac_bins):
         f_lib = faac_libs[idx] if idx < len(faac_libs) else (faac_libs[0] if faac_libs else None)
         legacy = is_faac_legacy(f_bin, lib_override=f_lib)
-        ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
-                            [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+        ver = faac_vers[idx] if idx < len(faac_vers) else None
+        if not ver:
+            # The parenthesized git identity, e.g. "2.1.0 (faac-2.1-51-gc3c8f222)",
+            # is captured as part of the version when a build reports one (see
+            # faac's frontend/show-version-hash-in-help branch) -- that's exactly
+            # what distinguishes a dev/HEAD build from the tag it's ahead of,
+            # both otherwise reporting the identical bare "FAAC 2.1.0".
+            ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
+                                [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)",
+                                 r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
         if not ver:
             ver = probe_faac_version(f_bin, lib_override=f_lib)
         if not ver and legacy:
@@ -497,14 +544,14 @@ def detect_encoders(args):
         encoders.append(FFmpegEncoder(name_aac, ff_bin, "aac", tool_id=id_aac, coder="twoloop"))
 
         if supports_nmr:
-            name_nmr, id_nmr = make_unique_encoder_name_and_id("FFmpeg AAC (NMR)", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
+            name_nmr, id_nmr = make_unique_encoder_name_and_id("FFmpeg NMR", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
             encoders.append(FFmpegEncoder(name_nmr, ff_bin, "aac", tool_id=id_nmr, coder="nmr"))
 
         try:
             res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
             stdout = res.stdout or ""
             if "libfdk_aac" in stdout:
-                name_fdk, id_fdk = make_unique_encoder_name_and_id("FDK-AAC (FFmpeg)", ver, "ffmpeg_libfdk_aac", existing_names, existing_ids)
+                name_fdk, id_fdk = make_unique_encoder_name_and_id("FFmpeg FDK-AAC", hosted_codec_ver(ff_bin, "libfdk-aac", ver), "ffmpeg_libfdk_aac", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="lc"))
                 for profile in ("he", "hev2"):
                     candidate = FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile=profile)
@@ -514,7 +561,9 @@ def detect_encoders(args):
                     else:
                         print(f"  {name_fdk}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
             if "vo_aacenc" in stdout:
-                name_vo, id_vo = make_unique_encoder_name_and_id("VO-AAC (FFmpeg)", ver, "ffmpeg_vo_aacenc", existing_names, existing_ids)
+                # No standalone vo_aacenc tool is ever detected here, so
+                # there's nothing for an "FFmpeg" qualifier to disambiguate.
+                name_vo, id_vo = make_unique_encoder_name_and_id("VO-AAC", hosted_codec_ver(ff_bin, "vo-aacenc", ver), "ffmpeg_vo_aacenc", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_vo, ff_bin, "vo_aacenc", tool_id=id_vo))
         except Exception:
             pass
@@ -601,15 +650,20 @@ def detect_encoders(args):
                 name, tool_id = make_unique_encoder_name_and_id("Opus", ver, "opusenc", existing_names, existing_ids)
                 encoders.append(OpusEncoder(name, op_bin, tool_id=tool_id, is_ffmpeg=False))
         elif ffmpeg_bins:
-            for ff_bin in ffmpeg_bins:
-                try:
-                    res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
-                    if "libopus" in (res.stdout or "") or "opus" in (res.stdout or ""):
-                        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
-                        name, tool_id = make_unique_encoder_name_and_id("Opus (FFmpeg)", ver, "ffmpeg_opus", existing_names, existing_ids)
-                        encoders.append(OpusEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
-                except Exception:
-                    pass
+            # One row, not one per --ffmpeg-bin: libopus output doesn't depend
+            # on which FFmpeg build hosts it, unlike the native aac encoder's
+            # own twoloop/nmr coder choice, which does. This branch is also
+            # only ever reached when no standalone opusenc was found, so
+            # there's never a same-named row to disambiguate "FFmpeg" from.
+            ff_bin = ffmpeg_bins[0]
+            try:
+                res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                if "libopus" in (res.stdout or "") or "opus" in (res.stdout or ""):
+                    ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                    name, tool_id = make_unique_encoder_name_and_id("Opus", hosted_codec_ver(ff_bin, "libopus", ffmpeg_ver), "ffmpeg_opus", existing_names, existing_ids)
+                    encoders.append(OpusEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+            except Exception:
+                pass
 
         lame_bins = flatten_arg_list(getattr(args, "lame_bin", None))
         if not lame_bins:
@@ -624,15 +678,19 @@ def detect_encoders(args):
                 name, tool_id = make_unique_encoder_name_and_id("LAME", ver, "lame", existing_names, existing_ids)
                 encoders.append(LameEncoder(name, lame_bin, tool_id=tool_id, is_ffmpeg=False))
         elif ffmpeg_bins:
-            for ff_bin in ffmpeg_bins:
-                try:
-                    res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
-                    if "libmp3lame" in (res.stdout or ""):
-                        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
-                        name, tool_id = make_unique_encoder_name_and_id("LAME (FFmpeg)", ver, "ffmpeg_lame", existing_names, existing_ids)
-                        encoders.append(LameEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
-                except Exception:
-                    pass
+            # One row, not one per --ffmpeg-bin; no "FFmpeg" qualifier needed
+            # for the same reason as Opus above -- if a name ever does
+            # collide, make_unique_encoder_name_and_id already disambiguates
+            # generically rather than needing every caller to hardcode it.
+            ff_bin = ffmpeg_bins[0]
+            try:
+                res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                if "libmp3lame" in (res.stdout or ""):
+                    ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                    name, tool_id = make_unique_encoder_name_and_id("LAME", hosted_codec_ver(ff_bin, "libmp3lame", ffmpeg_ver), "ffmpeg_lame", existing_names, existing_ids)
+                    encoders.append(LameEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+            except Exception:
+                pass
 
     return encoders
 
@@ -726,6 +784,9 @@ def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
     parser.add_argument("--faac-bin", action="append", help="Path to faac binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so (can be specified multiple times or comma-separated)")
+    parser.add_argument("--faac-bin-version", action="append",
+                        help="Explicit version label for --faac-bin, positionally matched (can be specified multiple times or comma-separated). "
+                             "Overrides the probed banner -- use this for a dev/HEAD build whose meson.build version hasn't been bumped past its last tag.")
     parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary (can be specified multiple times or comma-separated)")
@@ -743,6 +804,12 @@ def main():
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) calculation")
     parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid graph blocks in leaderboard")
+    parser.add_argument("--resume", action="store_true",
+                        help="Skip Phase 1 (encoding) and reload --results-json from a previous run instead -- "
+                             "for re-rendering the leaderboard (new sort/formatting logic, etc.) against data "
+                             "already on disk without repeating the slow per-clip encode/MOS/stereo/transient work. "
+                             "Only Phase 1's encoded output is reused; MOS/stereo/transient are never persisted "
+                             "between runs, so those phases still execute normally.")
 
     args = parser.parse_args()
 
@@ -765,52 +832,69 @@ def main():
     if args.scenarios:
         scenario_list = expand_scenario_list(args.scenarios)
 
-    for scenario_name in scenario_list:
-        if scenario_name not in SCENARIOS:
-            print(f"Scenario {scenario_name} not found in config, skipping.")
-            continue
-        cfg = SCENARIOS[scenario_name]
-        print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
-        data_dir = corpus_dir(cfg, external_data_dir)
-        if not os.path.exists(data_dir):
-            print(f"Data directory {data_dir} not found, skipping.")
-            continue
-
-        # --gate selects from a curated list, so the corpus cap (which bounds
-        # full runs) is skipped there; applying both would drop gate clips the
-        # cap happened not to select.
-        wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
-        all_samples = sorted(wavs) if args.gate else select_corpus_clips(
-            wavs, CORPORA.get(cfg["corpus"], {}))
-        if args.gate:
-            samples = gate_filter(scenario_name, all_samples)
-        else:
-            num_to_run = max(1, int(len(all_samples) * args.coverage / 100.0))
-            step = len(all_samples) / num_to_run if num_to_run > 0 else 1
-            samples = [all_samples[int(i * step)] for i in range(num_to_run)]
-
-        print(f"Processing {len(samples)} samples...")
-
-        channels = scenario_channels(cfg)
-        sample_rate = scenario_rate(cfg)
-
-        for encoder in encoders:
-            supported, reason = encoder.supports_scenario(cfg["bitrate"], channels, sample_rate)
-            if not supported:
-                print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: {reason}.")
+    if args.resume and os.path.exists(args.results_json):
+        print(f"==> --resume: reloading {args.results_json}, skipping Phase 1 (encoding)")
+        with open(args.results_json) as f:
+            all_results = json.load(f)
+    else:
+        for scenario_name in scenario_list:
+            if scenario_name not in SCENARIOS:
+                print(f"Scenario {scenario_name} not found in config, skipping.")
+                continue
+            cfg = SCENARIOS[scenario_name]
+            print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
+            data_dir = corpus_dir(cfg, external_data_dir)
+            if not os.path.exists(data_dir):
+                print(f"Data directory {data_dir} not found, skipping.")
                 continue
 
-            print(f"  Encoding with {encoder.name} ({profile_label(encoder.profile)})...")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                futures = [executor.submit(process_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
-                for future in concurrent.futures.as_completed(futures):
-                    res = future.result()
-                    if res:
-                        all_results.append(res)
+            # --gate selects from a curated list, so the corpus cap (which bounds
+            # full runs) is skipped there; applying both would drop gate clips the
+            # cap happened not to select.
+            wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
+            all_samples = sorted(wavs) if args.gate else select_corpus_clips(
+                wavs, CORPORA.get(cfg["corpus"], {}))
+            if args.gate:
+                samples = gate_filter(scenario_name, all_samples)
+            else:
+                num_to_run = max(1, int(len(all_samples) * args.coverage / 100.0))
+                step = len(all_samples) / num_to_run if num_to_run > 0 else 1
+                samples = [all_samples[int(i * step)] for i in range(num_to_run)]
 
-    # Save intermediate results
-    with open(args.results_json, "w") as f:
-        json.dump(all_results, f, indent=2)
+            print(f"Processing {len(samples)} samples...")
+
+            channels = scenario_channels(cfg)
+            sample_rate = scenario_rate(cfg)
+
+            for encoder in encoders:
+                supported, reason = encoder.supports_scenario(cfg["bitrate"], channels, sample_rate)
+                if not supported:
+                    print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: {reason}.")
+                    continue
+
+                # HE/HE-v2 bitrate ceilings are a real per-binary capability limit
+                # (see supports_scenario's docstring), not a fixed profile rule, so
+                # check this scenario's actual bitrate against the real encoder
+                # instead of guessing -- one throwaway encode here avoids attempting
+                # (and failing) every sample in the scenario for a binary that
+                # simply rejects this bitrate for this profile.
+                if encoder.profile in ("he", "hev2"):
+                    ok, cap_reason = probe_encoder_capability(encoder, bitrate_kbps=cfg["bitrate"], channels=channels, sample_rate=sample_rate)
+                    if not ok:
+                        print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: unsupported at {cfg['bitrate']} kbps ({cap_reason}).")
+                        continue
+
+                print(f"  Encoding with {encoder.name} ({profile_label(encoder.profile)})...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures = [executor.submit(process_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
+                    for future in concurrent.futures.as_completed(futures):
+                        res = future.result()
+                        if res:
+                            all_results.append(res)
+
+        # Save intermediate results
+        with open(args.results_json, "w") as f:
+            json.dump(all_results, f, indent=2)
 
     # Perceptual Quality (MOS)
     if not args.skip_mos:
@@ -929,6 +1013,29 @@ def format_size(bytes_val):
         return f"{bytes_val} B"
     return f"{bytes_val / 1024:.1f} KB"
 
+# A worst-MOS score alone can't say whether it's a bug specific to this
+# encoder or just a genuinely hard clip every encoder struggles with (a
+# ceiling, not a bug) -- only comparing it against how other encoders did on
+# that exact same clip can. Peer gap above this is flagged as likely a bug.
+CLIP_PEER_BUG_GAP = 0.75
+
+def cell_peer_gap(clip_mos, rk, s_name, filename):
+    """None, or (this_mos, peer_avg) when (rk, s_name)'s worst clip scored
+    well below what every other encoder achieved on that same (scenario,
+    filename) -- a signal worth investigating as a real per-encoder defect,
+    not just corpus difficulty every encoder shares."""
+    if not filename:
+        return None
+    clip_scores = clip_mos.get((s_name, filename), {})
+    this_mos = clip_scores.get(rk)
+    peers = {other_rk: m for other_rk, m in clip_scores.items() if other_rk != rk}
+    if this_mos is None or not peers:
+        return None
+    peer_avg = sum(peers.values()) / len(peers)
+    if peer_avg - this_mos > CLIP_PEER_BUG_GAP:
+        return (this_mos, peer_avg)
+    return None
+
 def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False):
     # Aggregation keyed by row_key (tool, profile). Every encoder is compared
     # at the same target bitrate (there is no cross-encoder VBR/quality mode
@@ -936,7 +1043,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     # see compare_encoders.py's Encoder.get_encode_cmd), so there is nothing
     # left to key on beyond the (tool, profile) combination itself.
     stats = defaultdict(lambda: defaultdict(lambda: {
-        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0, "mos_min_file": None,
         "ic_sum": 0, "ic_count": 0,
         "centroid_sum": 0, "centroid_count": 0,
         "speed_sum": 0, "speed_count": 0,
@@ -945,6 +1052,15 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     }))
 
     error_counts = defaultdict(int)
+
+    # Every row_key's MOS on the same (scenario, filename), so a worst-case
+    # score can be judged against how other encoders did on that exact clip
+    # instead of in isolation -- see cell_peer_gap().
+    clip_mos = defaultdict(dict)
+    # (tool, scenario, filename, this_mos, peer_avg), one per (row_key,
+    # scenario) cell flagged by cell_peer_gap, collected while rendering the
+    # per-scenario Worst MOS tables and rolled up into their own section.
+    bug_flags = []
 
     for res in results:
         e = res["row_key"]
@@ -958,7 +1074,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
             stats[e][s]["mos_count"] += 1
-            stats[e][s]["mos_min"] = min(stats[e][s]["mos_min"], res["mos"])
+            if res["mos"] < stats[e][s]["mos_min"]:
+                stats[e][s]["mos_min"] = res["mos"]
+                stats[e][s]["mos_min_file"] = res["filename"]
+            clip_mos[(s, res["filename"])][e] = res["mos"]
 
         if res.get("ic_err") is not None:
             stats[e][s]["ic_sum"] += res["ic_err"]
@@ -1212,8 +1331,17 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 return (mos_avg is not None, mos_avg if mos_avg is not None else 0, valid_rate)
             return max(available, key=sort_key)
 
-        chart_tools = sorted_tools[:10]  # Top 10 for clean bar display
-        top_tools = chart_tools[:5]      # Top 5 for clean line display
+        # Charts rank by overall (mean) MOS, not sorted_tools' worst-case-first
+        # order: the Overall Rankings table above is deliberately pessimistic
+        # (surfacing a bad worst-case is the point of that table), but a chart
+        # is meant to show off the best performers -- one unlucky clip
+        # shouldn't bump a consistently high-quality encoder out of every
+        # graph. Bar and line charts share this same ranking so the "cast" of
+        # encoders is consistent across the whole Efficiency & Footprint
+        # section, not a different set of tools per metric.
+        mos_ranked_tools = sorted(tool_overall.keys(), key=lambda x: tool_overall[x]["overall_mos"], reverse=True) if has_mos else sorted(tool_overall.keys())
+        chart_tools = mos_ranked_tools[:10]  # Top 10 for clean bar display
+        top_tools = chart_tools[:5]          # Top 5 for clean line display
 
         avg_mos = (lambda rk, sc: stats[rk][sc]["mos_sum"] / stats[rk][sc]["mos_count"]
                    if stats[rk][sc]["mos_count"] > 0 else None)
@@ -1221,6 +1349,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                      if stats[rk][sc]["mos_count"] > 0 else None)
         stereo_fid = (lambda rk, sc: 1.0 - (stats[rk][sc]["ic_sum"] / stats[rk][sc]["ic_count"])
                       if stats[rk][sc]["ic_count"] > 0 else None)
+        transient_fid = (lambda rk, sc: 1.0 / (1.0 + (stats[rk][sc]["centroid_sum"] / stats[rk][sc]["centroid_count"]))
+                         if stats[rk][sc]["centroid_count"] > 0 else None)
+        bitrate_err = (lambda rk, sc: stats[rk][sc]["br_err_sum"] / stats[rk][sc]["br_err_count"]
+                      if stats[rk][sc]["br_err_count"] > 0 else None)
 
         def is_suboptimal(rk, s_name):
             if rk not in overall:
@@ -1251,7 +1383,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             filled = int(round(ratio * width))
             return " " + "█" * filled + "░" * (width - filled)
 
-        def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None):
+        def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None, annotate_fn=None):
             scen_list = filter_scenarios if filter_scenarios is not None else scenarios
             table_used_strikethrough = False
             for p in profile_order:
@@ -1298,7 +1430,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                                 formatted = f"**{formatted}**"
 
                             bar_str = make_progress_bar(val, table_max_scale, lower_is_better=lower_is_better)
-                            line += f" {formatted}{bar_str} |"
+                            note = annotate_fn(rk, s) if annotate_fn else ""
+                            line += f" {formatted}{bar_str}{note} |"
                     f.write(line + "\n")
 
                 f.write("\n")
@@ -1317,6 +1450,19 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         # rates into one chart draws a line through unrelated configurations --
         # 32k_stereo_48k and 48k_stereo_48k would both land on the "48k" tick.
         # One section per family keeps every curve meaningful.
+        def zoomed_y_range(vals, y_range):
+            """Zoom to where the data actually falls instead of the metric's
+            full theoretical range, which otherwise buries real differences in
+            dead space when every value clusters far from the floor/ceiling
+            (e.g. MOS 3.5-4.9 on a 1.0-5.0 axis). Clamped within that range."""
+            y_floor, y_ceiling = (float(x) for x in y_range.split("-->"))
+            lo, hi = min(vals), max(vals)
+            pad = max((hi - lo) * 0.1, (y_ceiling - y_floor) * 0.02)
+            axis_lo, axis_hi = max(y_floor, lo - pad), min(y_ceiling, hi + pad)
+            if axis_hi - axis_lo < 1e-6:
+                axis_lo, axis_hi = y_floor, y_ceiling
+            return axis_lo, axis_hi
+
         def family_chart(fam_scenarios, title, y_label, y_range, value_fn):
             """Emit one MOS-style xychart for a single family.
 
@@ -1332,19 +1478,30 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             if len(set(bitrates)) != len(bitrates):
                 return
             scen_labels = [f'"{SCENARIOS.get(sc, {}).get("bitrate", sc)}k"' for sc in fam_scenarios]
-            f.write("```mermaid\n")
-            f.write("xychart-beta\n")
-            f.write(f'    title "{title}"\n')
-            f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
-            f.write(f'    y-axis "{y_label}" {y_range}\n')
+
+            series = {}
+            all_vals = []
             for t in top_tools:
                 candidates = tool_row_keys[t]
                 vals = []
                 for sc in fam_scenarios:
                     rk = scenario_best_row_key(candidates, sc)
-                    v = value_fn(rk, sc) if rk else None
-                    vals.append(f"{v:.4f}" if v is not None else "0.0")
-                f.write(f'    line "{t}" [{", ".join(vals)}]\n')
+                    vals.append(value_fn(rk, sc) if rk else None)
+                series[t] = vals
+                all_vals.extend(v for v in vals if v is not None)
+            if not all_vals:
+                return
+
+            axis_lo, axis_hi = zoomed_y_range(all_vals, y_range)
+
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write(f'    title "{title}"\n')
+            f.write(f"    x-axis [{', '.join(scen_labels)}]\n")
+            f.write(f'    y-axis "{y_label}" {axis_lo:.4g} --> {axis_hi:.4g}\n')
+            for t in top_tools:
+                vals_str = ", ".join(f"{v:.4f}" if v is not None else "0.0" for v in series[t])
+                f.write(f'    line "{t}" [{vals_str}]\n')
             f.write("```\n\n")
 
         for fam in scenario_families(scenarios):
@@ -1365,52 +1522,104 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             render_metric_tables(avg_mos, lambda v: f"{v:.3f}",
                                  filter_scenarios=fam_scenarios, max_scale=5.0)
             f.write(f"#### Per-Scenario Worst MOS (Min Clip MOS - {label})\n\n")
-            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation.\n\n")
+            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. Highlights edge-case clip degradation. "
+                    f"A 🐛 names the clip when every other encoder scored ≥{CLIP_PEER_BUG_GAP} MOS higher on that exact clip -- "
+                    "likely a defect specific to this encoder; see Quality Outliers under Issues Worth Investigating below.\n\n")
+
+            def worst_mos_annotate(rk, s):
+                filename = stats[rk][s].get("mos_min_file")
+                gap = cell_peer_gap(clip_mos, rk, s, filename)
+                if not gap:
+                    return ""
+                this_mos, peer_avg = gap
+                bug_flags.append((overall[rk]["tool"], s, filename, this_mos, peer_avg))
+                return f" 🐛 _{filename}_"
+
             render_metric_tables(worst_mos, lambda v: f"{v:.3f}",
-                                 filter_scenarios=fam_scenarios, max_scale=5.0)
+                                 filter_scenarios=fam_scenarios, max_scale=5.0, annotate_fn=worst_mos_annotate)
             f.write("</details>\n\n")
 
             # Stereo image fidelity is undefined for mono families.
-            if scenario_channels(SCENARIOS.get(fam_scenarios[0], {})) < 2:
-                continue
-            f.write(f"### Stereo Image Fidelity ({label})\n\n")
-            f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
+            if scenario_channels(SCENARIOS.get(fam_scenarios[0], {})) >= 2:
+                f.write(f"### Stereo Image Fidelity ({label})\n\n")
+                f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
+                family_chart(fam_scenarios,
+                             f"Stereo Image Fidelity across Bitrates - {label} (Higher is Better)",
+                             "Stereo Fidelity", "0.0 --> 1.0", stereo_fid)
+                f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({label})</b></summary>\n\n")
+                render_metric_tables(stereo_fid, lambda v: f"{v:.4f}",
+                                     filter_scenarios=fam_scenarios, max_scale=1.0)
+                f.write("</details>\n\n")
+
+            f.write(f"### Transient Fidelity ({label})\n\n")
+            f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
             family_chart(fam_scenarios,
-                         f"Stereo Image Fidelity across Bitrates - {label} (Higher is Better)",
-                         "Stereo Fidelity", "0.0 --> 1.0", stereo_fid)
-            f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({label})</b></summary>\n\n")
-            render_metric_tables(stereo_fid, lambda v: f"{v:.4f}",
+                         f"Transient Fidelity across Bitrates - {label} (Higher is Better)",
+                         "Transient Fidelity", "0.0 --> 1.0", transient_fid)
+            f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({label})</b></summary>\n\n")
+            render_metric_tables(transient_fid, lambda v: f"{v:.4f}",
                                  filter_scenarios=fam_scenarios, max_scale=1.0)
             f.write("</details>\n\n")
 
-        # 4. Transient Fidelity
-        f.write("### Transient Fidelity\n\n")
-        f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
-        f.write("<details><summary><b>View Detailed Transient Fidelity Table</b></summary>\n\n")
-        render_metric_tables(
-            lambda rk, s: 1.0 / (1.0 + (stats[rk][s]["centroid_sum"] / stats[rk][s]["centroid_count"])) if stats[rk][s]["centroid_count"] > 0 else None,
-            lambda v: f"{v:.4f}",
-            max_scale=1.0
-        )
-        f.write("</details>\n\n")
+            f.write(f"### Bitrate Accuracy ({label})\n\n")
+            f.write("> **Note**: Deviation from target bitrate calculated from pure elementary stream audio bytes. **Lower is Better**.\n\n")
+            family_chart(fam_scenarios,
+                         f"Bitrate Accuracy across Bitrates - {label} (Lower is Better)",
+                         "Bitrate Error (%)", "0 --> 25", bitrate_err)
+            f.write(f"<details><summary><b>View Detailed Bitrate Accuracy Table ({label})</b></summary>\n\n")
+            render_metric_tables(bitrate_err, lambda v: f"{v:.1f}%",
+                                 filter_scenarios=fam_scenarios, lower_is_better=True)
+            f.write("</details>\n\n")
 
-        # 5. Bitrate Accuracy & BD-Rate Efficiency
-        f.write("### Bitrate Accuracy (Error %)\n\n")
-        f.write("> **Note**: Deviation from target bitrate calculated from pure elementary stream audio bytes. **Lower is Better**.\n\n")
-        f.write("<details><summary><b>View Detailed Bitrate Accuracy Table</b></summary>\n\n")
-        render_metric_tables(
-            lambda rk, s: stats[rk][s]["br_err_sum"] / stats[rk][s]["br_err_count"] if stats[rk][s]["br_err_count"] > 0 else None,
-            lambda v: f"{v:.1f}%",
-            lower_is_better=True
-        )
-        f.write("</details>\n\n")
+            # Isolates the cost of VoIP-style degradation (chop/clip/echo/noise
+            # in the reference) at a fixed bitrate -- exactly the pair the
+            # bitrate-progression chart above refuses to plot together, since
+            # it would draw them as one misleading curve at the same x tick.
+            if "16k_mono_24k" in fam_scenarios and "16k_mono_voip_24k" in fam_scenarios and not skip_graphs and top_tools:
+                f.write(f"### {label}: Clean vs VoIP-Degraded (Same Bitrate)\n\n")
+                f.write("> **Note**: Both scenarios target 24 kbps, isolating how much VoIP-style degradation costs each encoder independent of bitrate.\n\n")
+                tool_labels_fam = [f'"{t}"' for t in top_tools]
+                clean_raw, voip_raw = [], []
+                for t in top_tools:
+                    candidates = tool_row_keys[t]
+                    rk_clean = scenario_best_row_key(candidates, "16k_mono_24k")
+                    rk_voip = scenario_best_row_key(candidates, "16k_mono_voip_24k")
+                    clean_raw.append(avg_mos(rk_clean, "16k_mono_24k") if rk_clean else None)
+                    voip_raw.append(avg_mos(rk_voip, "16k_mono_voip_24k") if rk_voip else None)
+                all_vals = [v for v in clean_raw + voip_raw if v is not None]
+                axis_lo, axis_hi = zoomed_y_range(all_vals, "1.0 --> 5.0") if all_vals else (1.0, 5.0)
+                clean_vals = [f"{v:.3f}" if v is not None else "0.0" for v in clean_raw]
+                voip_vals = [f"{v:.3f}" if v is not None else "0.0" for v in voip_raw]
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "{label}: Clean vs VoIP-Degraded MOS at 24 kbps"\n')
+                f.write(f"    x-axis [{', '.join(tool_labels_fam)}]\n")
+                f.write(f'    y-axis "MOS Score" {axis_lo:.4g} --> {axis_hi:.4g}\n')
+                f.write(f'    bar "Clean" [{", ".join(clean_vals)}]\n')
+                f.write(f'    bar "VoIP-Degraded" [{", ".join(voip_vals)}]\n')
+                f.write("```\n\n")
 
         # BD-Rate Analysis vs Baseline Encoder (FAAC if present, else first encoder)
         try:
             import bd_rate as bdr
 
-            # Find reference baseline encoder key (prefer FAAC LC)
-            base_key = next((rk for rk in all_row_keys if "faac" in rk), all_row_keys[0] if all_row_keys else None)
+            # Find reference baseline encoder key: the highest-version FAAC
+            # LC build present, so every candidate is measured against
+            # current FAAC rather than whichever version happened to sort
+            # first alphabetically (previously the *lowest* version, since
+            # "faac_1_31_1" < "faac_2_1_0" as strings -- and "faac" in rk
+            # matched any profile, not just LC despite the old comment).
+            # A git-identified dev build (name has a "(...)" suffix) counts
+            # as ahead of the bare tag it shares a version number with.
+            def faac_version_key(rk):
+                name = encoder_info[rk].name
+                m = re.search(r"(\d+)\.(\d+)\.(\d+)", name)
+                ver = tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+                return (ver, 1 if "(" in name else 0)
+
+            faac_lc_keys = [rk for rk in all_row_keys
+                             if isinstance(encoder_info.get(rk), FAACEncoder) and encoder_info[rk].profile == "lc"]
+            base_key = max(faac_lc_keys, key=faac_version_key) if faac_lc_keys else (all_row_keys[0] if all_row_keys else None)
             if base_key:
                 base_tool_name = encoder_info[base_key].name if base_key in encoder_info else base_key
                 f.write(f"### BD-Rate Relative Efficiency (vs {base_tool_name})\n\n")
@@ -1427,6 +1636,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 } for r in base_recs}
 
                 bd_rows = []
+                all_notes = set()
                 for cand_key in all_row_keys:
                     if cand_key == base_key:
                         continue
@@ -1440,19 +1650,36 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                     analysis = bdr.analyze(base_mat, cand_mat)
                     scored = [seg for seg in analysis.get("segments", []) if seg.get("stats")]
+                    all_notes.update(analysis.get("notes", []))
                     if scored:
                         avg_bd = sum(seg["stats"]["mean"] for seg in scored) / len(scored)
                         cand_obj = encoder_info.get(cand_key)
                         c_label = f"{cand_obj.name} ({profile_label(cand_obj.profile)})" if cand_obj else cand_key
-                        bd_rows.append((c_label, avg_bd, len(scored)))
+                        corpora = sorted(set(seg["corpus"] for seg in scored))
+                        bd_rows.append((c_label, avg_bd, corpora))
 
                 if bd_rows:
                     f.write(f"| Candidate Encoder | Mean BD-Rate vs {base_tool_name} | Valid Ladders |\n")
-                    f.write("| :--- | :---: | :---: |\n")
-                    for c_label, avg_bd, n_ladders in sorted(bd_rows, key=lambda x: x[1]):
+                    f.write("| :--- | :---: | :--- |\n")
+                    for c_label, avg_bd, corpora in sorted(bd_rows, key=lambda x: x[1]):
                         icon = "🚀" if avg_bd < -0.5 else "📉" if avg_bd > 0.5 else "🎯"
-                        f.write(f"| {c_label} | **{avg_bd:+.2f}%** {icon} | {n_ladders} |\n")
+                        f.write(f"| {c_label} | **{avg_bd:+.2f}%** {icon} | {len(corpora)} ({', '.join(corpora)}) |\n")
                     f.write("\n")
+                    if all_notes:
+                        # bd_rate.py emits one note per excluded scenario/group,
+                        # repeated across every candidate -- dumping them all
+                        # verbatim is a wall of near-duplicate text. Summarize
+                        # by reason instead of listing every scenario.
+                        ot_mismatches = [n for n in all_notes if "excluded from every ladder" in n]
+                        rung_shortfalls = sorted(set(n.split(":", 1)[0] for n in all_notes if "-- skipped" in n))
+                        parts = []
+                        if ot_mismatches:
+                            parts.append(f"{len(ot_mismatches)} scenario/candidate pair(s) excluded because the candidate "
+                                         "ran a different profile than the baseline for that scenario")
+                        if rung_shortfalls:
+                            parts.append(f"skipped for too few bitrate rungs (need ≥{bdr.MIN_RUNGS}): {', '.join(rung_shortfalls)}")
+                        if parts:
+                            f.write("> **Note**: " + "; ".join(parts) + ".\n\n")
                 else:
                     f.write("_No valid BD-rate ladders found between baseline and candidate encoders._\n\n")
         except Exception as e:
@@ -1493,16 +1720,32 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("</details>\n\n")
         f.write("</details>\n\n")
 
-        if error_counts:
-            f.write("\n<details><summary><b>❌ View Failure Analysis</b></summary>\n\n")
-            f.write("## Failure Analysis\n\n")
-            f.write("| Encoder: Error Type | Occurrences |\n")
-            f.write("| :--- | :---: |\n")
-            for row_k, err in sorted(error_counts.keys(), key=lambda k: error_counts[k], reverse=True):
-                enc_obj = encoder_info.get(row_k)
-                label = f"{enc_obj.name} {profile_label(enc_obj.profile)}" if enc_obj else row_k
-                f.write(f"| {label}: {err} | {error_counts[(row_k, err)]} |\n")
-            f.write("\n</details>\n\n")
+        if error_counts or bug_flags:
+            f.write("\n<details><summary><b>❌ View Issues Worth Investigating</b></summary>\n\n")
+            f.write("## Issues Worth Investigating\n\n")
+
+            if error_counts:
+                f.write("### Encoding Failures\n\n")
+                f.write("| Encoder: Error Type | Occurrences |\n")
+                f.write("| :--- | :---: |\n")
+                for row_k, err in sorted(error_counts.keys(), key=lambda k: error_counts[k], reverse=True):
+                    enc_obj = encoder_info.get(row_k)
+                    label = f"{enc_obj.name} {profile_label(enc_obj.profile)}" if enc_obj else row_k
+                    f.write(f"| {label}: {err} | {error_counts[(row_k, err)]} |\n")
+                f.write("\n")
+
+            if bug_flags:
+                f.write("### Quality Outliers\n\n")
+                f.write(f"> **Note**: Every other encoder scored ≥{CLIP_PEER_BUG_GAP} MOS higher than this one on "
+                        "the exact same clip -- likely a defect specific to this encoder, not just a hard clip "
+                        "every encoder shares. Sorted by gap size.\n\n")
+                f.write("| Encoder | Scenario | Clip | This Score | Others Avg | Gap |\n")
+                f.write("| :--- | :--- | :--- | :---: | :---: | :---: |\n")
+                for tool_name, s_name, filename, this_mos, peer_avg in sorted(bug_flags, key=lambda x: x[4] - x[3], reverse=True):
+                    f.write(f"| {tool_name} | {s_name} | {filename} | {this_mos:.3f} | {peer_avg:.3f} | {peer_avg - this_mos:+.2f} |\n")
+                f.write("\n")
+
+            f.write("</details>\n\n")
 
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")

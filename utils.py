@@ -63,6 +63,26 @@ def get_binary_size(path):
         return os.path.getsize(path)
     return 0
 
+def resolve_wrapper_target(path):
+    """If path is a shell wrapper script (e.g. one scripts/build_faac_matrix.sh
+    writes to fix up a dylib search path before exec'ing the real binary),
+    resolve to that real binary -- otherwise footprint measurement reads the
+    wrapper's own few-hundred-byte size instead of the thing it runs.
+    Anything that isn't such a wrapper is returned unchanged."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return path
+    if not head.startswith(b"#!"):
+        return path
+    m = re.search(rb'exec\s+"([^"]+)"', head)
+    if m:
+        target = m.group(1).decode("utf-8", errors="replace")
+        if os.path.exists(target):
+            return target
+    return path
+
 def find_linked_lib(binary_path, name_substr):
     """Resolve the on-disk path of a shared library linked into binary_path."""
     try:
@@ -81,6 +101,33 @@ def find_linked_lib(binary_path, name_substr):
                     lib_path = line.split("=>")[1].strip().split(" ")[0]
                     if lib_path and os.path.exists(lib_path):
                         return lib_path
+    except Exception:
+        pass
+    return None
+
+def guess_lib_version_from_path(lib_path):
+    """Best-effort real version of a linked shared library.
+
+    macOS/Homebrew: resolving symlinks reveals a .../Cellar/<pkg>/<version>/
+    segment (find_linked_lib's path is typically the opt/ symlink, e.g.
+    /opt/homebrew/opt/opus/lib/libopus.0.dylib, not the versioned Cellar
+    path it points to). Debian/Ubuntu (this project's CI): no version in
+    the path itself, but dpkg knows which package installed the file and
+    that package's real version. None if neither applies."""
+    if not lib_path:
+        return None
+    real = os.path.realpath(lib_path)
+    m = re.search(r"/Cellar/[^/]+/([0-9][\w.\-]*)/", real)
+    if m:
+        return m.group(1)
+    try:
+        owner = subprocess.run(["dpkg", "-S", real], capture_output=True, text=True, timeout=5)
+        if owner.returncode == 0 and owner.stdout:
+            pkg = owner.stdout.split(":", 1)[0].strip()
+            if pkg:
+                ver = subprocess.run(["dpkg-query", "-W", "-f=${Version}", pkg], capture_output=True, text=True, timeout=5)
+                if ver.returncode == 0 and ver.stdout.strip():
+                    return ver.stdout.strip()
     except Exception:
         pass
     return None
