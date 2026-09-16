@@ -1009,6 +1009,42 @@ def main():
                             if res:
                                 dec_results.append(res)
 
+            if not args.skip_mos:
+                print("\n>>> Phase 2: Decoder Perceptual Quality (MOS)")
+                dec_bridge_data = {"matrix": {}}
+                dec_valid_count = 0
+                for i, res in enumerate(dec_results):
+                    if not res.get("wav_path") or not os.path.exists(res["wav_path"]):
+                        continue
+                    key = f"dec_res_{res['row_key']}_{i}"
+                    dec_bridge_data["matrix"][key] = {
+                        "scenario": res["scenario"],
+                        "filename": res["filename"],
+                        "aac": res["wav_path"],
+                        "mos": None
+                    }
+                    dec_valid_count += 1
+
+                if dec_valid_count > 0:
+                    dec_bridge_json = "bridge_results_both_dec.json"
+                    with open(dec_bridge_json, "w") as f:
+                        json.dump(dec_bridge_data, f, indent=2)
+
+                    phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
+                    cmd_phase2 = [sys.executable, phase2_script, dec_bridge_json, output_dir, external_data_dir]
+                    safe_run(cmd_phase2, capture_output=False, check=True)
+
+                    with open(dec_bridge_json, "r") as f:
+                        updated_bridge = json.load(f)
+
+                    for i, res in enumerate(dec_results):
+                        key = f"dec_res_{res['row_key']}_{i}"
+                        if key in updated_bridge["matrix"]:
+                            res["mos"] = updated_bridge["matrix"][key].get("mos")
+
+                    if os.path.exists(dec_bridge_json):
+                        os.remove(dec_bridge_json)
+
             # Append Decoder Leaderboard section to the output file
             with open(args.output, "a") as f:
                 f.write("\n\n---\n\n")

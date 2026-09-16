@@ -69,6 +69,10 @@ class TestCompareDecoders(unittest.TestCase):
                 self.assertIn("FAAD2", text)
                 self.assertIn("25.5 dB", text)
 
+    def test_compare_codecs_import(self):
+        import compare_codecs
+        self.assertTrue(hasattr(compare_codecs, "main"))
+
     def test_mode_both_leaderboard_rendering(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "combined.md")
