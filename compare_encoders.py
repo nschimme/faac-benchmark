@@ -26,7 +26,8 @@ from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_
                    resolve_wrapper_target, guess_lib_version_from_path,
                    corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families, expand_scenario_list,
-                   get_audio_es_bytes)
+                   get_audio_es_bytes, is_system_library, flatten_arg_list, probe_version,
+                   make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,17 +63,6 @@ def find_linked_lib(binary_path, name_substr):
     except Exception:
         pass
     return None
-
-def is_system_library(path):
-    """Checks if a library path belongs to a system directory."""
-    if not path:
-        return False
-    if sys.platform == "darwin":
-        # macOS system paths
-        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
-        return any(path.startswith(prefix) for prefix in system_prefixes)
-    # On Linux, we generally want to measure library size even if in /usr/lib
-    return False
 
 PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard"}
 
@@ -333,34 +323,6 @@ def get_audio_info(path):
 
 import re
 
-def flatten_arg_list(arg_val):
-    if not arg_val:
-        return []
-    if isinstance(arg_val, str):
-        arg_val = [arg_val]
-    res = []
-    for item in arg_val:
-        for p in item.split(","):
-            p = p.strip()
-            if p and p not in res:
-                res.append(p)
-    return res
-
-def probe_version(bin_path, flag_list, patterns, env=None):
-    if not bin_path or not os.path.exists(bin_path):
-        return None
-    for flag in flag_list:
-        try:
-            cmd = [bin_path, flag] if flag else [bin_path]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
-            text = (res.stdout or "") + "\n" + (res.stderr or "")
-            for p in patterns:
-                m = re.search(p, text, re.IGNORECASE)
-                if m:
-                    return m.group(1).strip()
-        except Exception:
-            pass
-    return None
 
 def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
     """Version label for a third-party codec FFmpeg hosts (libopus,
@@ -453,23 +415,7 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def make_unique_encoder_name_and_id(base_name, version, base_id, existing_names, existing_ids):
-    display_name = f"{base_name} {version}" if version else base_name
-    candidate_name = display_name
-    idx = 2
-    while candidate_name in existing_names:
-        candidate_name = f"{display_name} (#{idx})"
-        idx += 1
-    existing_names.add(candidate_name)
-
-    sanitized_id = re.sub(r"[^a-zA-Z0-9_]", "_", candidate_name.lower())
-    candidate_id = sanitized_id
-    idx = 2
-    while candidate_id in existing_ids:
-        candidate_id = f"{sanitized_id}_{idx}"
-        idx += 1
-    existing_ids.add(candidate_id)
-
-    return candidate_name, candidate_id
+    return make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids)
 
 def detect_encoders(args):
     encoders = []
@@ -1006,12 +952,6 @@ def main():
     # Final leaderboard generation
     generate_leaderboard(encoders, all_results, args.output, scenario_list, skip_graphs=args.skip_graphs)
 
-def format_size(bytes_val):
-    if bytes_val is None or bytes_val == 0:
-        return "0 B"
-    if bytes_val < 1024:
-        return f"{bytes_val} B"
-    return f"{bytes_val / 1024:.1f} KB"
 
 # A worst-MOS score alone can't say whether it's a bug specific to this
 # encoder or just a genuinely hard clip every encoder struggles with (a
@@ -1374,14 +1314,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             return False
 
-        def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
-            if val is None or max_val <= 0:
-                return ""
-            ratio = max(0.0, min(1.0, val / max_val))
-            if lower_is_better:
-                ratio = 1.0 - ratio
-            filled = int(round(ratio * width))
-            return " " + "█" * filled + "░" * (width - filled)
 
         def render_metric_tables(extract_val_fn, fmt_fn, lower_is_better=False, filter_scenarios=None, max_scale=None, annotate_fn=None):
             scen_list = filter_scenarios if filter_scenarios is not None else scenarios
@@ -1450,18 +1382,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         # rates into one chart draws a line through unrelated configurations --
         # 32k_stereo_48k and 48k_stereo_48k would both land on the "48k" tick.
         # One section per family keeps every curve meaningful.
-        def zoomed_y_range(vals, y_range):
-            """Zoom to where the data actually falls instead of the metric's
-            full theoretical range, which otherwise buries real differences in
-            dead space when every value clusters far from the floor/ceiling
-            (e.g. MOS 3.5-4.9 on a 1.0-5.0 axis). Clamped within that range."""
-            y_floor, y_ceiling = (float(x) for x in y_range.split("-->"))
-            lo, hi = min(vals), max(vals)
-            pad = max((hi - lo) * 0.1, (y_ceiling - y_floor) * 0.02)
-            axis_lo, axis_hi = max(y_floor, lo - pad), min(y_ceiling, hi + pad)
-            if axis_hi - axis_lo < 1e-6:
-                axis_lo, axis_hi = y_floor, y_ceiling
-            return axis_lo, axis_hi
 
         def family_chart(fam_scenarios, title, y_label, y_range, value_fn):
             """Emit one MOS-style xychart for a single family.

@@ -63,6 +63,154 @@ def get_binary_size(path):
         return os.path.getsize(path)
     return 0
 
+def is_system_library(path):
+    """Checks if a library path belongs to a system directory."""
+    if not path:
+        return False
+    if sys.platform == "darwin":
+        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
+        return any(path.startswith(prefix) for prefix in system_prefixes)
+    return False
+
+def flatten_arg_list(arg_val):
+    """Flattens a string or list argument value into a list of strings split by commas."""
+    if not arg_val:
+        return []
+    if isinstance(arg_val, str):
+        arg_val = [arg_val]
+    res = []
+    for item in arg_val:
+        for p in item.split(","):
+            p = p.strip()
+            if p and p not in res:
+                res.append(p)
+    return res
+
+def probe_version(bin_path, flag_list, patterns, env=None):
+    """Probes a binary by running it with candidate flags and matching output against regex patterns."""
+    if not bin_path or not os.path.exists(bin_path):
+        return None
+    for flag in flag_list:
+        try:
+            cmd = [bin_path, flag] if flag else [bin_path]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
+            text = (res.stdout or "") + "\n" + (res.stderr or "")
+            for p in patterns:
+                m = re.search(p, text, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+    return None
+
+def make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids):
+    """Generates unique display name and sanitized tool ID."""
+    display_name = f"{base_name} {version}" if version else base_name
+    candidate_name = display_name
+    idx = 2
+    while candidate_name in existing_names:
+        candidate_name = f"{display_name} (#{idx})"
+        idx += 1
+    existing_names.add(candidate_name)
+
+    sanitized_id = re.sub(r"[^a-zA-Z0-9_]", "_", candidate_name.lower())
+    candidate_id = sanitized_id
+    idx = 2
+    while candidate_id in existing_ids:
+        candidate_id = f"{sanitized_id}_{idx}"
+        idx += 1
+    existing_ids.add(candidate_id)
+
+    return candidate_name, candidate_id
+
+def format_size(bytes_val):
+    """Formats bytes into human readable B / KB representation."""
+    if bytes_val is None or bytes_val == 0:
+        return "0 B"
+    if bytes_val < 1024:
+        return f"{bytes_val} B"
+    return f"{bytes_val / 1024:.1f} KB"
+
+def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
+    """Generates an ASCII progress bar (e.g. ' ████░░░░')."""
+    if val is None or max_val <= 0:
+        return ""
+    ratio = max(0.0, min(1.0, val / max_val))
+    if lower_is_better:
+        ratio = 1.0 - ratio
+    filled = int(round(ratio * width))
+    return " " + "█" * filled + "░" * (width - filled)
+
+def zoomed_y_range(vals, y_range):
+    """Calculates a zoomed min/max y-axis range for Mermaid charts based on actual values."""
+    y_floor, y_ceiling = (float(x) for x in y_range.split("-->"))
+    if not vals:
+        return y_floor, y_ceiling
+    lo, hi = min(vals), max(vals)
+    pad = max((hi - lo) * 0.1, (y_ceiling - y_floor) * 0.02)
+    axis_lo, axis_hi = max(y_floor, lo - pad), min(y_ceiling, hi + pad)
+    if axis_hi - axis_lo < 1e-6:
+        axis_lo, axis_hi = y_floor, y_ceiling
+    return axis_lo, axis_hi
+
+def compute_snr(ref_wav_path, cand_wav_path):
+    """Computes Signal-to-Noise Ratio (SNR in dB) between reference WAV and candidate decoded WAV.
+
+    Returns SNR in dB (or None on failure / sample mismatch).
+    Bit-exact decodes return float('inf').
+    """
+    try:
+        import soundfile as sf
+        import scipy.signal
+
+        r_data, r_sr = sf.read(ref_wav_path, dtype='float32', always_2d=True)
+        c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
+
+        if r_sr != c_sr:
+            return None
+
+        # Cross-correlate mono downmix to align priming delay offsets
+        r_mono = r_data.mean(axis=1)
+        c_mono = c_data.mean(axis=1)
+
+        n_search = min(len(r_mono), len(c_mono), r_sr * 3)
+        if n_search == 0:
+            return None
+
+        r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+        c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
+        corr = scipy.signal.correlate(r_norm, c_norm, mode='full')
+        lag = int(np.argmax(corr)) - (n_search - 1)
+
+        if lag < 0:
+            c_aligned = c_data[-lag:]
+            r_aligned = r_data[:len(r_data) + lag]
+        elif lag > 0:
+            r_aligned = r_data[lag:]
+            c_aligned = c_data[:len(c_data) - lag]
+        else:
+            r_aligned, c_aligned = r_data, c_data
+
+        n = min(len(r_aligned), len(c_aligned))
+        if n <= 0:
+            return None
+
+        r_aligned = r_aligned[:n]
+        c_aligned = c_aligned[:n]
+
+        ref_power = float(np.mean(r_aligned ** 2))
+        err_power = float(np.mean((r_aligned - c_aligned) ** 2))
+
+        if err_power < 1e-12:
+            return float('inf')
+        if ref_power < 1e-12:
+            return 0.0
+
+        snr = 10.0 * math.log10(ref_power / err_power)
+        return float(snr)
+    except Exception:
+        return None
+
 def resolve_wrapper_target(path):
     """If path is a shell wrapper script (e.g. one scripts/build_faac_matrix.sh
     writes to fix up a dylib search path before exec'ing the real binary),
