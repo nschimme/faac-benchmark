@@ -377,13 +377,24 @@ def probe_faac_version(faac_path, lib_override=None):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-def probe_encoder_capability(encoder, bitrate_kbps=64, channels=2, sample_rate=44100):
+def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
     """Some libfdk-aac builds (e.g. Ubuntu's apt fdkaac 1.0.0) silently reject
     AOT 5/29 (HE-AAC / HE-AAC v2) via aacEncoder_SetParam, failing on every
     single clip at every bitrate -- see https://github.com/nu774/fdkaac/issues/57.
     Rather than let that show up as a wall of per-clip "encoding error" noise
     indistinguishable from a real bug, verify each profile actually works with
-    one throwaway silent-WAV encode at detection time. Returns (ok, reason)."""
+    one throwaway silent-WAV encode at detection time. Returns (ok, reason).
+
+    The probe bitrate must land inside the profile's own valid per-channel
+    range (see use_he_aac/use_he_v2_aac) or a perfectly capable encoder looks
+    unsupported -- e.g. afconvert's HE-v2 (Parametric Stereo) hard-rejects
+    32 kbps/channel with "Couldn't set audio converter property", the exact
+    same error a real capability gap would produce, even though 16 kbps/
+    channel works fine on the same binary."""
+    if bitrate_kbps is None:
+        per_channel = {"he": 32, "hev2": 16}.get(encoder.profile, 64)
+        bitrate_kbps = per_channel * channels
+
     tmp_dir = tempfile.mkdtemp(prefix="cap_probe_")
     try:
         wav_path = os.path.join(tmp_dir, "silence.wav")
@@ -450,7 +461,12 @@ def detect_encoders(args):
         name, tool_id = make_unique_encoder_name_and_id("FAAC", ver, "faac", existing_names, existing_ids)
         encoders.append(FAACEncoder(name, f_bin, tool_id, profile="lc", lib_override=f_lib, legacy=legacy))
         if not legacy:
-            encoders.append(FAACEncoder(name, f_bin, tool_id, profile="he", lib_override=f_lib, legacy=legacy))
+            candidate = FAACEncoder(name, f_bin, tool_id, profile="he", lib_override=f_lib, legacy=legacy)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label('he')} unsupported by this build, skipping ({reason}).")
 
     ffmpeg_bins = flatten_arg_list(getattr(args, "ffmpeg_bin", None))
     if not ffmpeg_bins:
@@ -476,8 +492,13 @@ def detect_encoders(args):
             if "libfdk_aac" in stdout:
                 name_fdk, id_fdk = make_unique_encoder_name_and_id("FDK-AAC (FFmpeg)", ver, "ffmpeg_libfdk_aac", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="lc"))
-                encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="he"))
-                encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="hev2"))
+                for profile in ("he", "hev2"):
+                    candidate = FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile=profile)
+                    ok, reason = probe_encoder_capability(candidate)
+                    if ok:
+                        encoders.append(candidate)
+                    else:
+                        print(f"  {name_fdk}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
             if "vo_aacenc" in stdout:
                 name_vo, id_vo = make_unique_encoder_name_and_id("VO-AAC (FFmpeg)", ver, "ffmpeg_vo_aacenc", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_vo, ff_bin, "vo_aacenc", tool_id=id_vo))
@@ -545,8 +566,13 @@ def detect_encoders(args):
         ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version:?\s+([0-9.]+)"])
         name, tool_id = make_unique_encoder_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
         encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="lc"))
-        encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="he"))
-        encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="hev2"))
+        for profile in ("he", "hev2"):
+            candidate = AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     if getattr(args, 'include_other_codecs', False):
         opus_bins = flatten_arg_list(getattr(args, "opusenc_bin", None))
