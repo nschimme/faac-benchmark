@@ -188,7 +188,7 @@ class FAACEncoder(Encoder):
         return [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
-    def __init__(self, name, binary_path, codec_name, tool_id=None, supports_nmr=False, profile="lc"):
+    def __init__(self, name, binary_path, codec_name, tool_id=None, coder=None, profile="lc"):
         lib_name_substr = {
             "libfdk_aac": "libfdk-aac",
             "vo_aacenc": "vo-aacenc",
@@ -196,7 +196,12 @@ class FFmpegEncoder(Encoder):
         tid = tool_id or f"ffmpeg_{codec_name}"
         super().__init__(name, binary_path, tid, profile, lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
-        self.supports_nmr = supports_nmr
+        # -aac_coder choice for the native "aac" encoder (e.g. "twoloop", "nmr").
+        # None leaves it at the build's default, which drifted from twoloop to
+        # nmr in FFmpeg itself -- pass it explicitly so results stay
+        # comparable across FFmpeg versions instead of silently following
+        # whatever that build happens to default to.
+        self.coder = coder
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
@@ -205,8 +210,8 @@ class FFmpegEncoder(Encoder):
                 cmd.extend(["-profile:a", "aac_he"])
             elif self.profile == "hev2":
                 cmd.extend(["-profile:a", "aac_he_v2"])
-        if self.codec_name == "aac" and self.supports_nmr:
-            cmd.extend(["-aac_coder", "nmr"])
+        if self.codec_name == "aac" and self.coder:
+            cmd.extend(["-aac_coder", self.coder])
 
         cmd.extend(["-b:a", f"{bitrate_kbps}k"])
         cmd.extend(["-ac", str(channels), output_path])
@@ -483,8 +488,17 @@ def detect_encoders(args):
         except Exception:
             pass
 
+        # Explicitly force the classic twoloop coder rather than relying on
+        # the build's default -- FFmpeg's own default drifted from twoloop to
+        # nmr (see aacenc: use the NMR coder by default), so an implicit
+        # default would silently change which algorithm "FFmpeg AAC" means
+        # depending on the FFmpeg version running the benchmark.
         name_aac, id_aac = make_unique_encoder_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
-        encoders.append(FFmpegEncoder(name_aac, ff_bin, "aac", tool_id=id_aac, supports_nmr=supports_nmr))
+        encoders.append(FFmpegEncoder(name_aac, ff_bin, "aac", tool_id=id_aac, coder="twoloop"))
+
+        if supports_nmr:
+            name_nmr, id_nmr = make_unique_encoder_name_and_id("FFmpeg AAC (NMR)", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
+            encoders.append(FFmpegEncoder(name_nmr, ff_bin, "aac", tool_id=id_nmr, coder="nmr"))
 
         try:
             res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
