@@ -728,6 +728,7 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
+    parser.add_argument("--mode", choices=["encoder", "decoder", "both"], default="both", help="Benchmarking mode: encoder, decoder, or both")
     parser.add_argument("--faac-bin", action="append", help="Path to faac binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so (can be specified multiple times or comma-separated)")
     parser.add_argument("--faac-bin-version", action="append",
@@ -736,6 +737,9 @@ def main():
     parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--faad-bin", action="append", help="Path to faad binary")
+    parser.add_argument("--faad-lib", action="append", help="Path to libfaad.so")
+    parser.add_argument("--faad-bin-version", action="append", help="Explicit version label for --faad-bin")
     parser.add_argument("--ffmpeg-bin", action="append", help="Path to ffmpeg binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--afconvert-bin", action="append", help="Path to afconvert binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--opusenc-bin", action="append", help="Path to opusenc binary (can be specified multiple times or comma-separated)")
@@ -758,6 +762,11 @@ def main():
                              "between runs, so those phases still execute normally.")
 
     args = parser.parse_args()
+
+    if args.mode == "decoder":
+        import compare_decoders
+        compare_decoders.main()
+        return
 
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
     output_dir = os.path.join(SCRIPT_DIR, "output", "comparison")
@@ -951,6 +960,63 @@ def main():
 
     # Final leaderboard generation
     generate_leaderboard(encoders, all_results, args.output, scenario_list, skip_graphs=args.skip_graphs)
+
+    if args.mode == "both":
+        import compare_decoders
+        decoders = compare_decoders.detect_decoders(args)
+        if decoders:
+            print("\n>>> Running Decoder Benchmarks (--mode both)...")
+            ref_bitstream_dir = os.path.join(SCRIPT_DIR, "output", "ref_bitstreams")
+            dec_output_dir = os.path.join(SCRIPT_DIR, "output", "decoder_comparison")
+            os.makedirs(dec_output_dir, exist_ok=True)
+
+            samples_by_scenario = {}
+            for scenario_name in scenario_list:
+                if scenario_name not in SCENARIOS:
+                    continue
+                cfg = SCENARIOS[scenario_name]
+                data_dir = corpus_dir(cfg, external_data_dir)
+                if not os.path.exists(data_dir):
+                    continue
+                wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
+                all_samples = sorted(wavs) if args.gate else select_corpus_clips(wavs, CORPORA.get(cfg["corpus"], {}))
+                samples = gate_filter(scenario_name, all_samples) if args.gate else all_samples[:max(1, int(len(all_samples) * args.coverage / 100.0))]
+                samples_by_scenario[scenario_name] = samples
+
+            ref_map = compare_decoders.prepare_reference_bitstreams(scenario_list, external_data_dir, ref_bitstream_dir, samples_by_scenario)
+
+            dec_results = []
+            num_cpus = os.cpu_count() or 1
+            for scenario_name in scenario_list:
+                if scenario_name not in SCENARIOS:
+                    continue
+                cfg = SCENARIOS[scenario_name]
+                samples = samples_by_scenario.get(scenario_name, [])
+                if not samples:
+                    continue
+
+                for decoder in decoders:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                        futures = []
+                        for sample in samples:
+                            if (scenario_name, sample) not in ref_map:
+                                continue
+                            ref_wav_path, ref_m4a_path = ref_map[(scenario_name, sample)]
+                            futures.append(executor.submit(compare_decoders.process_decode_task, decoder, ref_m4a_path, ref_wav_path, scenario_name, cfg, sample, dec_output_dir))
+
+                        for future in concurrent.futures.as_completed(futures):
+                            res = future.result()
+                            if res:
+                                dec_results.append(res)
+
+            # Append Decoder Leaderboard section to the output file
+            with open(args.output, "a") as f:
+                f.write("\n\n---\n\n")
+            compare_decoders.generate_decoder_leaderboard(decoders, dec_results, args.output + ".dec.tmp", scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=all_results)
+            with open(args.output + ".dec.tmp") as f_dec, open(args.output, "a") as f_out:
+                f_out.write(f_dec.read())
+            if os.path.exists(args.output + ".dec.tmp"):
+                os.remove(args.output + ".dec.tmp")
 
 
 # A worst-MOS score alone can't say whether it's a bug specific to this

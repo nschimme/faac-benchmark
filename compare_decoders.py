@@ -254,12 +254,22 @@ def prepare_reference_bitstreams(scenario_list, external_data_dir, ref_bitstream
 
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC decoders and generate a leaderboard.")
+    parser.add_argument("--mode", choices=["encoder", "decoder", "both"], default="both", help="Benchmarking mode: encoder, decoder, or both")
+    parser.add_argument("--faac-bin", action="append", help="Path to faac binary")
+    parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so")
+    parser.add_argument("--faac-bin-version", action="append", help="Explicit version label for --faac-bin")
+    parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary")
+    parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary")
+    parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary")
     parser.add_argument("--faad-bin", action="append", help="Path to faad binary")
     parser.add_argument("--faad-lib", action="append", help="Path to libfaad.so")
     parser.add_argument("--faad-bin-version", action="append", help="Explicit version label for --faad-bin")
     parser.add_argument("--ffmpeg-bin", action="append", help="Path to ffmpeg binary")
     parser.add_argument("--afconvert-bin", action="append", help="Path to afconvert binary")
-    parser.add_argument("--output", default="decoder_leaderboard.md", help="Output Markdown file")
+    parser.add_argument("--opusenc-bin", action="append", help="Path to opusenc binary")
+    parser.add_argument("--lame-bin", action="append", help="Path to lame binary")
+    parser.add_argument("--include-other-codecs", action="store_true", help="Include non-AAC codecs (Opus, LAME)")
+    parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="decoder_comparison_results.json", help="Intermediate decoder results JSON")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
     parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset")
@@ -271,6 +281,12 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Reload --results-json from previous run")
 
     args = parser.parse_args()
+
+    if args.mode == "encoder":
+        import compare_encoders
+        sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:] if a != "--mode" and not a.startswith("encoder")]
+        compare_encoders.main()
+        return
 
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
     output_dir = os.path.join(SCRIPT_DIR, "output", "decoder_comparison")
@@ -443,13 +459,10 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
     with open(output_path, "w") as f:
         has_encoders = bool(encoders)
-        title = "# Audio Codec Leaderboard" if has_encoders else "# AAC Leaderboard"
-        f.write(f"{title}\n\n")
-
-        nav_links = ["[📊 Decoder Rankings](#-decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
-        if has_encoders:
-            nav_links.insert(0, "[📊 Encoder Rankings](#-encoder-leaderboard)")
-        f.write(" | ".join(nav_links) + "\n\n---\n\n")
+        if not has_encoders:
+            f.write("# AAC Leaderboard\n\n")
+            nav_links = ["[📊 Decoder Rankings](#-decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
+            f.write(" | ".join(nav_links) + "\n\n---\n\n")
 
         f.write("## 🔊 Decoder Leaderboard\n\n")
         f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Perceptual Quality (MOS), Speed, and Footprint.\n\n")
