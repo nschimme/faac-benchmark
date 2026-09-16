@@ -15,6 +15,8 @@ import time
 import argparse
 import subprocess
 import shutil
+import tempfile
+import wave
 import concurrent.futures
 import multiprocessing
 from collections import defaultdict
@@ -119,6 +121,15 @@ class Encoder:
         self.bss_size = sec_sizes.get("bss", 0)
         self.data_size = sec_sizes.get("data", 0)
 
+    def supports_scenario(self, bitrate_kbps, channels, sample_rate):
+        """Returns (supported: bool, reason: str). HE profiles inherently require
+        sufficient sample rates (>=32kHz for SBR) and HE-v2 requires stereo (>=2ch)."""
+        if self.profile in ("he", "hev2") and sample_rate < 32000:
+            return False, f"sample rate {sample_rate} Hz < 32 kHz required for SBR ({profile_label(self.profile)})"
+        if self.profile == "hev2" and channels < 2:
+            return False, f"HE-v2 (Parametric Stereo) requires >= 2 channels (got {channels})"
+        return True, ""
+
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
         raise NotImplementedError
 
@@ -177,14 +188,20 @@ class FAACEncoder(Encoder):
         return [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "--object-type", object_type, "-o", output_path, input_path]
 
 class FFmpegEncoder(Encoder):
-    def __init__(self, name, binary_path, codec_name, supports_nmr=False, profile="lc"):
+    def __init__(self, name, binary_path, codec_name, tool_id=None, coder=None, profile="lc"):
         lib_name_substr = {
             "libfdk_aac": "libfdk-aac",
             "vo_aacenc": "vo-aacenc",
         }.get(codec_name)
-        super().__init__(name, binary_path, f"ffmpeg_{codec_name}", profile, lib_name_substr=lib_name_substr)
+        tid = tool_id or f"ffmpeg_{codec_name}"
+        super().__init__(name, binary_path, tid, profile, lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
-        self.supports_nmr = supports_nmr
+        # -aac_coder choice for the native "aac" encoder (e.g. "twoloop", "nmr").
+        # None leaves it at the build's default, which drifted from twoloop to
+        # nmr in FFmpeg itself -- pass it explicitly so results stay
+        # comparable across FFmpeg versions instead of silently following
+        # whatever that build happens to default to.
+        self.coder = coder
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a", self.codec_name]
@@ -193,15 +210,15 @@ class FFmpegEncoder(Encoder):
                 cmd.extend(["-profile:a", "aac_he"])
             elif self.profile == "hev2":
                 cmd.extend(["-profile:a", "aac_he_v2"])
-        if self.codec_name == "aac" and self.supports_nmr:
-            cmd.extend(["-aac_coder", "nmr"])
+        if self.codec_name == "aac" and self.coder:
+            cmd.extend(["-aac_coder", self.coder])
 
         cmd.extend(["-b:a", f"{bitrate_kbps}k"])
         cmd.extend(["-ac", str(channels), output_path])
         return cmd
 
 class FDKAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id, profile="lc"):
+    def __init__(self, name, binary_path, tool_id="fdkaac", profile="lc"):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
@@ -219,8 +236,8 @@ class FDKAACEncoder(Encoder):
         return cmd
 
 class AACEncEncoder(Encoder):
-    def __init__(self, name, binary_path, profile="lc"):
-        super().__init__(name, binary_path, "aac_enc", profile, lib_name_substr="libfdk-aac")
+    def __init__(self, name, binary_path, tool_id="aac_enc", profile="lc"):
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         if self.profile == "hev2":
@@ -233,8 +250,8 @@ class AACEncEncoder(Encoder):
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
 class FalabaacEncoder(Encoder):
-    def __init__(self, name, binary_path, profile="lc"):
-        super().__init__(name, binary_path, "falabaac", profile)
+    def __init__(self, name, binary_path, tool_id="falabaac", profile="lc"):
+        super().__init__(name, binary_path, tool_id, profile)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         # falabaac's own --help/source comment describe -b as per-channel, but its
@@ -244,9 +261,9 @@ class FalabaacEncoder(Encoder):
         return [self.binary_path, "-i", input_path, "-o", output_path, "-b", str(bitrate_kbps)]
 
 class AFConvertEncoder(Encoder):
-    def __init__(self, name, binary_path, profile="lc"):
+    def __init__(self, name, binary_path, tool_id="afconvert", profile="lc"):
         # AudioToolbox is the framework providing the AAC codec on macOS
-        super().__init__(name, binary_path, "afconvert", profile, lib_name_substr="AudioToolbox")
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         if self.profile == "hev2":
@@ -296,92 +313,326 @@ def get_audio_info(path):
     except:
         return None, None
 
-def detect_encoders(args):
-    encoders = []
+import re
 
-    # 1. FAAC
-    faac_path = args.faac_bin or shutil.which("faac")
-    if faac_path:
-        legacy = is_faac_legacy(faac_path, lib_override=args.faac_lib)
-        encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="lc", lib_override=args.faac_lib, legacy=legacy))
-        if not legacy:
-            encoders.append(FAACEncoder("FAAC", faac_path, "faac", profile="he", lib_override=args.faac_lib, legacy=legacy))
+def flatten_arg_list(arg_val):
+    if not arg_val:
+        return []
+    if isinstance(arg_val, str):
+        arg_val = [arg_val]
+    res = []
+    for item in arg_val:
+        for p in item.split(","):
+            p = p.strip()
+            if p and p not in res:
+                res.append(p)
+    return res
 
-    # 2. FFmpeg Internal AAC
-    ffmpeg_path = args.ffmpeg_bin or get_ffmpeg_path()
-    if ffmpeg_path:
-        supports_nmr = False
+def probe_version(bin_path, flag_list, patterns, env=None):
+    if not bin_path or not os.path.exists(bin_path):
+        return None
+    for flag in flag_list:
         try:
-            res = subprocess.run([ffmpeg_path, "-h", "encoder=aac"], capture_output=True, text=True)
-            import re
-            supports_nmr = bool(re.search(r"\bnmr\b", res.stdout))
+            cmd = [bin_path, flag] if flag else [bin_path]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
+            text = (res.stdout or "") + "\n" + (res.stderr or "")
+            for p in patterns:
+                m = re.search(p, text, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
         except Exception:
             pass
-        encoders.append(FFmpegEncoder("FFmpeg AAC", ffmpeg_path, "aac", supports_nmr=supports_nmr))
+    return None
 
-        # Check for libfdk_aac in ffmpeg
+def probe_faac_version(faac_path, lib_override=None):
+    """faac never prints its version via --help/-h (the banner is only
+    emitted mid-encode, gated behind having a real input file -- see
+    is_faac_legacy), so the only way to learn it is to actually run a
+    throwaway encode and scrape "FAAC x.y.z" out of stderr."""
+    if not faac_path or not os.path.exists(faac_path):
+        return None
+    env = None
+    if lib_override:
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+
+    tmp_dir = tempfile.mkdtemp(prefix="faac_ver_")
+    try:
+        wav_path = os.path.join(tmp_dir, "silence.wav")
+        out_path = os.path.join(tmp_dir, "silence.m4a")
+        with wave.open(wav_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\x00\x00" * 800)
+        res = subprocess.run([faac_path, "-o", out_path, "--overwrite", wav_path],
+                              capture_output=True, text=True, timeout=10, env=env)
+        text = (res.stdout or "") + "\n" + (res.stderr or "")
+        m = re.search(r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", text, re.IGNORECASE)
+        return m.group(1).strip() if m else None
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
+    """Some libfdk-aac builds (e.g. Ubuntu's apt fdkaac 1.0.0) silently reject
+    AOT 5/29 (HE-AAC / HE-AAC v2) via aacEncoder_SetParam, failing on every
+    single clip at every bitrate -- see https://github.com/nu774/fdkaac/issues/57.
+    Rather than let that show up as a wall of per-clip "encoding error" noise
+    indistinguishable from a real bug, verify each profile actually works with
+    one throwaway silent-WAV encode at detection time. Returns (ok, reason).
+
+    The probe bitrate must land inside the profile's own valid per-channel
+    range (see use_he_aac/use_he_v2_aac) or a perfectly capable encoder looks
+    unsupported -- e.g. afconvert's HE-v2 (Parametric Stereo) hard-rejects
+    32 kbps/channel with "Couldn't set audio converter property", the exact
+    same error a real capability gap would produce, even though 16 kbps/
+    channel works fine on the same binary."""
+    if bitrate_kbps is None:
+        per_channel = {"he": 32, "hev2": 16}.get(encoder.profile, 64)
+        bitrate_kbps = per_channel * channels
+
+    tmp_dir = tempfile.mkdtemp(prefix="cap_probe_")
+    try:
+        wav_path = os.path.join(tmp_dir, "silence.wav")
+        out_path = os.path.join(tmp_dir, "silence" + getattr(encoder, "file_ext", ".m4a"))
+        with wave.open(wav_path, "wb") as w:
+            w.setnchannels(channels)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(b"\x00\x00" * channels * sample_rate)  # 1s of silence
+
+        cmd = encoder.get_encode_cmd(wav_path, out_path, bitrate_kbps, channels, sample_rate)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=encoder.get_run_env() or None)
+        if res.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return True, ""
+
+        text = ((res.stderr or "") + "\n" + (res.stdout or "")).strip()
+        reason = next((l for l in reversed(text.splitlines()) if l.strip()), f"exit code {res.returncode}")
+        return False, reason
+    except Exception as e:
+        return False, str(e)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def make_unique_encoder_name_and_id(base_name, version, base_id, existing_names, existing_ids):
+    display_name = f"{base_name} {version}" if version else base_name
+    candidate_name = display_name
+    idx = 2
+    while candidate_name in existing_names:
+        candidate_name = f"{display_name} (#{idx})"
+        idx += 1
+    existing_names.add(candidate_name)
+
+    sanitized_id = re.sub(r"[^a-zA-Z0-9_]", "_", candidate_name.lower())
+    candidate_id = sanitized_id
+    idx = 2
+    while candidate_id in existing_ids:
+        candidate_id = f"{sanitized_id}_{idx}"
+        idx += 1
+    existing_ids.add(candidate_id)
+
+    return candidate_name, candidate_id
+
+def detect_encoders(args):
+    encoders = []
+    existing_names = set()
+    existing_ids = set()
+
+    faac_bins = flatten_arg_list(getattr(args, "faac_bin", None))
+    faac_libs = flatten_arg_list(getattr(args, "faac_lib", None))
+    if not faac_bins:
+        which_faac = shutil.which("faac")
+        if which_faac:
+            faac_bins = [which_faac]
+
+    for idx, f_bin in enumerate(faac_bins):
+        f_lib = faac_libs[idx] if idx < len(faac_libs) else (faac_libs[0] if faac_libs else None)
+        legacy = is_faac_legacy(f_bin, lib_override=f_lib)
+        ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
+                            [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)", r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+        if not ver:
+            ver = probe_faac_version(f_bin, lib_override=f_lib)
+        if not ver and legacy:
+            ver = "1.x"
+        name, tool_id = make_unique_encoder_name_and_id("FAAC", ver, "faac", existing_names, existing_ids)
+        encoders.append(FAACEncoder(name, f_bin, tool_id, profile="lc", lib_override=f_lib, legacy=legacy))
+        if not legacy:
+            candidate = FAACEncoder(name, f_bin, tool_id, profile="he", lib_override=f_lib, legacy=legacy)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label('he')} unsupported by this build, skipping ({reason}).")
+
+    ffmpeg_bins = flatten_arg_list(getattr(args, "ffmpeg_bin", None))
+    if not ffmpeg_bins:
+        which_ff = get_ffmpeg_path()
+        if which_ff:
+            ffmpeg_bins = [which_ff]
+
+    for ff_bin in ffmpeg_bins:
+        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+        supports_nmr = False
         try:
-            res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
-            if "libfdk_aac" in res.stdout:
-                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="lc"))
-                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="he"))
-                encoders.append(FFmpegEncoder("FDK-AAC (FFmpeg)", ffmpeg_path, "libfdk_aac", profile="hev2"))
-            if "vo_aacenc" in res.stdout:
-                encoders.append(FFmpegEncoder("VO-AAC (FFmpeg)", ffmpeg_path, "vo_aacenc"))
-        except:
+            res = subprocess.run([ff_bin, "-h", "encoder=aac"], capture_output=True, text=True)
+            supports_nmr = bool(re.search(r"\bnmr\b", res.stdout or ""))
+        except Exception:
             pass
 
-    # 3. Standalone FDKAAC
-    fdkaac_path = args.fdkaac_bin or shutil.which("fdkaac")
-    if fdkaac_path:
-        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="lc"))
-        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="he"))
-        encoders.append(FDKAACEncoder("fdkaac", fdkaac_path, "fdkaac", profile="hev2"))
+        # Explicitly force the classic twoloop coder rather than relying on
+        # the build's default -- FFmpeg's own default drifted from twoloop to
+        # nmr (see aacenc: use the NMR coder by default), so an implicit
+        # default would silently change which algorithm "FFmpeg AAC" means
+        # depending on the FFmpeg version running the benchmark.
+        name_aac, id_aac = make_unique_encoder_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
+        encoders.append(FFmpegEncoder(name_aac, ff_bin, "aac", tool_id=id_aac, coder="twoloop"))
 
-    # 3b. AAC-ENC (alternative FDK-AAC wrapper)
-    aacenc_path = getattr(args, 'aac_enc_bin', None) or shutil.which("aac-enc")
-    if aacenc_path:
-        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="lc"))
-        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="he"))
-        encoders.append(AACEncEncoder("aac-enc", aacenc_path, profile="hev2"))
+        if supports_nmr:
+            name_nmr, id_nmr = make_unique_encoder_name_and_id("FFmpeg AAC (NMR)", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
+            encoders.append(FFmpegEncoder(name_nmr, ff_bin, "aac", tool_id=id_nmr, coder="nmr"))
 
-    # 3c. Falabaac (LC-only; no SBR/HE-AAC support)
-    falabaac_path = getattr(args, 'falabaac_bin', None) or shutil.which("falabaac")
-    if falabaac_path:
-        encoders.append(FalabaacEncoder("falabaac", falabaac_path))
+        try:
+            res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+            stdout = res.stdout or ""
+            if "libfdk_aac" in stdout:
+                name_fdk, id_fdk = make_unique_encoder_name_and_id("FDK-AAC (FFmpeg)", ver, "ffmpeg_libfdk_aac", existing_names, existing_ids)
+                encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="lc"))
+                for profile in ("he", "hev2"):
+                    candidate = FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile=profile)
+                    ok, reason = probe_encoder_capability(candidate)
+                    if ok:
+                        encoders.append(candidate)
+                    else:
+                        print(f"  {name_fdk}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
+            if "vo_aacenc" in stdout:
+                name_vo, id_vo = make_unique_encoder_name_and_id("VO-AAC (FFmpeg)", ver, "ffmpeg_vo_aacenc", existing_names, existing_ids)
+                encoders.append(FFmpegEncoder(name_vo, ff_bin, "vo_aacenc", tool_id=id_vo))
+        except Exception:
+            pass
 
-    # 4. AFConvert (macOS)
-    afconvert_path = getattr(args, 'afconvert_bin', None) or shutil.which("afconvert")
-    if afconvert_path:
-        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="lc"))
-        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="he"))
-        encoders.append(AFConvertEncoder("Apple AAC", afconvert_path, profile="hev2"))
+    fdkaac_bins = flatten_arg_list(getattr(args, "fdkaac_bin", None))
+    if not fdkaac_bins:
+        which_fdk = shutil.which("fdkaac")
+        if which_fdk:
+            fdkaac_bins = [which_fdk]
 
-    # 5. Non-AAC Codecs (Opus, LAME) if --include-other-codecs is specified
+    for fdk_bin in fdkaac_bins:
+        ver = probe_version(fdk_bin, ["--version", "-v", "-h", "--help"],
+                            [r"fdkaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_encoder_name_and_id("fdkaac", ver, "fdkaac", existing_names, existing_ids)
+        encoders.append(FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile="lc"))
+        for profile in ("he", "hev2"):
+            candidate = FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
+
+    aacenc_bins = flatten_arg_list(getattr(args, "aac_enc_bin", None))
+    explicit_aacenc = bool(getattr(args, "aac_enc_bin", None))
+    if not aacenc_bins and not fdkaac_bins and not explicit_aacenc:
+        which_aacenc = shutil.which("aac-enc")
+        if which_aacenc:
+            aacenc_bins = [which_aacenc]
+
+    for aacenc_bin in aacenc_bins:
+        ver = probe_version(aacenc_bin, ["-h", "--help", "-v", "--version"],
+                            [r"aac-enc\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_encoder_name_and_id("aac-enc", ver, "aac_enc", existing_names, existing_ids)
+        encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="lc"))
+        for profile in ("he", "hev2"):
+            candidate = AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
+
+    falabaac_bins = flatten_arg_list(getattr(args, "falabaac_bin", None))
+    if not falabaac_bins:
+        which_falab = shutil.which("falabaac")
+        if which_falab:
+            falabaac_bins = [which_falab]
+
+    for falab_bin in falabaac_bins:
+        ver = probe_version(falab_bin, ["-h", "--help", "-v", "--version"],
+                            [r"falabaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_encoder_name_and_id("falabaac", ver, "falabaac", existing_names, existing_ids)
+        encoders.append(FalabaacEncoder(name, falab_bin, tool_id=tool_id))
+
+    afconvert_bins = flatten_arg_list(getattr(args, "afconvert_bin", None))
+    if not afconvert_bins:
+        which_afc = shutil.which("afconvert")
+        if which_afc:
+            afconvert_bins = [which_afc]
+
+    for afc_bin in afconvert_bins:
+        ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version:?\s+([0-9.]+)"])
+        name, tool_id = make_unique_encoder_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
+        encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="lc"))
+        for profile in ("he", "hev2"):
+            candidate = AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+            else:
+                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
+
     if getattr(args, 'include_other_codecs', False):
-        # 5a. Opus
-        opusenc_path = getattr(args, 'opusenc_bin', None) or shutil.which("opusenc")
-        if opusenc_path:
-            encoders.append(OpusEncoder("Opus", opusenc_path, tool_id="opusenc", is_ffmpeg=False))
-        elif ffmpeg_path:
-            try:
-                res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
-                if "libopus" in res.stdout or "opus" in res.stdout:
-                    encoders.append(OpusEncoder("Opus (FFmpeg)", ffmpeg_path, tool_id="ffmpeg_opus", is_ffmpeg=True))
-            except Exception:
-                pass
+        opus_bins = flatten_arg_list(getattr(args, "opusenc_bin", None))
+        if not opus_bins:
+            which_opus = shutil.which("opusenc")
+            if which_opus:
+                opus_bins = [which_opus]
 
-        # 5b. LAME (MP3)
-        lame_path = getattr(args, 'lame_bin', None) or shutil.which("lame")
-        if lame_path:
-            encoders.append(LameEncoder("LAME", lame_path, tool_id="lame", is_ffmpeg=False))
-        elif ffmpeg_path:
-            try:
-                res = subprocess.run([ffmpeg_path, "-encoders"], capture_output=True, text=True)
-                if "libmp3lame" in res.stdout:
-                    encoders.append(LameEncoder("LAME (FFmpeg)", ffmpeg_path, tool_id="ffmpeg_lame", is_ffmpeg=True))
-            except Exception:
-                pass
+        if opus_bins:
+            for op_bin in opus_bins:
+                ver = probe_version(op_bin, ["--version", "-V", "-h"], [r"opusenc\s+([^\s\n]+)", r"opus-tools\s+([^\s\n]+)"])
+                name, tool_id = make_unique_encoder_name_and_id("Opus", ver, "opusenc", existing_names, existing_ids)
+                encoders.append(OpusEncoder(name, op_bin, tool_id=tool_id, is_ffmpeg=False))
+        elif ffmpeg_bins:
+            for ff_bin in ffmpeg_bins:
+                try:
+                    res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                    if "libopus" in (res.stdout or "") or "opus" in (res.stdout or ""):
+                        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                        name, tool_id = make_unique_encoder_name_and_id("Opus (FFmpeg)", ver, "ffmpeg_opus", existing_names, existing_ids)
+                        encoders.append(OpusEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+                except Exception:
+                    pass
+
+        lame_bins = flatten_arg_list(getattr(args, "lame_bin", None))
+        if not lame_bins:
+            which_lame = shutil.which("lame")
+            if which_lame:
+                lame_bins = [which_lame]
+
+        if lame_bins:
+            for lame_bin in lame_bins:
+                ver = probe_version(lame_bin, ["--version", "-v"],
+                                    [r"LAME\s+64bits?\s+version\s+([^\s]+)", r"LAME\s+32bits?\s+version\s+([^\s]+)", r"LAME\s+version\s+([0-9.]+)"])
+                name, tool_id = make_unique_encoder_name_and_id("LAME", ver, "lame", existing_names, existing_ids)
+                encoders.append(LameEncoder(name, lame_bin, tool_id=tool_id, is_ffmpeg=False))
+        elif ffmpeg_bins:
+            for ff_bin in ffmpeg_bins:
+                try:
+                    res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                    if "libmp3lame" in (res.stdout or ""):
+                        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                        name, tool_id = make_unique_encoder_name_and_id("LAME (FFmpeg)", ver, "ffmpeg_lame", existing_names, existing_ids)
+                        encoders.append(LameEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+                except Exception:
+                    pass
 
     return encoders
 
@@ -448,7 +699,13 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             "aac_path": output_path
         }
     except Exception as e:
-        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {e}")
+        detail = str(e)
+        if isinstance(e, subprocess.CalledProcessError):
+            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
+            if stderr_tail:
+                detail = f"exit code {e.returncode}: {stderr_tail}"
+        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {detail}")
         return {
             "tool": encoder.name,
             "profile": encoder.profile,
@@ -461,21 +718,21 @@ def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
             "actual_bitrate": None,
             "target_bitrate": cfg["bitrate"],
             "decode_valid": False,
-            "decode_error": f"Encoding failed: {str(e)}",
+            "decode_error": f"Encoding failed: {detail}",
             "aac_path": None
         }
 
 def main():
     parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
-    parser.add_argument("--faac-bin", help="Path to faac binary")
-    parser.add_argument("--faac-lib", help="Path to libfaac.so")
-    parser.add_argument("--fdkaac-bin", help="Path to fdkaac binary")
-    parser.add_argument("--aac-enc-bin", help="Path to aac-enc binary")
-    parser.add_argument("--falabaac-bin", help="Path to falabaac binary")
-    parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
-    parser.add_argument("--afconvert-bin", help="Path to afconvert binary")
-    parser.add_argument("--opusenc-bin", help="Path to opusenc binary")
-    parser.add_argument("--lame-bin", help="Path to lame binary")
+    parser.add_argument("--faac-bin", action="append", help="Path to faac binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so (can be specified multiple times or comma-separated)")
+    parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--ffmpeg-bin", action="append", help="Path to ffmpeg binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--afconvert-bin", action="append", help="Path to afconvert binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--opusenc-bin", action="append", help="Path to opusenc binary (can be specified multiple times or comma-separated)")
+    parser.add_argument("--lame-bin", action="append", help="Path to lame binary (can be specified multiple times or comma-separated)")
     parser.add_argument("--include-other-codecs", action="store_true", help="Include non-AAC codecs (Opus, LAME)")
     parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
     parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
@@ -538,14 +795,12 @@ def main():
         sample_rate = scenario_rate(cfg)
 
         for encoder in encoders:
-            is_faac = isinstance(encoder, FAACEncoder)
-            if is_faac and encoder.profile == "he" and not use_he_aac(cfg["bitrate"], channels, sample_rate):
-                print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v1 range.")
+            supported, reason = encoder.supports_scenario(cfg["bitrate"], channels, sample_rate)
+            if not supported:
+                print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: {reason}.")
                 continue
-            if is_faac and encoder.profile == "hev2" and not use_he_v2_aac(cfg["bitrate"], channels, sample_rate):
-                print(f"  Skipping {encoder.name} for {scenario_name}: bitrate/rate outside HE-AAC v2 range.")
-                continue
-            print(f"  Encoding with {encoder.name}...")
+
+            print(f"  Encoding with {encoder.name} ({profile_label(encoder.profile)})...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
                 futures = [executor.submit(process_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
                 for future in concurrent.futures.as_completed(futures):
@@ -972,21 +1227,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 return False
             enc_obj = encoder_info.get(rk)
             tool_name = enc_obj.name if enc_obj else overall[rk]["tool"]
-            prof = overall[rk]["profile"]
 
-            cfg = SCENARIOS.get(s_name, {})
-            ch = scenario_channels(cfg) if cfg else 2
-            sr = scenario_rate(cfg) if cfg else 48000
-            br = cfg.get("bitrate", 0) if cfg else 0
-
-            # 1. Out-of-spec check for HE/HE-v2 profiles (exempt AFConvertEncoder)
-            if not isinstance(enc_obj, AFConvertEncoder):
-                if prof == "he" and not use_he_aac(br, ch, sr):
-                    return True
-                if prof == "hev2" and not use_he_v2_aac(br, ch, sr):
-                    return True
-
-            # 2. Quality inversion check: another profile of the same tool achieved higher MOS
+            # Generic quality comparison: a profile is suboptimal if another profile
+            # of the same encoder tool achieves higher perceptual MOS for this scenario.
             candidates = tool_row_keys[tool_name]
             mos_this = avg_mos(rk, s_name)
             if mos_this is not None:
@@ -1031,13 +1274,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 for s in scen_list:
                     row_vals = [extract_val_fn(rk, s) for rk in keys]
-                    valid_vals = [v for rk, v in zip(keys, row_vals) if v is not None and not is_suboptimal(rk, s)]
-                    if not valid_vals:
-                        valid_vals = [v for v in row_vals if v is not None]
 
-                    best_val = None
-                    if valid_vals:
-                        best_val = min(valid_vals) if lower_is_better else max(valid_vals)
+                    # Highest / best value overall in this scenario within this profile table
+                    all_non_none = [v for v in row_vals if v is not None]
+                    best_val = (min(all_non_none) if lower_is_better else max(all_non_none)) if all_non_none else None
 
                     line = f"| {s} |"
                     for rk, val in zip(keys, row_vals):
@@ -1046,18 +1286,25 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         else:
                             formatted = fmt_fn(val)
                             subopt = is_suboptimal(rk, s)
-                            if subopt:
-                                formatted = f"~~{formatted}~~*"
+                            is_best = (val == best_val)
+
+                            if subopt and is_best:
+                                formatted = f"_**{formatted}**_*"
                                 table_used_strikethrough = True
+                            elif subopt:
+                                formatted = f"_{formatted}_*"
+                                table_used_strikethrough = True
+                            elif is_best:
+                                formatted = f"**{formatted}**"
+
                             bar_str = make_progress_bar(val, table_max_scale, lower_is_better=lower_is_better)
-                            is_best = (val == best_val and not subopt)
-                            line += f" **{formatted}**{bar_str} |" if is_best else f" {formatted}{bar_str} |"
+                            line += f" {formatted}{bar_str} |"
                     f.write(line + "\n")
 
                 f.write("\n")
 
             if table_used_strikethrough:
-                f.write("_\\* Struck-out scores indicate sub-optimal profile performance superseded by another profile from the same encoder at this bitrate._\n\n")
+                f.write("_\\* Italicized scores indicate sub-optimal profile performance superseded by another profile from the same encoder at this bitrate._\n\n")
 
         f.write("\n<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
         f.write("## Per-Scenario Breakdown & Visualizations\n\n")
