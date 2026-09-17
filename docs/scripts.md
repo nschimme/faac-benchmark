@@ -4,7 +4,7 @@ Everything in `scripts/` is local tooling for investigating a specific
 question — pre-echo behavior, spectral distortion, tuning-knob A/B tests. None
 of it is invoked by CI (`.github/workflows/`, `action.yml`, `report/action.yml`);
 the CI-critical pipeline is `run_benchmark.py`, `render_job_summary.py`,
-`compare_codecs.py`, `compare_results.py`, and the `phase*.py` files at the
+`compare_encoders.py`, `compare_results.py`, and the `phase*.py` files at the
 repo root — see [usage.md](usage.md) and [ci.md](ci.md) for those.
 
 Run everything below from the repo root (so `data/external/...` and `config`/

@@ -2,18 +2,18 @@
 #
 # Build a matrix of FAAC releases (plus the current checkout's HEAD) as
 # separate git worktrees, and optionally feed all of them into
-# compare_codecs.py alongside every other encoder it can detect.
+# compare_encoders.py alongside every other encoder it can detect.
 #
 # Usage:
 #   scripts/build_faac_matrix.sh [--run] [--tags TAG1,TAG2,...] [--gate]
 #
-#   --run          Also invoke compare_codecs.py once all versions are
+#   --run          Also invoke compare_encoders.py once all versions are
 #                   built (default: just build and print the resolved
 #                   --faac-bin list).
 #   --tags LIST    Comma-separated FAAC repo tags to build.
 #                   Default: faac-1.31.1,faac-1.40,faac-1.50,faac-2.0,faac-2.1
 #                   (HEAD is always included in addition to these.)
-#   --gate         Pass --gate through to compare_codecs.py (default: full
+#   --gate         Pass --gate through to compare_encoders.py (default: full
 #                   coverage, i.e. no --gate).
 #
 # Environment:
@@ -91,7 +91,7 @@ build_one() {
         fi
         echo "==> [$tag] ninja" >&2
         ninja -C "$wt/build" >&2
-        # This also sidesteps compare_codecs.py's --faac-lib list, which is
+        # This also sidesteps compare_encoders.py's --faac-lib list, which is
         # positionally matched to --faac-bin and would misalign if only some
         # binaries in the list needed an override.
         make_wrapper "$wt/build/frontend/faac" "$wt/build/libfaac" "$wt/faac-wrapped.sh"
@@ -136,13 +136,13 @@ done
 
 echo "==> Verifying all binaries run" >&2
 # faac never prints its version from a bare invocation -- the banner is only
-# emitted mid-encode (see probe_faac_version in compare_codecs.py) -- so
+# emitted mid-encode (see probe_faac_version in compare_encoders.py) -- so
 # verify with a real throwaway encode via that same helper rather than
 # grepping --help output.
 python3 - "$BENCH_ROOT" "${FAAC_BINS[@]}" <<'PYEOF' >&2
 import sys
 sys.path.insert(0, sys.argv[1])
-from compare_codecs import probe_faac_version
+from compare_encoders import probe_faac_version
 
 failed = False
 for b in sys.argv[2:]:
@@ -158,9 +158,9 @@ FAAC_BIN_ARG="$(IFS=,; echo "${FAAC_BINS[*]}")"
 echo "$FAAC_BIN_ARG"
 
 if [[ "$DO_RUN" -eq 1 ]]; then
-    echo "==> Running compare_codecs.py" >&2
+    echo "==> Running compare_encoders.py" >&2
     cd "$BENCH_ROOT"
-    python3 compare_codecs.py \
+    python3 compare_encoders.py \
         --faac-bin "$FAAC_BIN_ARG" \
         --include-other-codecs \
         $GATE_FLAG

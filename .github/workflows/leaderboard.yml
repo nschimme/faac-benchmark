@@ -41,12 +41,12 @@ jobs:
           fi
 
           # Zimtohrli is installed via requirements.txt and acts as default perceptual engine.
-          python3 compare_codecs.py $GATE_FLAG --mode both --output leaderboard_ci.md
+          python3 compare_encoders.py $GATE_FLAG --output leaderboard_ci.md
 
       - name: Upload Leaderboard
         uses: actions/upload-artifact@v7
         with:
-          name: codec-leaderboard
+          name: encoder-leaderboard
           path: leaderboard_ci.md
 
       - name: Display Leaderboard in Summary
