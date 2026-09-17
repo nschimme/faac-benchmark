@@ -25,11 +25,17 @@ from utils import (get_scenario_sort_key, safe_run, corpus_dir,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
                    get_cached_ref_wav)
+import os
+os.environ["NUMBA_THREADING_LAYER"] = "omp"
+
+import threading
 import soundfile as sf
 import phase2_mos
 import phase3_stereo
 import transient
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
+
+mos_lock = threading.Lock()
 
 # Re-export everything from codec_bench package for 100% backward compatibility
 from codec_bench import (
@@ -110,7 +116,8 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
 
                     if ref_wav and os.path.exists(ref_wav):
                         if not skip_mos:
-                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, decoded_wav, mode_str=cfg.get("mode", "audio"), sample_rate=cfg.get("rate"))
+                            with mos_lock:
+                                mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, decoded_wav, mode_str=cfg.get("mode", "audio"), sample_rate=cfg.get("rate"))
 
                         if not skip_stereo:
                             ic_err_val = phase3_stereo.coherence_error(ref_wav, decoded_wav)
