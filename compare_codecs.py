@@ -478,6 +478,36 @@ def detect_encoders(args):
             if ok:
                 encoders.append(candidate)
 
+    aacenc_bins = flatten_arg_list(getattr(args, "aac_enc_bin", None))
+    explicit_aacenc = bool(getattr(args, "aac_enc_bin", None))
+    if not aacenc_bins and not fdkaac_bins and not explicit_aacenc:
+        which_aacenc = shutil.which("aac-enc")
+        if which_aacenc:
+            aacenc_bins = [which_aacenc]
+
+    for aacenc_bin in aacenc_bins:
+        ver = probe_version(aacenc_bin, ["-h", "--help", "-v", "--version"],
+                            [r"aac-enc\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_name_and_id("aac-enc", ver, "aac_enc", existing_names, existing_ids)
+        encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="lc"))
+        for profile in ("he", "hev2"):
+            candidate = AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile=profile)
+            ok, reason = probe_encoder_capability(candidate)
+            if ok:
+                encoders.append(candidate)
+
+    falabaac_bins = flatten_arg_list(getattr(args, "falabaac_bin", None))
+    if not falabaac_bins:
+        which_falab = shutil.which("falabaac")
+        if which_falab:
+            falabaac_bins = [which_falab]
+
+    for falab_bin in falabaac_bins:
+        ver = probe_version(falab_bin, ["-h", "--help", "-v", "--version"],
+                            [r"falabaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_name_and_id("falabaac", ver, "falabaac", existing_names, existing_ids)
+        encoders.append(FalabaacEncoder(name, falab_bin, tool_id=tool_id))
+
     afconvert_bins = flatten_arg_list(getattr(args, "afconvert_bin", None))
     if not afconvert_bins:
         which_afc = shutil.which("afconvert")
@@ -493,6 +523,52 @@ def detect_encoders(args):
             ok, reason = probe_encoder_capability(candidate)
             if ok:
                 encoders.append(candidate)
+
+    if getattr(args, 'include_other_codecs', False):
+        opus_bins = flatten_arg_list(getattr(args, "opusenc_bin", None))
+        if not opus_bins:
+            which_opus = shutil.which("opusenc")
+            if which_opus:
+                opus_bins = [which_opus]
+
+        if opus_bins:
+            for op_bin in opus_bins:
+                ver = probe_version(op_bin, ["--version", "-V", "-h"], [r"opusenc\s+([^\s\n]+)", r"opus-tools\s+([^\s\n]+)"])
+                name, tool_id = make_unique_name_and_id("Opus", ver, "opusenc", existing_names, existing_ids)
+                encoders.append(OpusEncoder(name, op_bin, tool_id=tool_id, is_ffmpeg=False))
+        elif ffmpeg_bins:
+            ff_bin = ffmpeg_bins[0]
+            try:
+                res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                if "libopus" in (res.stdout or "") or "opus" in (res.stdout or ""):
+                    ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                    name, tool_id = make_unique_name_and_id("Opus", hosted_codec_ver(ff_bin, "libopus", ffmpeg_ver), "ffmpeg_opus", existing_names, existing_ids)
+                    encoders.append(OpusEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+            except Exception:
+                pass
+
+        lame_bins = flatten_arg_list(getattr(args, "lame_bin", None))
+        if not lame_bins:
+            which_lame = shutil.which("lame")
+            if which_lame:
+                lame_bins = [which_lame]
+
+        if lame_bins:
+            for lame_bin in lame_bins:
+                ver = probe_version(lame_bin, ["--version", "-v"],
+                                    [r"LAME\s+64bits?\s+version\s+([^\s]+)", r"LAME\s+32bits?\s+version\s+([^\s]+)", r"LAME\s+version\s+([0-9.]+)"])
+                name, tool_id = make_unique_name_and_id("LAME", ver, "lame", existing_names, existing_ids)
+                encoders.append(LameEncoder(name, lame_bin, tool_id=tool_id, is_ffmpeg=False))
+        elif ffmpeg_bins:
+            ff_bin = ffmpeg_bins[0]
+            try:
+                res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
+                if "libmp3lame" in (res.stdout or ""):
+                    ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+                    name, tool_id = make_unique_name_and_id("LAME", hosted_codec_ver(ff_bin, "libmp3lame", ffmpeg_ver), "ffmpeg_lame", existing_names, existing_ids)
+                    encoders.append(LameEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
+            except Exception:
+                pass
 
     return encoders
 
@@ -515,7 +591,7 @@ def detect_decoders(args):
         ver = faad_vers[idx] if idx < len(faad_vers) else None
         if not ver:
             ver = probe_version(f_bin, ["-h", "--help", "-v", "--version"],
-                                [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+                                [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)", r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_name_and_id("FAAD2", ver, "faad", existing_names, existing_ids)
         decoders.append(FAADDecoder(name, f_bin, tool_id=tool_id, lib_override=f_lib))
 

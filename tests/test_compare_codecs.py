@@ -44,6 +44,21 @@ class TestCompareDecoders(unittest.TestCase):
         decoders = cd.detect_decoders(args)
         self.assertGreater(len(decoders), 0)
 
+    def test_multi_version_faad_detection(self):
+        class DummyArgs:
+            faad_bin = ["/usr/bin/faad1", "/usr/bin/faad2"]
+            faad_lib = None
+            faad_bin_version = ["2.10.0", "2.11.1"]
+            ffmpeg_bin = None
+            afconvert_bin = None
+
+        args = DummyArgs()
+        decoders = cd.detect_decoders(args)
+        faad_decs = [d for d in decoders if isinstance(d, cd.FAADDecoder)]
+        self.assertEqual(len(faad_decs), 2)
+        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0")
+        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1")
+
     def test_generate_decoder_leaderboard(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "leaderboard.md")

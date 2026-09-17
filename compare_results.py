@@ -23,7 +23,7 @@ import os
 import argparse
 from collections import defaultdict
 from utils import (get_scenario_sort_key, scenario_family, scenario_families,
-                   family_label, format_scenario_rate, zoomed_y_range)
+                   family_label, format_scenario_rate)
 import transient
 
 
@@ -1193,16 +1193,13 @@ def main():
 
         chart_vals = [mos_pct, tp_pct, footprint_improvement_pct]
         max_val = max(abs(v) for v in chart_vals)
-        raw_bound = max(int(max_val * 1.5) + 1, 5)
-        axis_lo, axis_hi = zoomed_y_range(chart_vals, f"{-raw_bound} --> {raw_bound}")
-        # Ensure zero-centered symmetry for delta/improvement bar charts
-        sym_bound = max(abs(axis_lo), abs(axis_hi))
+        bound = max(int(max_val * 1.5) + 1, 5)
 
         summary_lines.append("\n```mermaid")
         summary_lines.append("xychart-beta")
         summary_lines.append('    title "Executive 3-Pillar Balance (% Change vs Baseline)"')
         summary_lines.append('    x-axis ["Quality (MOS Δ %)", "Speed (Throughput Δ %)", "Footprint (-Size Δ %)"]')
-        summary_lines.append(f'    y-axis "Improvement %" {-sym_bound:.2f} --> {sym_bound:.2f}')
+        summary_lines.append(f'    y-axis "Improvement %" {-bound} --> {bound}')
         summary_lines.append(f'    bar [{mos_pct:.2f}, {tp_pct:.2f}, {footprint_improvement_pct:.2f}]')
         summary_lines.append("```\n")
 
@@ -1233,15 +1230,13 @@ def main():
             fam_means = [(sum(family_deltas[fam]) / len(family_deltas[fam])) for fam in families_with_data]
             fam_vals = [f"{m:+.3f}" for m in fam_means]
             max_fam_m = max(abs(m) for m in fam_means) if fam_means else 0.1
-            raw_f_bound = max(round(max_fam_m * 1.5, 2), 0.05)
-            f_lo, f_hi = zoomed_y_range(fam_means, f"{-raw_f_bound} --> {raw_f_bound}")
-            sym_f_bound = max(abs(f_lo), abs(f_hi))
+            f_bound = max(round(max_fam_m * 1.5, 2), 0.05)
 
             summary_lines.append("```mermaid")
             summary_lines.append("xychart-beta")
             summary_lines.append(f'    title "MOS Δ by Rate Family"')
             summary_lines.append(f"    x-axis [{', '.join(fam_labels)}]")
-            summary_lines.append(f'    y-axis "MOS Δ" {-sym_f_bound:.3f} --> {sym_f_bound:.3f}')
+            summary_lines.append(f'    y-axis "MOS Δ" {-f_bound:.2f} --> {f_bound:.2f}')
             summary_lines.append(f"    bar [{', '.join(fam_vals)}]")
             summary_lines.append("```\n")
 
@@ -1449,17 +1444,14 @@ def main():
                 report.append("\n**Object .text movers**")
                 if not skip_graphs and data["object_movers"]:
                     objs = [f'"{obj}"' for _, obj in data["object_movers"][:6]]
-                    diffs_vals = [d for d, _ in data["object_movers"][:6]]
-                    diffs = [f"{d}" for d in diffs_vals]
-                    max_d = max(abs(d) for d in diffs_vals) if diffs_vals else 100
-                    raw_d_bound = max(int(max_d * 1.25) + 1, 10)
-                    d_lo, d_hi = zoomed_y_range(diffs_vals, f"{-raw_d_bound} --> {raw_d_bound}")
-                    sym_d_bound = int(max(abs(d_lo), abs(d_hi)))
+                    diffs = [f"{d}" for d, _ in data["object_movers"][:6]]
+                    max_d = max(abs(d) for d, _ in data["object_movers"][:6]) if data["object_movers"] else 100
+                    d_bound = max(int(max_d * 1.25) + 1, 10)
                     report.append("```mermaid")
                     report.append("xychart-beta")
                     report.append('    title "Object File .text Size Movers (Bytes)"')
                     report.append(f"    x-axis [{', '.join(objs)}]")
-                    report.append(f'    y-axis "Byte Change" {-sym_d_bound} --> {sym_d_bound}')
+                    report.append(f'    y-axis "Byte Change" {-d_bound} --> {d_bound}')
                     report.append(f"    bar [{', '.join(diffs)}]")
                     report.append("```\n")
                 report.append(", ".join(
