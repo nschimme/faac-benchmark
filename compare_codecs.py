@@ -27,6 +27,23 @@ from utils import (get_scenario_sort_key, safe_run, corpus_dir,
                    get_cached_ref_wav)
 import os
 os.environ["NUMBA_THREADING_LAYER"] = "omp"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+def init_worker():
+    """Initializes worker process with single-threaded constraints and CPU core affinity pinning."""
+    if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
+        try:
+            pid = os.getpid()
+            cpus = list(os.sched_getaffinity(0))
+            if cpus:
+                target_cpu = cpus[pid % len(cpus)]
+                os.sched_setaffinity(0, {target_cpu})
+        except Exception:
+            pass
 
 import soundfile as sf
 import phase2_mos
@@ -274,7 +291,7 @@ def main():
             os.makedirs(ref_cache_dir, exist_ok=True)
 
             completed = 0
-            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
                                           args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
@@ -324,7 +341,7 @@ def main():
             print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
                 print(f"  Decoding with {decoder.name}...")
-                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
                     futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir) for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
@@ -345,7 +362,7 @@ def main():
 
             for decoder in decoders:
                 print(f"  Testing robustness for {decoder.name}...")
-                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
                     futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in robustness_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()

@@ -294,6 +294,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
+                p_has_data = any(stats[rk][s_name]["mos_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
 
                 f.write(f"#### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
@@ -337,6 +340,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             for p in ["lc", "he", "hev2", "standard"]:
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
+                    continue
+                p_has_data = any(stats[rk][s_name]["mos_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                if not p_has_data:
                     continue
 
                 f.write(f"#### {profile_label(p)} Profile\n\n")
@@ -404,6 +410,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
+                p_has_data = any(stats[rk][s_name]["ic_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
 
                 f.write(f"#### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
@@ -459,6 +468,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
+                p_has_data = any(stats[rk][s_name]["centroid_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
 
                 f.write(f"#### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
@@ -513,6 +525,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             for p in ["lc", "he", "hev2", "standard"]:
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
+                    continue
+                p_has_data = any(stats[rk][s_name]["br_err_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                if not p_has_data:
                     continue
 
                 f.write(f"#### {profile_label(p)} Profile\n\n")
@@ -669,6 +684,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         for p in ["lc", "he", "hev2", "standard"]:
             p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
             if not p_rks:
+                continue
+            p_has_data = any(stats[rk][s_name]["speed_count"] > 0 for rk in p_rks for s_name in scenario_list)
+            if not p_has_data:
                 continue
 
             f.write(f"#### {profile_label(p)} Profile\n\n")
