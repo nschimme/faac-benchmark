@@ -104,28 +104,32 @@ Bitrate is **not** sweepable — it defines a scenario's identity (`48k_stereo_6
 64 kbps), so sweeping `-b` would mislabel results. To study a bitrate range, add
 a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 
-## Cross-Encoder Comparison (`compare_encoders.py`)
+## Cross-Codec Comparison (`compare_codecs.py`)
 
-Benchmark `faac` against other available AAC encoders (FDK-AAC, FFmpeg internal, etc.) to generate a competitive leaderboard. Every encoder is compared at the same target bitrate; there is no VBR/quality-knob comparison mode here, since each encoder's own quality scale (FAAC's `-q`, FDK-AAC's `-vbr`, etc.) isn't calibrated against any other's.
+Benchmark `faac` and `faad` against other available AAC encoders (FDK-AAC, FFmpeg internal, Apple AudioToolbox, etc.) and decoders (FAAD2, FFmpeg, Apple AudioToolbox) to generate a competitive leaderboard. Encoders and decoders can be evaluated independently or together via `--mode encoder|decoder|both`.
 
 ```bash
-python3 compare_encoders.py [options]
+python3 compare_codecs.py [options]
 ```
 
 Options:
+- `--mode encoder|decoder|both`: Benchmarking mode (default: `both`).
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
-- `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--aac-enc-bin`, `--falabaac-bin`, `--afconvert-bin`: Manual paths to encoder binaries.
+- `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--faad-bin`, `--afconvert-bin`: Manual paths to encoder/decoder binaries.
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
 
-The leaderboard evaluates the **Golden Triangle**:
+The leaderboard evaluates key dimensions:
 1. **Quality**: Average and Worst MOS across scenarios (higher is better).
-2. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
-3. **Efficiency**: Average encoding speed as a multiple of real-time (higher is better).
-4. **Footprint**: Combined executable and library size (lower is better).
-5. **Accuracy**: Average bitrate error % relative to target (lower is better).
+2. **Spec Conformance (Decoders)**: Signal-to-Noise Ratio (SNR in dB) against reference decodes (higher/bit-exact is better).
+3. **Timing Alignment (Decoders)**: Sample timing alignment error (in ms) relative to reference audio.
+4. **Robustness (Decoders)**: Crash-free decoding success rate (%) on deterministically corrupted ADTS bitstreams.
+5. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
+6. **Efficiency**: Average throughput as a multiple of real-time (higher is better).
+7. **RAM & Footprint**: Peak dynamic RAM (Max RSS in KB/MB) and compiled code section size (`.text` + `.rodata` in KB, lower is better).
+8. **Accuracy**: Average bitrate error % relative to target (lower is better).
 
-**Winner Highlighting**: The best-performing encoder in each category is **bolded** in the leaderboard tables.
+**Winner Highlighting**: The best-performing encoder or decoder in each category is **bolded** in the leaderboard tables.
 
 ## Diagnostic and ad hoc tools
 

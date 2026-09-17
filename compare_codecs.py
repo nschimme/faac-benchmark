@@ -1,5 +1,5 @@
 """
- * FAAC Benchmark Suite - Encoder Comparison & Leaderboard
+ * FAAC Benchmark Suite - Codec Comparison & Leaderboard
  * Copyright (C) 2026 Nils Schimmelmann
  *
  * This library is free software; you can redistribute it and/or
@@ -18,71 +18,61 @@ import shutil
 import tempfile
 import wave
 import concurrent.futures
-import multiprocessing
+import re
 from collections import defaultdict
 
 from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_ffmpeg_path,
-                   ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib, is_faac_legacy,
-                   resolve_wrapper_target, guess_lib_version_from_path,
+                   get_faad_path, ffmpeg_probe, get_scenario_sort_key, safe_run, find_linked_lib,
+                   is_faac_legacy, resolve_wrapper_target, guess_lib_version_from_path,
                    corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families, expand_scenario_list,
-                   get_audio_es_bytes)
+                   get_audio_es_bytes, is_system_library, flatten_arg_list, probe_version,
+                   make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range,
+                   compute_snr, wav_conv, hosted_codec_ver, measure_delay_offset,
+                   measure_peak_ram, corrupt_adts_bitstream)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Ensure SCRIPT_DIR and scripts directory are in sys.path
 if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 scripts_dir = os.path.join(SCRIPT_DIR, "scripts")
 if scripts_dir not in sys.path:
     sys.path.insert(0, scripts_dir)
 
-def find_linked_lib(binary_path, name_substr):
-    """Resolve the on-disk path of a shared library linked into binary_path."""
-    try:
-        if sys.platform == "darwin":
-            # macOS: use otool -L
-            res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
-            for line in res.stdout.splitlines():
-                line = line.strip()
-                if name_substr in line:
-                    # otool output: "\t/path/to/lib (compatibility...)"
-                    lib_path = line.split(" ")[0]
-                    if os.path.exists(lib_path):
-                        return lib_path
-        else:
-            # Linux: use ldd
-            res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
-            for line in res.stdout.splitlines():
-                if name_substr in line and "=>" in line:
-                    lib_path = line.split("=>")[1].strip().split(" ")[0]
-                    if lib_path and os.path.exists(lib_path):
-                        return lib_path
-    except Exception:
-        pass
-    return None
-
-def is_system_library(path):
-    """Checks if a library path belongs to a system directory."""
-    if not path:
-        return False
-    if sys.platform == "darwin":
-        # macOS system paths
-        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
-        return any(path.startswith(prefix) for prefix in system_prefixes)
-    # On Linux, we generally want to measure library size even if in /usr/lib
-    return False
-
 PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard"}
 
 def profile_label(profile):
     return PROFILE_LABELS[profile]
 
-def row_key(encoder):
-    """Stable identity key for a (tool, profile) combination -- used for
-    output filenames and cross-phase joins. Never used for display."""
+def encoder_row_key(encoder):
+    """Stable identity key for an (encoder_tool, profile) combination."""
     return f"{encoder.tool_id}_{encoder.profile}"
+
+def decoder_row_key(decoder):
+    """Stable identity key for a decoder tool."""
+    return f"{decoder.tool_id}"
+
+row_key = encoder_row_key
+
+CLIP_PEER_BUG_GAP = 0.75
+
+def cell_peer_gap(clip_mos, rk, s_name, filename):
+    if not filename:
+        return None
+    clip_scores = clip_mos.get((s_name, filename), {})
+    this_mos = clip_scores.get(rk)
+    peers = {other_rk: m for other_rk, m in clip_scores.items() if other_rk != rk}
+    if this_mos is None or not peers:
+        return None
+    peer_avg = sum(peers.values()) / len(peers)
+    if peer_avg - this_mos > CLIP_PEER_BUG_GAP:
+        return (this_mos, peer_avg)
+    return None
+
+# -----------------------------------------------------------------------------
+# ENCODER ABSTRACTIONS
+# -----------------------------------------------------------------------------
 
 class Encoder:
     def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None):
@@ -90,32 +80,18 @@ class Encoder:
         self.binary_path = binary_path
         self.tool_id = tool_id
         self.profile = profile
-        # An explicit --*-lib path overrides both what we measure and what we
-        # force the binary to actually load at run time (see get_run_env) --
-        # otherwise the dynamic linker would silently keep resolving whatever
-        # same-named system library sits on the default search path.
         self.lib_override = lib_override
 
-        # Footprint is the codec *library* size, not the CLI/host binary size.
-        # If the codec is linked dynamically, measure the shared library on disk;
-        # otherwise (static linking) fall back to the binary itself.
-        #
-        # binary_path may be a shell wrapper (e.g. scripts/build_faac_matrix.sh
-        # writes one to fix up a dylib search path before exec'ing the real
-        # binary) -- resolve through it first, or otool/ldd finds nothing on
-        # a shell script and footprint measurement falls back to the
-        # wrapper's own few-hundred-byte size instead of the real binary's.
         measure_bin = resolve_wrapper_target(binary_path) if binary_path else binary_path
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
         if lib_path and not lib_override and is_system_library(lib_path):
-            self.size = 0  # System library, don't count towards footprint
+            self.size = 0
         elif lib_path:
             self.size = get_binary_size(lib_path)
             measured_path = lib_path
         else:
-            # Fallback to binary size if no library found, but ignore system binaries
             if is_system_library(measure_bin):
                 self.size = 0
             else:
@@ -130,31 +106,16 @@ class Encoder:
         self.data_size = sec_sizes.get("data", 0)
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
-        """Returns (supported: bool, reason: str). HE profiles inherently require
-        sufficient sample rates (>=32kHz for SBR) and HE-v2 requires stereo (>=2ch).
-
-        Bitrate ceilings are deliberately NOT checked with a fixed heuristic
-        range here: they're a real capability limit, but one that varies by
-        binary, not by profile -- afconvert hard-rejects HE-AAC above ~48
-        kbps/channel ("Couldn't set audio converter property"), while fdkaac
-        happily encodes HE-AAC at 64 kbps/channel on the same clip (verified
-        by hand). A fixed range would either wrongly skip fdkaac at bitrates
-        it actually supports, or wrongly attempt afconvert at bitrates it
-        doesn't. See the per-scenario capability probe in the main loop,
-        which checks the real binary at the real scenario bitrate instead."""
         if self.profile in ("he", "hev2") and sample_rate < 32000:
             return False, f"sample rate {sample_rate} Hz < 32 kHz required for SBR ({profile_label(self.profile)})"
         if self.profile == "hev2" and channels < 2:
             return False, f"HE-v2 (Parametric Stereo) requires >= 2 channels (got {channels})"
         return True, ""
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels):
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         raise NotImplementedError
 
     def get_run_env(self):
-        """Environment overrides needed so the binary actually loads
-        self.lib_override instead of whatever the linker would resolve
-        by default. No-op unless an explicit lib path was given."""
         if not self.lib_override:
             return {}
         env = dict(os.environ)
@@ -169,26 +130,12 @@ class Encoder:
         return env
 
 def use_he_aac(bitrate_kbps, channels, sample_rate):
-    """
-    Centralized heuristic for selecting HE-AAC vs LC-AAC.
-    HE-AAC is optimal at low bitrates but has both a ceiling and a floor.
-    It also generally requires a minimum sample rate (typically 32kHz+).
-    Typical range for HE-AAC: 8kbps to 48kbps per channel. The floor is 8, not
-    10, because 8 kbps/channel is HE-AAC's design floor and the whole point of
-    the 32k_stereo_16k scenario; a 10 kbps floor here would have silently
-    skipped every HE encoder on it and compared only LC entries.
-    """
     if sample_rate < 32000:
         return False
     bitrate_per_ch = bitrate_kbps / channels
     return 8 <= bitrate_per_ch <= 48
 
 def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
-    """
-    Centralized heuristic for selecting HE-AAC v2 (Parametric Stereo).
-    HE-v2 is specifically designed for low-bitrate stereo content.
-    Typical range: 6kbps to 20kbps per channel (stereo only), sample_rate >= 32000.
-    """
     if channels < 2 or sample_rate < 32000:
         return False
     bitrate_per_ch = bitrate_kbps / channels
@@ -214,11 +161,6 @@ class FFmpegEncoder(Encoder):
         tid = tool_id or f"ffmpeg_{codec_name}"
         super().__init__(name, binary_path, tid, profile, lib_name_substr=lib_name_substr)
         self.codec_name = codec_name
-        # -aac_coder choice for the native "aac" encoder (e.g. "twoloop", "nmr").
-        # None leaves it at the build's default, which drifted from twoloop to
-        # nmr in FFmpeg itself -- pass it explicitly so results stay
-        # comparable across FFmpeg versions instead of silently following
-        # whatever that build happens to default to.
         self.coder = coder
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
@@ -240,9 +182,6 @@ class FDKAACEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        # fdkaac's -b takes bits/sec (no "k" suffix) and only applies in CBR
-        # mode (-m 0, the default). Channel count comes from the input WAV's
-        # own header -- fdkaac has no CLI flag for it.
         if self.profile == "hev2":
             profile = "29"
         elif self.profile == "he":
@@ -264,7 +203,6 @@ class AACEncEncoder(Encoder):
             aot = "5"
         else:
             aot = "2"
-        # aac-enc -r <bitrate_bps> -t <aot> <in> <out>
         return [self.binary_path, "-r", str(bitrate_kbps * 1000), "-t", aot, input_path, output_path]
 
 class FalabaacEncoder(Encoder):
@@ -272,15 +210,10 @@ class FalabaacEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        # falabaac's own --help/source comment describe -b as per-channel, but its
-        # runtime log ("total bitrate=X, per chn=X/channels") confirms the CLI
-        # argument is actually the TOTAL bitrate -- it divides by channel count
-        # itself. So pass bitrate_kbps through unchanged, like every other encoder here.
         return [self.binary_path, "-i", input_path, "-o", output_path, "-b", str(bitrate_kbps)]
 
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="afconvert", profile="lc"):
-        # AudioToolbox is the framework providing the AAC codec on macOS
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
@@ -290,7 +223,6 @@ class AFConvertEncoder(Encoder):
             codec = "aach"
         else:
             codec = "aac "
-        # Use m4af format for M4A container
         return [self.binary_path, "-f", "m4af", "-d", codec, "-b", str(bitrate_kbps * 1000), "-q", "127", "-c", str(channels), input_path, output_path]
 
 class OpusEncoder(Encoder):
@@ -321,63 +253,82 @@ class LameEncoder(Encoder):
             return [self.binary_path, "-y", "-i", input_path, "-c:a", "libmp3lame", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
         return [self.binary_path, "-b", str(bitrate_kbps), "-s", str(sample_rate / 1000.0), input_path, output_path]
 
-def get_audio_info(path):
-    try:
-        cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate", "-of", "json", path]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(res.stdout)
-        s = data["streams"][0]
-        return int(s["channels"]), int(s["sample_rate"])
-    except:
-        return None, None
+# -----------------------------------------------------------------------------
+# DECODER ABSTRACTIONS
+# -----------------------------------------------------------------------------
 
-import re
+class Decoder:
+    def __init__(self, name, binary_path, tool_id, lib_name_substr=None, lib_override=None):
+        self.name = name
+        self.binary_path = binary_path
+        self.tool_id = tool_id
+        self.lib_override = lib_override
 
-def flatten_arg_list(arg_val):
-    if not arg_val:
-        return []
-    if isinstance(arg_val, str):
-        arg_val = [arg_val]
-    res = []
-    for item in arg_val:
-        for p in item.split(","):
-            p = p.strip()
-            if p and p not in res:
-                res.append(p)
-    return res
+        measure_bin = resolve_wrapper_target(binary_path) if binary_path else binary_path
+        lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr and measure_bin else None)
 
-def probe_version(bin_path, flag_list, patterns, env=None):
-    if not bin_path or not os.path.exists(bin_path):
-        return None
-    for flag in flag_list:
-        try:
-            cmd = [bin_path, flag] if flag else [bin_path]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
-            text = (res.stdout or "") + "\n" + (res.stderr or "")
-            for p in patterns:
-                m = re.search(p, text, re.IGNORECASE)
-                if m:
-                    return m.group(1).strip()
-        except Exception:
-            pass
-    return None
+        measured_path = None
+        if lib_path and not lib_override and is_system_library(lib_path):
+            self.size = 0
+        elif lib_path:
+            self.size = get_binary_size(lib_path)
+            measured_path = lib_path
+        else:
+            if is_system_library(measure_bin):
+                self.size = 0
+            else:
+                self.size = get_binary_size(measure_bin) if measure_bin else 0
+                measured_path = measure_bin if measure_bin and not is_system_library(measure_bin) else None
 
-def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
-    """Version label for a third-party codec FFmpeg hosts (libopus,
-    libmp3lame, libfdk-aac, vo-aacenc): ffmpeg -version never reports it, so
-    prefer the real library version recovered from its on-disk path
-    (guess_lib_version_from_path), falling back to labeling the version as
-    ffmpeg's explicitly -- rather than a bare number that would otherwise
-    look like the codec's own -- when that's not recoverable (no Homebrew
-    Cellar segment, no dpkg)."""
-    real_ver = guess_lib_version_from_path(find_linked_lib(ff_bin, lib_substr))
-    return real_ver if real_ver else (f"(ffmpeg {ffmpeg_ver})" if ffmpeg_ver else None)
+        sec_sizes = get_elf_section_sizes(measured_path) if measured_path else {"text": 0, "rodata": 0, "bss": 0, "data": 0}
+        self.text_size = sec_sizes.get("text", 0)
+        self.rodata_size = sec_sizes.get("rodata", 0)
+        self.bss_size = sec_sizes.get("bss", 0)
+        self.data_size = sec_sizes.get("data", 0)
+
+    def get_decode_cmd(self, input_path, output_path):
+        raise NotImplementedError
+
+    def get_run_env(self):
+        if not self.lib_override:
+            return {}
+        env = dict(os.environ)
+        abs_lib = os.path.abspath(self.lib_override)
+        lib_dir = os.path.dirname(abs_lib)
+        if sys.platform == "darwin":
+            env["DYLD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
+            env["DYLD_INSERT_LIBRARIES"] = abs_lib
+        else:
+            env["LD_LIBRARY_PATH"] = lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+            env["LD_PRELOAD"] = (abs_lib + " " + env.get("LD_PRELOAD", "")).strip()
+        return env
+
+class FAADDecoder(Decoder):
+    def __init__(self, name, binary_path, tool_id="faad", lib_override=None):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="libfaad", lib_override=lib_override)
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, "-q", "-o", output_path, input_path]
+
+class FFmpegDecoder(Decoder):
+    def __init__(self, name, binary_path, tool_id="ffmpeg_aac"):
+        super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, "-y", "-i", input_path, "-sample_fmt", "s16", output_path]
+
+class AFConvertDecoder(Decoder):
+    def __init__(self, name, binary_path, tool_id="afconvert"):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox")
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, "-f", "WAVE", "-d", "LEI16", input_path, output_path]
+
+# -----------------------------------------------------------------------------
+# DETECTION ROUTINES
+# -----------------------------------------------------------------------------
 
 def probe_faac_version(faac_path, lib_override=None):
-    """faac never prints its version via --help/-h (the banner is only
-    emitted mid-encode, gated behind having a real input file -- see
-    is_faac_legacy), so the only way to learn it is to actually run a
-    throwaway encode and scrape "FAAC x.y.z" out of stderr."""
     if not faac_path or not os.path.exists(faac_path):
         return None
     env = None
@@ -412,19 +363,6 @@ def probe_faac_version(faac_path, lib_override=None):
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
-    """Some libfdk-aac builds (e.g. Ubuntu's apt fdkaac 1.0.0) silently reject
-    AOT 5/29 (HE-AAC / HE-AAC v2) via aacEncoder_SetParam, failing on every
-    single clip at every bitrate -- see https://github.com/nu774/fdkaac/issues/57.
-    Rather than let that show up as a wall of per-clip "encoding error" noise
-    indistinguishable from a real bug, verify each profile actually works with
-    one throwaway silent-WAV encode at detection time. Returns (ok, reason).
-
-    The probe bitrate must land inside the profile's own valid per-channel
-    range (see use_he_aac/use_he_v2_aac) or a perfectly capable encoder looks
-    unsupported -- e.g. afconvert's HE-v2 (Parametric Stereo) hard-rejects
-    32 kbps/channel with "Couldn't set audio converter property", the exact
-    same error a real capability gap would produce, even though 16 kbps/
-    channel works fine on the same binary."""
     if bitrate_kbps is None:
         per_channel = {"he": 32, "hev2": 16}.get(encoder.profile, 64)
         bitrate_kbps = per_channel * channels
@@ -437,7 +375,7 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
             w.setnchannels(channels)
             w.setsampwidth(2)
             w.setframerate(sample_rate)
-            w.writeframes(b"\x00\x00" * channels * sample_rate)  # 1s of silence
+            w.writeframes(b"\x00\x00" * channels * sample_rate)
 
         cmd = encoder.get_encode_cmd(wav_path, out_path, bitrate_kbps, channels, sample_rate)
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=encoder.get_run_env() or None)
@@ -452,25 +390,6 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-def make_unique_encoder_name_and_id(base_name, version, base_id, existing_names, existing_ids):
-    display_name = f"{base_name} {version}" if version else base_name
-    candidate_name = display_name
-    idx = 2
-    while candidate_name in existing_names:
-        candidate_name = f"{display_name} (#{idx})"
-        idx += 1
-    existing_names.add(candidate_name)
-
-    sanitized_id = re.sub(r"[^a-zA-Z0-9_]", "_", candidate_name.lower())
-    candidate_id = sanitized_id
-    idx = 2
-    while candidate_id in existing_ids:
-        candidate_id = f"{sanitized_id}_{idx}"
-        idx += 1
-    existing_ids.add(candidate_id)
-
-    return candidate_name, candidate_id
-
 def detect_encoders(args):
     encoders = []
     existing_names = set()
@@ -478,15 +397,6 @@ def detect_encoders(args):
 
     faac_bins = flatten_arg_list(getattr(args, "faac_bin", None))
     faac_libs = flatten_arg_list(getattr(args, "faac_lib", None))
-    # Explicit, positional override for --faac-bin's probed version. Needed
-    # because faac's own banner is a static string baked in at build time
-    # (meson.build's project(version: ...)) -- a dev checkout many commits
-    # past its last version bump prints the exact same "FAAC 2.1.0" as the
-    # actual 2.1 release, so probing gives compare_encoders.py no way to
-    # tell a HEAD snapshot from the tag it's ahead of. The caller (e.g.
-    # scripts/build_faac_matrix.sh) knows the real git identity of each
-    # binary it built and can pass it here instead of leaving two rows to
-    # collide down to a meaningless "(#2)" suffix.
     faac_vers = flatten_arg_list(getattr(args, "faac_bin_version", None))
     if not faac_bins:
         which_faac = shutil.which("faac")
@@ -498,11 +408,6 @@ def detect_encoders(args):
         legacy = is_faac_legacy(f_bin, lib_override=f_lib)
         ver = faac_vers[idx] if idx < len(faac_vers) else None
         if not ver:
-            # The parenthesized git identity, e.g. "2.1.0 (faac-2.1-51-gc3c8f222)",
-            # is captured as part of the version when a build reports one (see
-            # faac's frontend/show-version-hash-in-help branch) -- that's exactly
-            # what distinguishes a dev/HEAD build from the tag it's ahead of,
-            # both otherwise reporting the identical bare "FAAC 2.1.0".
             ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
                                 [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
@@ -510,15 +415,13 @@ def detect_encoders(args):
             ver = probe_faac_version(f_bin, lib_override=f_lib)
         if not ver and legacy:
             ver = "1.x"
-        name, tool_id = make_unique_encoder_name_and_id("FAAC", ver, "faac", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("FAAC", ver, "faac", existing_names, existing_ids)
         encoders.append(FAACEncoder(name, f_bin, tool_id, profile="lc", lib_override=f_lib, legacy=legacy))
         if not legacy:
             candidate = FAACEncoder(name, f_bin, tool_id, profile="he", lib_override=f_lib, legacy=legacy)
             ok, reason = probe_encoder_capability(candidate)
             if ok:
                 encoders.append(candidate)
-            else:
-                print(f"  {name}: {profile_label('he')} unsupported by this build, skipping ({reason}).")
 
     ffmpeg_bins = flatten_arg_list(getattr(args, "ffmpeg_bin", None))
     if not ffmpeg_bins:
@@ -535,35 +438,26 @@ def detect_encoders(args):
         except Exception:
             pass
 
-        # Explicitly force the classic twoloop coder rather than relying on
-        # the build's default -- FFmpeg's own default drifted from twoloop to
-        # nmr (see aacenc: use the NMR coder by default), so an implicit
-        # default would silently change which algorithm "FFmpeg AAC" means
-        # depending on the FFmpeg version running the benchmark.
-        name_aac, id_aac = make_unique_encoder_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
+        name_aac, id_aac = make_unique_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
         encoders.append(FFmpegEncoder(name_aac, ff_bin, "aac", tool_id=id_aac, coder="twoloop"))
 
         if supports_nmr:
-            name_nmr, id_nmr = make_unique_encoder_name_and_id("FFmpeg NMR", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
+            name_nmr, id_nmr = make_unique_name_and_id("FFmpeg NMR", ver, "ffmpeg_aac_nmr", existing_names, existing_ids)
             encoders.append(FFmpegEncoder(name_nmr, ff_bin, "aac", tool_id=id_nmr, coder="nmr"))
 
         try:
             res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
             stdout = res.stdout or ""
             if "libfdk_aac" in stdout:
-                name_fdk, id_fdk = make_unique_encoder_name_and_id("FFmpeg FDK-AAC", hosted_codec_ver(ff_bin, "libfdk-aac", ver), "ffmpeg_libfdk_aac", existing_names, existing_ids)
+                name_fdk, id_fdk = make_unique_name_and_id("FFmpeg FDK-AAC", hosted_codec_ver(ff_bin, "libfdk-aac", ver), "ffmpeg_libfdk_aac", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile="lc"))
                 for profile in ("he", "hev2"):
                     candidate = FFmpegEncoder(name_fdk, ff_bin, "libfdk_aac", tool_id=id_fdk, profile=profile)
                     ok, reason = probe_encoder_capability(candidate)
                     if ok:
                         encoders.append(candidate)
-                    else:
-                        print(f"  {name_fdk}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
             if "vo_aacenc" in stdout:
-                # No standalone vo_aacenc tool is ever detected here, so
-                # there's nothing for an "FFmpeg" qualifier to disambiguate.
-                name_vo, id_vo = make_unique_encoder_name_and_id("VO-AAC", hosted_codec_ver(ff_bin, "vo-aacenc", ver), "ffmpeg_vo_aacenc", existing_names, existing_ids)
+                name_vo, id_vo = make_unique_name_and_id("VO-AAC", hosted_codec_ver(ff_bin, "vo-aacenc", ver), "ffmpeg_vo_aacenc", existing_names, existing_ids)
                 encoders.append(FFmpegEncoder(name_vo, ff_bin, "vo_aacenc", tool_id=id_vo))
         except Exception:
             pass
@@ -577,15 +471,13 @@ def detect_encoders(args):
     for fdk_bin in fdkaac_bins:
         ver = probe_version(fdk_bin, ["--version", "-v", "-h", "--help"],
                             [r"fdkaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_encoder_name_and_id("fdkaac", ver, "fdkaac", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("fdkaac", ver, "fdkaac", existing_names, existing_ids)
         encoders.append(FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile="lc"))
         for profile in ("he", "hev2"):
             candidate = FDKAACEncoder(name, fdk_bin, tool_id=tool_id, profile=profile)
             ok, reason = probe_encoder_capability(candidate)
             if ok:
                 encoders.append(candidate)
-            else:
-                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     aacenc_bins = flatten_arg_list(getattr(args, "aac_enc_bin", None))
     explicit_aacenc = bool(getattr(args, "aac_enc_bin", None))
@@ -597,15 +489,13 @@ def detect_encoders(args):
     for aacenc_bin in aacenc_bins:
         ver = probe_version(aacenc_bin, ["-h", "--help", "-v", "--version"],
                             [r"aac-enc\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_encoder_name_and_id("aac-enc", ver, "aac_enc", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("aac-enc", ver, "aac_enc", existing_names, existing_ids)
         encoders.append(AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile="lc"))
         for profile in ("he", "hev2"):
             candidate = AACEncEncoder(name, aacenc_bin, tool_id=tool_id, profile=profile)
             ok, reason = probe_encoder_capability(candidate)
             if ok:
                 encoders.append(candidate)
-            else:
-                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     falabaac_bins = flatten_arg_list(getattr(args, "falabaac_bin", None))
     if not falabaac_bins:
@@ -616,7 +506,7 @@ def detect_encoders(args):
     for falab_bin in falabaac_bins:
         ver = probe_version(falab_bin, ["-h", "--help", "-v", "--version"],
                             [r"falabaac\s+v?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_encoder_name_and_id("falabaac", ver, "falabaac", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("falabaac", ver, "falabaac", existing_names, existing_ids)
         encoders.append(FalabaacEncoder(name, falab_bin, tool_id=tool_id))
 
     afconvert_bins = flatten_arg_list(getattr(args, "afconvert_bin", None))
@@ -627,15 +517,13 @@ def detect_encoders(args):
 
     for afc_bin in afconvert_bins:
         ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version:?\s+([0-9.]+)"])
-        name, tool_id = make_unique_encoder_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
         encoders.append(AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile="lc"))
         for profile in ("he", "hev2"):
             candidate = AFConvertEncoder(name, afc_bin, tool_id=tool_id, profile=profile)
             ok, reason = probe_encoder_capability(candidate)
             if ok:
                 encoders.append(candidate)
-            else:
-                print(f"  {name}: {profile_label(profile)} unsupported by this build, skipping ({reason}).")
 
     if getattr(args, 'include_other_codecs', False):
         opus_bins = flatten_arg_list(getattr(args, "opusenc_bin", None))
@@ -647,20 +535,15 @@ def detect_encoders(args):
         if opus_bins:
             for op_bin in opus_bins:
                 ver = probe_version(op_bin, ["--version", "-V", "-h"], [r"opusenc\s+([^\s\n]+)", r"opus-tools\s+([^\s\n]+)"])
-                name, tool_id = make_unique_encoder_name_and_id("Opus", ver, "opusenc", existing_names, existing_ids)
+                name, tool_id = make_unique_name_and_id("Opus", ver, "opusenc", existing_names, existing_ids)
                 encoders.append(OpusEncoder(name, op_bin, tool_id=tool_id, is_ffmpeg=False))
         elif ffmpeg_bins:
-            # One row, not one per --ffmpeg-bin: libopus output doesn't depend
-            # on which FFmpeg build hosts it, unlike the native aac encoder's
-            # own twoloop/nmr coder choice, which does. This branch is also
-            # only ever reached when no standalone opusenc was found, so
-            # there's never a same-named row to disambiguate "FFmpeg" from.
             ff_bin = ffmpeg_bins[0]
             try:
                 res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
                 if "libopus" in (res.stdout or "") or "opus" in (res.stdout or ""):
                     ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
-                    name, tool_id = make_unique_encoder_name_and_id("Opus", hosted_codec_ver(ff_bin, "libopus", ffmpeg_ver), "ffmpeg_opus", existing_names, existing_ids)
+                    name, tool_id = make_unique_name_and_id("Opus", hosted_codec_ver(ff_bin, "libopus", ffmpeg_ver), "ffmpeg_opus", existing_names, existing_ids)
                     encoders.append(OpusEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
             except Exception:
                 pass
@@ -675,372 +558,86 @@ def detect_encoders(args):
             for lame_bin in lame_bins:
                 ver = probe_version(lame_bin, ["--version", "-v"],
                                     [r"LAME\s+64bits?\s+version\s+([^\s]+)", r"LAME\s+32bits?\s+version\s+([^\s]+)", r"LAME\s+version\s+([0-9.]+)"])
-                name, tool_id = make_unique_encoder_name_and_id("LAME", ver, "lame", existing_names, existing_ids)
+                name, tool_id = make_unique_name_and_id("LAME", ver, "lame", existing_names, existing_ids)
                 encoders.append(LameEncoder(name, lame_bin, tool_id=tool_id, is_ffmpeg=False))
         elif ffmpeg_bins:
-            # One row, not one per --ffmpeg-bin; no "FFmpeg" qualifier needed
-            # for the same reason as Opus above -- if a name ever does
-            # collide, make_unique_encoder_name_and_id already disambiguates
-            # generically rather than needing every caller to hardcode it.
             ff_bin = ffmpeg_bins[0]
             try:
                 res = subprocess.run([ff_bin, "-encoders"], capture_output=True, text=True)
                 if "libmp3lame" in (res.stdout or ""):
                     ffmpeg_ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
-                    name, tool_id = make_unique_encoder_name_and_id("LAME", hosted_codec_ver(ff_bin, "libmp3lame", ffmpeg_ver), "ffmpeg_lame", existing_names, existing_ids)
+                    name, tool_id = make_unique_name_and_id("LAME", hosted_codec_ver(ff_bin, "libmp3lame", ffmpeg_ver), "ffmpeg_lame", existing_names, existing_ids)
                     encoders.append(LameEncoder(name, ff_bin, tool_id=tool_id, is_ffmpeg=True))
             except Exception:
                 pass
 
     return encoders
 
-def gate_filter(name, filtered_samples):
-    available = set(filtered_samples)
-    picked = [c for c in GATE_CLIPS.get(name, []) if c in available]
-    if picked:
-        return picked
-    n = min(GATE_FALLBACK_N, len(filtered_samples))
-    if n <= 0:
-        return []
-    step = len(filtered_samples) / n
-    return [filtered_samples[int(i * step)] for i in range(n)]
+def detect_decoders(args):
+    decoders = []
+    existing_names = set()
+    existing_ids = set()
 
-def process_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
-    input_path = os.path.join(data_dir, sample)
-    ext = getattr(encoder, "file_ext", ".m4a")
-    output_filename = f"{row_key(encoder)}_{scenario_name}_{sample}{ext}".replace(" ", "_")
-    output_path = os.path.join(output_dir, output_filename)
+    faad_bins = flatten_arg_list(getattr(args, "faad_bin", None))
+    faad_libs = flatten_arg_list(getattr(args, "faad_lib", None))
+    faad_vers = flatten_arg_list(getattr(args, "faad_bin_version", None))
 
-    channels = scenario_channels(cfg)
-    sample_rate = scenario_rate(cfg)
-    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
+    if not faad_bins:
+        which_faad = get_faad_path()
+        if which_faad:
+            faad_bins = [which_faad]
 
-    try:
-        t_start = time.perf_counter()
-        res = subprocess.run(cmd, capture_output=True, check=False, env=encoder.get_run_env() or None)
+    for idx, f_bin in enumerate(faad_bins):
+        f_lib = faad_libs[idx] if idx < len(faad_libs) else (faad_libs[0] if faad_libs else None)
+        ver = faad_vers[idx] if idx < len(faad_vers) else None
+        if not ver:
+            ver = probe_version(f_bin, ["-h", "--help", "-v", "--version"],
+                                [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)", r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_name_and_id("FAAD2", ver, "faad", existing_names, existing_ids)
+        decoders.append(FAADDecoder(name, f_bin, tool_id=tool_id, lib_override=f_lib))
 
-        if res.returncode != 0:
-            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+    ffmpeg_bins = flatten_arg_list(getattr(args, "ffmpeg_bin", None))
+    if not ffmpeg_bins:
+        which_ff = get_ffmpeg_path()
+        if which_ff:
+            ffmpeg_bins = [which_ff]
 
-        t_end = time.perf_counter()
-        duration = t_end - t_start
+    for ff_bin in ffmpeg_bins:
+        ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
+        name, tool_id = make_unique_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
+        decoders.append(FFmpegDecoder(name, ff_bin, tool_id=tool_id))
 
-        file_size = os.path.getsize(output_path)
-        es_bytes = get_audio_es_bytes(output_path)
+        try:
+            res = subprocess.run([ff_bin, "-decoders"], capture_output=True, text=True)
+            stdout = res.stdout or ""
+            if "libfdk_aac" in stdout:
+                name_fdk, id_fdk = make_unique_name_and_id("FFmpeg FDK-AAC", hosted_codec_ver(ff_bin, "libfdk-aac", ver), "ffmpeg_libfdk_aac", existing_names, existing_ids)
+                decoders.append(FFmpegDecoder(name_fdk, ff_bin, tool_id=id_fdk))
+        except Exception:
+            pass
 
-        # Calculate actual bitrate using pure audio elementary stream bytes
-        actual_bitrate = None
-        audio_duration = ffmpeg_probe(input_path)
-        if audio_duration and audio_duration > 0:
-            actual_bitrate = (es_bytes * 8) / (audio_duration * 1000)
+    afconvert_bins = flatten_arg_list(getattr(args, "afconvert_bin", None))
+    if not afconvert_bins:
+        which_afc = shutil.which("afconvert")
+        if which_afc:
+            afconvert_bins = [which_afc]
 
-        valid, decode_err = decode_validate(output_path)
-        out_channels, out_rate = get_audio_info(output_path)
-        exp_channels = scenario_channels(cfg)
-        if valid and out_channels is not None and out_channels != exp_channels:
-            valid = False
-            decode_err = f"Channels mismatch: {out_channels} vs {exp_channels}"
+    for afc_bin in afconvert_bins:
+        ver = probe_version(afc_bin, ["-h", "--help"], [r"afconvert\s+version\s+([^\s,]+)", r"version:?\s+([0-9.]+)"])
+        name, tool_id = make_unique_name_and_id("Apple AudioToolbox", ver, "afconvert", existing_names, existing_ids)
+        decoders.append(AFConvertDecoder(name, afc_bin, tool_id=tool_id))
 
-        return {
-            "tool": encoder.name,
-            "profile": encoder.profile,
-            "row_key": row_key(encoder),
-            "scenario": scenario_name,
-            "filename": sample,
-            "duration": duration,
-            "audio_duration": audio_duration,
-            "size": file_size,
-            "actual_bitrate": actual_bitrate,
-            "target_bitrate": cfg["bitrate"],
-            "decode_valid": valid,
-            "decode_error": decode_err,
-            "aac_path": output_path
-        }
-    except Exception as e:
-        detail = str(e)
-        if isinstance(e, subprocess.CalledProcessError):
-            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
-            stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
-            if stderr_tail:
-                detail = f"exit code {e.returncode}: {stderr_tail}"
-        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {detail}")
-        return {
-            "tool": encoder.name,
-            "profile": encoder.profile,
-            "row_key": row_key(encoder),
-            "scenario": scenario_name,
-            "filename": sample,
-            "duration": 0,
-            "audio_duration": None,
-            "size": 0,
-            "actual_bitrate": None,
-            "target_bitrate": cfg["bitrate"],
-            "decode_valid": False,
-            "decode_error": f"Encoding failed: {detail}",
-            "aac_path": None
-        }
+    return decoders
 
-def main():
-    parser = argparse.ArgumentParser(description="Compare AAC encoders and generate a leaderboard.")
-    parser.add_argument("--faac-bin", action="append", help="Path to faac binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so (can be specified multiple times or comma-separated)")
-    parser.add_argument("--faac-bin-version", action="append",
-                        help="Explicit version label for --faac-bin, positionally matched (can be specified multiple times or comma-separated). "
-                             "Overrides the probed banner -- use this for a dev/HEAD build whose meson.build version hasn't been bumped past its last tag.")
-    parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--ffmpeg-bin", action="append", help="Path to ffmpeg binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--afconvert-bin", action="append", help="Path to afconvert binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--opusenc-bin", action="append", help="Path to opusenc binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--lame-bin", action="append", help="Path to lame binary (can be specified multiple times or comma-separated)")
-    parser.add_argument("--include-other-codecs", action="store_true", help="Include non-AAC codecs (Opus, LAME)")
-    parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
-    parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
-    parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
-    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset")
-    parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
-    parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
-    parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
-    parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) calculation")
-    parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid graph blocks in leaderboard")
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip Phase 1 (encoding) and reload --results-json from a previous run instead -- "
-                             "for re-rendering the leaderboard (new sort/formatting logic, etc.) against data "
-                             "already on disk without repeating the slow per-clip encode/MOS/stereo/transient work. "
-                             "Only Phase 1's encoded output is reused; MOS/stereo/transient are never persisted "
-                             "between runs, so those phases still execute normally.")
-
-    args = parser.parse_args()
-
-    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
-    output_dir = os.path.join(SCRIPT_DIR, "output", "comparison")
-    os.makedirs(output_dir, exist_ok=True)
-
-    encoders = detect_encoders(args)
-    if not encoders:
-        print("No encoders detected!")
-        sys.exit(1)
-
-    print(f"Detected encoders: {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
-
-    all_results = []
-
-    num_cpus = os.cpu_count() or 1
-
-    scenario_list = list(SCENARIOS.keys())
-    if args.scenarios:
-        scenario_list = expand_scenario_list(args.scenarios)
-
-    if args.resume and os.path.exists(args.results_json):
-        print(f"==> --resume: reloading {args.results_json}, skipping Phase 1 (encoding)")
-        with open(args.results_json) as f:
-            all_results = json.load(f)
-    else:
-        for scenario_name in scenario_list:
-            if scenario_name not in SCENARIOS:
-                print(f"Scenario {scenario_name} not found in config, skipping.")
-                continue
-            cfg = SCENARIOS[scenario_name]
-            print(f"\n>>> Running Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
-            data_dir = corpus_dir(cfg, external_data_dir)
-            if not os.path.exists(data_dir):
-                print(f"Data directory {data_dir} not found, skipping.")
-                continue
-
-            # --gate selects from a curated list, so the corpus cap (which bounds
-            # full runs) is skipped there; applying both would drop gate clips the
-            # cap happened not to select.
-            wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
-            all_samples = sorted(wavs) if args.gate else select_corpus_clips(
-                wavs, CORPORA.get(cfg["corpus"], {}))
-            if args.gate:
-                samples = gate_filter(scenario_name, all_samples)
-            else:
-                num_to_run = max(1, int(len(all_samples) * args.coverage / 100.0))
-                step = len(all_samples) / num_to_run if num_to_run > 0 else 1
-                samples = [all_samples[int(i * step)] for i in range(num_to_run)]
-
-            print(f"Processing {len(samples)} samples...")
-
-            channels = scenario_channels(cfg)
-            sample_rate = scenario_rate(cfg)
-
-            for encoder in encoders:
-                supported, reason = encoder.supports_scenario(cfg["bitrate"], channels, sample_rate)
-                if not supported:
-                    print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: {reason}.")
-                    continue
-
-                # HE/HE-v2 bitrate ceilings are a real per-binary capability limit
-                # (see supports_scenario's docstring), not a fixed profile rule, so
-                # check this scenario's actual bitrate against the real encoder
-                # instead of guessing -- one throwaway encode here avoids attempting
-                # (and failing) every sample in the scenario for a binary that
-                # simply rejects this bitrate for this profile.
-                if encoder.profile in ("he", "hev2"):
-                    ok, cap_reason = probe_encoder_capability(encoder, bitrate_kbps=cfg["bitrate"], channels=channels, sample_rate=sample_rate)
-                    if not ok:
-                        print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: unsupported at {cfg['bitrate']} kbps ({cap_reason}).")
-                        continue
-
-                print(f"  Encoding with {encoder.name} ({profile_label(encoder.profile)})...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                    futures = [executor.submit(process_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
-                    for future in concurrent.futures.as_completed(futures):
-                        res = future.result()
-                        if res:
-                            all_results.append(res)
-
-        # Save intermediate results
-        with open(args.results_json, "w") as f:
-            json.dump(all_results, f, indent=2)
-
-    # Perceptual Quality (MOS)
-    if not args.skip_mos:
-        print("\n>>> Phase 2: Perceptual Quality (MOS)")
-        bridge_data = {"matrix": {}}
-        valid_count = 0
-        for i, res in enumerate(all_results):
-            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
-                continue
-
-            ext = os.path.splitext(res["aac_path"])[1] or ".m4a"
-            key = f"res_{res['row_key']}_{i}"
-            bridge_data["matrix"][key] = {
-                "scenario": res["scenario"],
-                "filename": res["filename"],
-                "aac": f"{key}{ext}",
-                "mos": None
-            }
-            shutil.copy(res["aac_path"], os.path.join(output_dir, f"{key}{ext}"))
-            valid_count += 1
-
-        if valid_count == 0:
-            print("No valid AAC files to score for MOS.")
-            return
-
-        bridge_json = "bridge_results.json"
-        with open(bridge_json, "w") as f:
-            json.dump(bridge_data, f, indent=2)
-
-        phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
-        cmd_phase2 = [
-            sys.executable, phase2_script,
-            bridge_json,
-            output_dir,
-            external_data_dir
-        ]
-        safe_run(cmd_phase2, capture_output=False, check=True)
-
-        with open(bridge_json, "r") as f:
-            updated_bridge = json.load(f)
-
-        for i, res in enumerate(all_results):
-            key = f"res_{res['row_key']}_{i}"
-            if key in updated_bridge["matrix"]:
-                res["mos"] = updated_bridge["matrix"][key].get("mos")
-
-    # Stereo Coherence + Transient Fidelity Phase (phase3_stereo.py computes
-    # both from the same decode pass; see its module docstring).
-    if not args.skip_stereo or not args.skip_transient:
-        print("\n>>> Phase 3: Stereo Image Fidelity + Transient Fidelity")
-        bridge_data = {"matrix": {}}
-        valid_count = 0
-        for i, res in enumerate(all_results):
-            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
-                continue
-
-            ext = os.path.splitext(res["aac_path"])[1] or ".m4a"
-            key = f"res_{res['row_key']}_{i}"
-            bridge_data["matrix"][key] = {
-                "scenario": res["scenario"],
-                "filename": res["filename"],
-                "aac": f"{key}{ext}",
-                "ic_err": None,
-                "attack_centroid_ms": None
-            }
-            # Ensure files exist in output_dir
-            target_path = os.path.join(output_dir, f"{key}{ext}")
-            if not os.path.exists(target_path):
-                shutil.copy(res["aac_path"], target_path)
-            valid_count += 1
-
-        if valid_count == 0:
-            print("No valid AAC files to analyze for stereo/transient fidelity.")
-            return
-
-        bridge_json_stereo = "bridge_results_stereo.json"
-        with open(bridge_json_stereo, "w") as f:
-            json.dump(bridge_data, f, indent=2)
-
-        phase3_script = os.path.join(SCRIPT_DIR, "phase3_stereo.py")
-        cmd_phase3 = [
-            sys.executable, phase3_script,
-            bridge_json_stereo,
-            output_dir,
-            external_data_dir
-        ]
-        if args.skip_stereo:
-            cmd_phase3.append("--skip-stereo")
-        if args.skip_transient:
-            cmd_phase3.append("--skip-transient")
-        safe_run(cmd_phase3, capture_output=False, check=True)
-
-        with open(bridge_json_stereo, "r") as f:
-            updated_bridge = json.load(f)
-
-        for i, res in enumerate(all_results):
-            key = f"res_{res['row_key']}_{i}"
-            if key in updated_bridge["matrix"]:
-                res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
-                res["attack_centroid_ms"] = updated_bridge["matrix"][key].get("attack_centroid_ms")
-
-        if os.path.exists(bridge_json_stereo):
-            os.remove(bridge_json_stereo)
-
-
-    if os.path.exists("bridge_results.json"):
-        os.remove("bridge_results.json")
-
-    # Final leaderboard generation
-    generate_leaderboard(encoders, all_results, args.output, scenario_list, skip_graphs=args.skip_graphs)
-
-def format_size(bytes_val):
-    if bytes_val is None or bytes_val == 0:
-        return "0 B"
-    if bytes_val < 1024:
-        return f"{bytes_val} B"
-    return f"{bytes_val / 1024:.1f} KB"
-
-# A worst-MOS score alone can't say whether it's a bug specific to this
-# encoder or just a genuinely hard clip every encoder struggles with (a
-# ceiling, not a bug) -- only comparing it against how other encoders did on
-# that exact same clip can. Peer gap above this is flagged as likely a bug.
-CLIP_PEER_BUG_GAP = 0.75
-
-def cell_peer_gap(clip_mos, rk, s_name, filename):
-    """None, or (this_mos, peer_avg) when (rk, s_name)'s worst clip scored
-    well below what every other encoder achieved on that same (scenario,
-    filename) -- a signal worth investigating as a real per-encoder defect,
-    not just corpus difficulty every encoder shares."""
-    if not filename:
-        return None
-    clip_scores = clip_mos.get((s_name, filename), {})
-    this_mos = clip_scores.get(rk)
-    peers = {other_rk: m for other_rk, m in clip_scores.items() if other_rk != rk}
-    if this_mos is None or not peers:
-        return None
-    peer_avg = sum(peers.values()) / len(peers)
-    if peer_avg - this_mos > CLIP_PEER_BUG_GAP:
-        return (this_mos, peer_avg)
-    return None
+# -----------------------------------------------------------------------------
+# REPORT GENERATION FUNCTIONS
+# -----------------------------------------------------------------------------
 
 def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False):
     # Aggregation keyed by row_key (tool, profile). Every encoder is compared
     # at the same target bitrate (there is no cross-encoder VBR/quality mode
     # here -- each encoder's own quality knob isn't comparable to any other's,
-    # see compare_encoders.py's Encoder.get_encode_cmd), so there is nothing
+    # see compare_codecs.py's Encoder.get_encode_cmd), so there is nothing
     # left to key on beyond the (tool, profile) combination itself.
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0, "mos_min_file": None,
@@ -1758,6 +1355,638 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("- **ROM (Flash)**: Codec code + read-only data size (**Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
+
+
+def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None, robustness_results=None):
+    stats = defaultdict(lambda: defaultdict(lambda: {
+        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "snr_sum": 0, "snr_count": 0,
+        "delay_sum": 0, "delay_count": 0,
+        "ram_sum": 0, "ram_count": 0,
+        "speed_sum": 0, "speed_count": 0,
+        "valid_count": 0, "total_count": 0
+    }))
+
+    for res in results:
+        rk = res["row_key"]
+        s = res["scenario"]
+        stats[rk][s]["total_count"] += 1
+        if res.get("decode_valid"):
+            stats[rk][s]["valid_count"] += 1
+            if res.get("mos") is not None:
+                stats[rk][s]["mos_sum"] += res["mos"]
+                stats[rk][s]["mos_count"] += 1
+                stats[rk][s]["mos_min"] = min(stats[rk][s]["mos_min"], res["mos"])
+            if res.get("snr_db") is not None and res["snr_db"] != float("inf"):
+                stats[rk][s]["snr_sum"] += res["snr_db"]
+                stats[rk][s]["snr_count"] += 1
+            if res.get("alignment_delay_ms") is not None:
+                stats[rk][s]["delay_sum"] += abs(res["alignment_delay_ms"])
+                stats[rk][s]["delay_count"] += 1
+            if res.get("peak_ram_kb") is not None and res["peak_ram_kb"] > 0:
+                stats[rk][s]["ram_sum"] += res["peak_ram_kb"]
+                stats[rk][s]["ram_count"] += 1
+            if res.get("duration", 0) > 0 and res.get("audio_duration"):
+                stats[rk][s]["speed_sum"] += res["audio_duration"] / res["duration"]
+                stats[rk][s]["speed_count"] += 1
+
+    rob_stats = defaultdict(lambda: {"passed": 0, "total": 0})
+    if robustness_results:
+        for r_res in robustness_results:
+            rk = r_res["row_key"]
+            rob_stats[rk]["total"] += 1
+            if r_res.get("passed"):
+                rob_stats[rk]["passed"] += 1
+
+    decoder_info = {decoder_row_key(d): d for d in decoders}
+    overall = {}
+    for rk, dec_obj in decoder_info.items():
+        d_mos, d_speed, d_snr, d_delay, d_ram = [], [], [], [], []
+        d_worst_mos = 6.0
+        d_total = d_valid = 0
+        scenario_count = 0
+
+        for s_name in scenario_list:
+            st = stats[rk][s_name]
+            d_total += st["total_count"]
+            d_valid += st["valid_count"]
+            if st["mos_count"] > 0:
+                d_mos.append(st["mos_sum"] / st["mos_count"])
+                d_worst_mos = min(d_worst_mos, st["mos_min"])
+                scenario_count += 1
+            if st["snr_count"] > 0:
+                d_snr.append(st["snr_sum"] / st["snr_count"])
+            if st["delay_count"] > 0:
+                d_delay.append(st["delay_sum"] / st["delay_count"])
+            if st["ram_count"] > 0:
+                d_ram.append(st["ram_sum"] / st["ram_count"])
+            if st["speed_count"] > 0:
+                d_speed.append(st["speed_sum"] / st["speed_count"])
+
+        rob_info = rob_stats[rk]
+        robustness_pct = (rob_info["passed"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
+
+        overall[rk] = {
+            "tool": dec_obj.name,
+            "worst_mos": d_worst_mos if d_mos else 0,
+            "overall_mos": sum(d_mos) / len(d_mos) if d_mos else 0,
+            "avg_snr_db": sum(d_snr) / len(d_snr) if d_snr else None,
+            "avg_delay_ms": sum(d_delay) / len(d_delay) if d_delay else 0.0,
+            "avg_ram_kb": sum(d_ram) / len(d_ram) if d_ram else 0,
+            "avg_speed": sum(d_speed) / len(d_speed) if d_speed else 0,
+            "robustness_pct": robustness_pct,
+            "text_size": dec_obj.text_size,
+            "rodata_size": dec_obj.rodata_size,
+            "valid_rate": (d_valid / d_total * 100) if d_total > 0 else 0,
+            "scenario_count": scenario_count,
+            "scenario_total": len(scenario_list)
+        }
+
+    sorted_rk = sorted(overall.keys(), key=lambda rk: (overall[rk]["worst_mos"], overall[rk]["overall_mos"]), reverse=True)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "w") as f:
+        has_encoders = bool(encoders)
+        if not has_encoders:
+            f.write("# AAC Leaderboard\n\n")
+            nav_links = ["[📊 Decoder Rankings](#-decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
+            f.write(" | ".join(nav_links) + "\n\n---\n\n")
+
+        f.write("## 🔊 Decoder Leaderboard\n\n")
+        f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Quality (MOS), Timing Alignment Error, Robustness, Speed, and Footprint.\n\n")
+
+        f.write("### Overall Decoder Rankings\n\n")
+        f.write("| Rank | Decoder | Status | Worst MOS | Overall MOS | Mean SNR | Timing Error | Robustness | Speed (xRT) | Peak RAM | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+
+        best_worst_mos = max(o["worst_mos"] for o in overall.values()) if overall else 0
+        best_mos = max(o["overall_mos"] for o in overall.values()) if overall else 0
+        best_speed = max(o["avg_speed"] for o in overall.values()) if overall else 0
+        best_robustness = max(o["robustness_pct"] for o in overall.values()) if overall else 100.0
+
+        for i, rk in enumerate(sorted_rk):
+            o = overall[rk]
+            rank_str = f"🏆 {i+1}" if i == 0 and o["worst_mos"] > 0 else f"{i+1}"
+            status_str = "OK" if o["valid_rate"] == 100 else f"❌ {100-o['valid_rate']:.1f}%"
+            w_str = f"**{o['worst_mos']:.3f}**" if o["worst_mos"] == best_worst_mos and best_worst_mos > 0 else f"{o['worst_mos']:.3f}"
+            m_str = f"**{o['overall_mos']:.3f}**" if o["overall_mos"] == best_mos and best_mos > 0 else f"{o['overall_mos']:.3f}"
+            snr_str = f"{o['avg_snr_db']:.1f} dB" if o["avg_snr_db"] is not None else "Bit-exact"
+            delay_str = f"{o['avg_delay_ms']:.2f} ms"
+            rob_str = f"**{o['robustness_pct']:.1f}%**" if o["robustness_pct"] == best_robustness else f"{o['robustness_pct']:.1f}%"
+            s_str = f"**{o['avg_speed']:.1f}x**" if o["avg_speed"] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
+            ram_str = format_size(int(o["avg_ram_kb"] * 1024)) if o["avg_ram_kb"] > 0 else "N/A"
+            rom_str = format_size(o["text_size"] + o["rodata_size"])
+
+            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {delay_str} | {rob_str} | {s_str} | {ram_str} | {rom_str} |\n")
+
+        f.write("\n<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
+        f.write("### Per-Scenario Decoder Breakdown\n\n")
+        f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+
+        for s_name in sorted(scenario_list, key=get_scenario_sort_key):
+            row_str = f"| {s_name} |"
+            for rk in sorted_rk:
+                st = stats[rk][s_name]
+                if st["mos_count"] > 0:
+                    avg_m = st["mos_sum"] / st["mos_count"]
+                    row_str += f" {avg_m:.3f} |"
+                else:
+                    row_str += " N/A |"
+            f.write(row_str + "\n")
+        f.write("\n</details>\n\n")
+
+        if not skip_graphs and sorted_rk:
+            f.write("### Decoder Efficiency & Footprint\n\n")
+            labels = [f'"{overall[rk]["tool"]}"' for rk in sorted_rk]
+            speeds = [f"{overall[rk]['avg_speed']:.1f}" for rk in sorted_rk]
+            max_s = max([overall[rk]['avg_speed'] for rk in sorted_rk] + [1.0])
+
+            f.write("#### Decoding Speed (xRT)\n\n")
+            f.write("```mermaid\n")
+            f.write("xychart-beta\n")
+            f.write('    title "Average Decoding Throughput (xRealtime, Higher is Better)"\n')
+            f.write(f"    x-axis [{', '.join(labels)}]\n")
+            f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_s * 1.25) + 1}\n')
+            f.write(f"    bar [{', '.join(speeds)}]\n")
+            f.write("```\n\n")
+
+    print(f"\nDecoder leaderboard generated at: {output_path}")
+
+# -----------------------------------------------------------------------------
+# MAIN CLI & BENCHMARK ORCHESTRATION
+# -----------------------------------------------------------------------------
+
+
+def gate_filter(name, filtered_samples):
+    available = set(filtered_samples)
+    picked = [c for c in GATE_CLIPS.get(name, []) if c in available]
+    if picked:
+        return picked
+    n = min(GATE_FALLBACK_N, len(filtered_samples))
+    if n <= 0:
+        return []
+    step = len(filtered_samples) / n
+    return [filtered_samples[int(i * step)] for i in range(n)]
+
+def get_audio_info(path):
+    try:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate", "-of", "json", path]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        s = data["streams"][0]
+        return int(s["channels"]), int(s["sample_rate"])
+    except Exception:
+        return None, None
+
+def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
+    input_path = os.path.join(data_dir, sample)
+    ext = getattr(encoder, "file_ext", ".m4a")
+    output_filename = f"{encoder_row_key(encoder)}_{scenario_name}_{sample}{ext}".replace(" ", "_")
+    output_path = os.path.join(output_dir, output_filename)
+
+    channels = scenario_channels(cfg)
+    sample_rate = scenario_rate(cfg)
+    cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
+
+    try:
+        t_start = time.perf_counter()
+        res = subprocess.run(cmd, capture_output=True, check=False, env=encoder.get_run_env() or None)
+
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+
+        t_end = time.perf_counter()
+        duration = t_end - t_start
+
+        file_size = os.path.getsize(output_path)
+        es_bytes = get_audio_es_bytes(output_path)
+
+        actual_bitrate = None
+        audio_duration = ffmpeg_probe(input_path)
+        if audio_duration and audio_duration > 0:
+            actual_bitrate = (es_bytes * 8) / (audio_duration * 1000)
+
+        valid, decode_err = decode_validate(output_path)
+        out_channels, out_rate = get_audio_info(output_path)
+        exp_channels = scenario_channels(cfg)
+        if valid and out_channels is not None and out_channels != exp_channels:
+            valid = False
+            decode_err = f"Channels mismatch: {out_channels} vs {exp_channels}"
+
+        return {
+            "tool": encoder.name,
+            "profile": encoder.profile,
+            "row_key": encoder_row_key(encoder),
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": duration,
+            "audio_duration": audio_duration,
+            "size": file_size,
+            "actual_bitrate": actual_bitrate,
+            "target_bitrate": cfg["bitrate"],
+            "decode_valid": valid,
+            "decode_error": decode_err,
+            "aac_path": output_path,
+            "ref_path": input_path
+        }
+    except Exception as e:
+        detail = str(e)
+        if isinstance(e, subprocess.CalledProcessError):
+            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
+            if stderr_tail:
+                detail = f"exit code {e.returncode}: {stderr_tail}"
+        print(f"Error encoding {sample} with {encoder.name} ({profile_label(encoder.profile)}): {detail}")
+        return {
+            "tool": encoder.name,
+            "profile": encoder.profile,
+            "row_key": encoder_row_key(encoder),
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": 0,
+            "audio_duration": None,
+            "size": 0,
+            "actual_bitrate": None,
+            "target_bitrate": cfg["bitrate"],
+            "decode_valid": False,
+            "decode_error": f"Encoding failed: {detail}",
+            "aac_path": None,
+            "ref_path": input_path
+        }
+
+def process_decoder_task(decoder, res_item, output_dir):
+    aac_path = res_item.get("aac_path")
+    ref_path = res_item.get("ref_path")
+    scenario_name = res_item["scenario"]
+    sample = res_item["filename"]
+
+    if not aac_path or not os.path.exists(aac_path):
+        return {
+            "tool": decoder.name,
+            "row_key": decoder_row_key(decoder),
+            "encoder_row_key": res_item["row_key"],
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": 0,
+            "audio_duration": None,
+            "decode_valid": False,
+            "decode_error": "Input bitstream missing",
+            "snr_db": None,
+            "alignment_delay_ms": None,
+            "peak_ram_kb": None,
+            "decoded_wav": None
+        }
+
+    output_filename = f"dec_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.wav".replace(" ", "_")
+    output_path = os.path.join(output_dir, output_filename)
+
+    cmd = decoder.get_decode_cmd(aac_path, output_path)
+
+    try:
+        retcode, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+
+        if retcode != 0:
+            raise subprocess.CalledProcessError(retcode, cmd, output=b"", stderr=b"Decoding process failed")
+
+        valid, decode_err = decode_validate(output_path)
+        snr_db = None
+        alignment_delay_ms = None
+        if valid and ref_path and os.path.exists(ref_path):
+            snr_db = compute_snr(ref_path, output_path)
+            _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+
+        audio_duration = ffmpeg_probe(ref_path) if ref_path else None
+
+        return {
+            "tool": decoder.name,
+            "row_key": decoder_row_key(decoder),
+            "encoder_row_key": res_item["row_key"],
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": duration,
+            "audio_duration": audio_duration,
+            "decode_valid": valid,
+            "decode_error": decode_err,
+            "snr_db": snr_db,
+            "alignment_delay_ms": alignment_delay_ms,
+            "peak_ram_kb": peak_ram_kb,
+            "decoded_wav": output_path
+        }
+    except Exception as e:
+        detail = str(e)
+        if isinstance(e, subprocess.CalledProcessError):
+            stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
+            if stderr_tail:
+                detail = f"exit code {e.returncode}: {stderr_tail}"
+        return {
+            "tool": decoder.name,
+            "row_key": decoder_row_key(decoder),
+            "encoder_row_key": res_item["row_key"],
+            "scenario": scenario_name,
+            "filename": sample,
+            "duration": 0,
+            "audio_duration": None,
+            "decode_valid": False,
+            "decode_error": f"Decoding failed: {detail}",
+            "snr_db": None,
+            "alignment_delay_ms": None,
+            "peak_ram_kb": None,
+            "decoded_wav": None
+        }
+
+def process_decoder_robustness_task(decoder, res_item, output_dir):
+    """Executes a dedicated robustness test on a deterministically corrupted ADTS bitstream."""
+    aac_path = res_item.get("aac_path")
+    scenario_name = res_item["scenario"]
+    sample = res_item["filename"]
+
+    if not aac_path or not os.path.exists(aac_path):
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
+
+    corrupt_filename = f"corrupt_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_")
+    corrupt_path = os.path.join(output_dir, corrupt_filename)
+    out_wav_filename = f"corrupt_out_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.wav".replace(" ", "_")
+    out_wav_path = os.path.join(output_dir, out_wav_filename)
+
+    if not corrupt_adts_bitstream(aac_path, corrupt_path, seed=42):
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
+
+    cmd = decoder.get_decode_cmd(corrupt_path, out_wav_path)
+    try:
+        res = subprocess.run(cmd, capture_output=True, check=False, timeout=10, env=decoder.get_run_env() or None)
+        # Crash-free robustness pass: decoder did not crash (signal/SEGFAULT) or hang
+        passed = (res.returncode >= 0)
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": passed}
+    except Exception:
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="FAAC Benchmark Suite - Codec Comparison & Leaderboard")
+    parser.add_argument("--mode", choices=["encoder", "decoder", "both"], default="both", help="Benchmarking mode: encoder, decoder, or both")
+    parser.add_argument("--faac-bin", action="append", help="Path to faac binary")
+    parser.add_argument("--faac-lib", action="append", help="Path to libfaac.so")
+    parser.add_argument("--faac-bin-version", action="append", help="Explicit version label for --faac-bin")
+    parser.add_argument("--fdkaac-bin", action="append", help="Path to fdkaac binary")
+    parser.add_argument("--aac-enc-bin", action="append", help="Path to aac-enc binary")
+    parser.add_argument("--falabaac-bin", action="append", help="Path to falabaac binary")
+    parser.add_argument("--faad-bin", action="append", help="Path to faad binary")
+    parser.add_argument("--faad-lib", action="append", help="Path to libfaad.so")
+    parser.add_argument("--faad-bin-version", action="append", help="Explicit version label for --faad-bin")
+    parser.add_argument("--ffmpeg-bin", action="append", help="Path to ffmpeg binary")
+    parser.add_argument("--afconvert-bin", action="append", help="Path to afconvert binary")
+    parser.add_argument("--opusenc-bin", action="append", help="Path to opusenc binary")
+    parser.add_argument("--lame-bin", action="append", help="Path to lame binary")
+    parser.add_argument("--include-other-codecs", action="store_true", help="Include non-AAC codecs (Opus, LAME)")
+    parser.add_argument("--output", default="leaderboard.md", help="Output Markdown file")
+    parser.add_argument("--results-json", default="comparison_results.json", help="Intermediate results JSON")
+    parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
+    parser.add_argument("--gate", action="store_true", help="Use the fast fixed gate subset")
+    parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
+    parser.add_argument("--skip-mos", action="store_true", help="Skip MOS calculation")
+    parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo coherence calculation")
+    parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity calculation")
+    parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid graph blocks")
+    parser.add_argument("--resume", action="store_true", help="Reload --results-json from previous run")
+
+    args = parser.parse_args()
+
+    external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
+    output_dir = os.path.join(SCRIPT_DIR, "output", "comparison")
+    os.makedirs(output_dir, exist_ok=True)
+
+    num_cpus = os.cpu_count() or 1
+
+    scenario_list = list(SCENARIOS.keys())
+    if args.scenarios:
+        scenario_list = expand_scenario_list(args.scenarios)
+
+    run_encoders = args.mode in ("encoder", "both")
+    run_decoders = args.mode in ("decoder", "both")
+
+    encoders = []
+    encoder_results = []
+
+    if run_encoders or (run_decoders and not os.path.exists(args.results_json)):
+        encoders = detect_encoders(args)
+        if not encoders and run_encoders:
+            print("No encoders detected!")
+            sys.exit(1)
+
+    if encoders:
+        print(f"Detected encoders: {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
+
+    if (args.resume or not run_encoders) and os.path.exists(args.results_json):
+        print(f"==> Loading bitstreams from {args.results_json}")
+        with open(args.results_json) as f:
+            encoder_results = json.load(f)
+    elif encoders:
+        for scenario_name in scenario_list:
+            if scenario_name not in SCENARIOS:
+                print(f"Scenario {scenario_name} not found in config, skipping.")
+                continue
+            cfg = SCENARIOS[scenario_name]
+            print(f"\n>>> Running Encoder Scenario: {scenario_name} ({cfg['bitrate']} kbps)")
+            data_dir = corpus_dir(cfg, external_data_dir)
+            if not os.path.exists(data_dir):
+                print(f"Data directory {data_dir} not found, skipping.")
+                continue
+
+            wavs = [f for f in os.listdir(data_dir) if f.endswith(".wav")]
+            all_samples = sorted(wavs) if args.gate else select_corpus_clips(
+                wavs, CORPORA.get(cfg["corpus"], {}))
+            if args.gate:
+                samples = gate_filter(scenario_name, all_samples)
+            else:
+                num_to_run = max(1, int(len(all_samples) * args.coverage / 100.0))
+                step = len(all_samples) / num_to_run if num_to_run > 0 else 1
+                samples = [all_samples[int(i * step)] for i in range(num_to_run)]
+
+            print(f"Processing {len(samples)} samples...")
+            channels = scenario_channels(cfg)
+            sample_rate = scenario_rate(cfg)
+
+            for encoder in encoders:
+                supported, reason = encoder.supports_scenario(cfg["bitrate"], channels, sample_rate)
+                if not supported:
+                    print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: {reason}.")
+                    continue
+
+                if encoder.profile in ("he", "hev2"):
+                    ok, cap_reason = probe_encoder_capability(encoder, bitrate_kbps=cfg["bitrate"], channels=channels, sample_rate=sample_rate)
+                    if not ok:
+                        print(f"  Skipping {encoder.name} ({profile_label(encoder.profile)}) for {scenario_name}: unsupported at {cfg['bitrate']} kbps ({cap_reason}).")
+                        continue
+
+                print(f"  Encoding with {encoder.name} ({profile_label(encoder.profile)})...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures = [executor.submit(process_encoder_task, encoder, scenario_name, cfg, sample, data_dir, output_dir) for sample in samples]
+                    for future in concurrent.futures.as_completed(futures):
+                        res = future.result()
+                        if res:
+                            encoder_results.append(res)
+
+        with open(args.results_json, "w") as f:
+            json.dump(encoder_results, f, indent=2)
+
+    # Phase 2 & 3 for Encoders if run_encoders
+    if run_encoders and encoder_results:
+        bridge_json = "bridge_results.json"
+        bridge_data = {"matrix": {}}
+        valid_count = 0
+        for i, res in enumerate(encoder_results):
+            if not res.get("aac_path") or not os.path.exists(res["aac_path"]):
+                continue
+            ext = os.path.splitext(res["aac_path"])[1] or ".m4a"
+            key = f"res_{res['row_key']}_{i}"
+            bridge_data["matrix"][key] = {
+                "scenario": res["scenario"],
+                "filename": res["filename"],
+                "aac": f"{key}{ext}",
+                "mos": None
+            }
+            dst_file = os.path.join(output_dir, f"{key}{ext}")
+            if not os.path.exists(dst_file):
+                shutil.copy(res["aac_path"], dst_file)
+            valid_count += 1
+
+        if valid_count > 0:
+            with open(bridge_json, "w") as f:
+                json.dump(bridge_data, f, indent=2)
+
+            if not args.skip_mos:
+                print("\n>>> Phase 2: Perceptual Quality (MOS) for Encoders")
+                phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
+                cmd_phase2 = [sys.executable, phase2_script, bridge_json, output_dir, external_data_dir]
+                subprocess.run(cmd_phase2, check=False)
+
+                if os.path.exists(bridge_json):
+                    with open(bridge_json) as f:
+                        updated_bridge = json.load(f)
+                    for i, res in enumerate(encoder_results):
+                        key = f"res_{res['row_key']}_{i}"
+                        if key in updated_bridge.get("matrix", {}):
+                            res["mos"] = updated_bridge["matrix"][key].get("mos")
+
+            if not args.skip_stereo:
+                print("\n>>> Phase 3: Stereo Coherence for Encoders")
+                if os.path.exists(bridge_json):
+                    phase3_script = os.path.join(SCRIPT_DIR, "phase3_stereo.py")
+                    cmd_phase3 = [sys.executable, phase3_script, bridge_json, output_dir, external_data_dir]
+                    subprocess.run(cmd_phase3, check=False)
+
+                    with open(bridge_json) as f:
+                        updated_bridge = json.load(f)
+                    for i, res in enumerate(encoder_results):
+                        key = f"res_{res['row_key']}_{i}"
+                        if key in updated_bridge.get("matrix", {}):
+                            res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
+
+            if not args.skip_transient:
+                print("\n>>> Phase 3: Transient Fidelity for Encoders")
+                if os.path.exists(bridge_json):
+                    score_transient_script = os.path.join(SCRIPT_DIR, "scripts", "score_transient.py")
+                    cmd_transient = [sys.executable, score_transient_script, bridge_json, output_dir, external_data_dir]
+                    subprocess.run(cmd_transient, check=False)
+
+                    with open(bridge_json) as f:
+                        updated_bridge = json.load(f)
+                    for i, res in enumerate(encoder_results):
+                        key = f"res_{res['row_key']}_{i}"
+                        if key in updated_bridge.get("matrix", {}):
+                            res["attack_centroid_ms"] = updated_bridge["matrix"][key].get("attack_centroid_ms")
+
+    # Decoder Benchmarking Phase
+    decoder_results = []
+    decoder_robustness_results = []
+    decoders = []
+    if run_decoders:
+        decoders = detect_decoders(args)
+        if not decoders:
+            print("No decoders detected!")
+            if not run_encoders:
+                sys.exit(1)
+        else:
+            print(f"Detected decoders: {', '.join(d.name for d in decoders)}")
+
+        valid_encoder_bitstreams = [r for r in encoder_results if r.get("decode_valid") and r.get("aac_path") and os.path.exists(r["aac_path"])]
+        if valid_encoder_bitstreams and decoders:
+            print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
+            for decoder in decoders:
+                print(f"  Decoding with {decoder.name}...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir) for item in valid_encoder_bitstreams]
+                    for future in concurrent.futures.as_completed(futures):
+                        res = future.result()
+                        if res:
+                            decoder_results.append(res)
+
+            print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
+            for decoder in decoders:
+                print(f"  Testing robustness for {decoder.name}...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in valid_encoder_bitstreams]
+                    for future in concurrent.futures.as_completed(futures):
+                        res = future.result()
+                        if res:
+                            decoder_robustness_results.append(res)
+
+            # Phase 2 MOS calculation for decoded WAVs if MOS is enabled
+            if not args.skip_mos and decoder_results:
+                print("\n>>> Phase 2: Perceptual Quality (MOS) for Decoders")
+                dec_bridge_data = {"matrix": {}}
+                valid_dec_count = 0
+                for i, res in enumerate(decoder_results):
+                    if not res.get("decoded_wav") or not os.path.exists(res["decoded_wav"]):
+                        continue
+                    key = f"dec_res_{res['row_key']}_{i}"
+                    dec_bridge_data["matrix"][key] = {
+                        "scenario": res["scenario"],
+                        "filename": res["filename"],
+                        "aac": os.path.basename(res["decoded_wav"]),
+                        "mos": None
+                    }
+                    valid_dec_count += 1
+
+                if valid_dec_count > 0:
+                    dec_bridge_json = "dec_bridge_results.json"
+                    with open(dec_bridge_json, "w") as f:
+                        json.dump(dec_bridge_data, f, indent=2)
+
+                    phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
+                    cmd_phase2 = [sys.executable, phase2_script, dec_bridge_json, output_dir, external_data_dir]
+                    subprocess.run(cmd_phase2, check=False)
+
+                    if os.path.exists(dec_bridge_json):
+                        with open(dec_bridge_json) as f:
+                            updated_bridge = json.load(f)
+                        for i, res in enumerate(decoder_results):
+                            key = f"dec_res_{res['row_key']}_{i}"
+                            if key in updated_bridge.get("matrix", {}):
+                                res["mos"] = updated_bridge["matrix"][key].get("mos")
+
+    # Final Leaderboard Generation
+    out_file = args.output
+    if run_encoders and run_decoders and decoders:
+        generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
+        dec_file = out_file.replace(".md", "_decoders.md") if out_file.endswith(".md") else out_file + "_decoders"
+        generate_decoder_leaderboard(decoders, decoder_results, dec_file, scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=encoder_results, robustness_results=decoder_robustness_results)
+
+        if os.path.exists(dec_file) and dec_file != out_file:
+            with open(dec_file) as f_dec:
+                dec_md = f_dec.read()
+            with open(out_file, "a") as f_main:
+                f_main.write("\n\n---\n\n" + dec_md)
+            try:
+                os.remove(dec_file)
+            except OSError:
+                pass
+    elif run_encoders:
+        generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
+    elif run_decoders and decoders:
+        generate_decoder_leaderboard(decoders, decoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs, robustness_results=decoder_robustness_results)
 
 if __name__ == "__main__":
     main()
