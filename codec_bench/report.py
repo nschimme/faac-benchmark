@@ -912,7 +912,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 1. Per-Scenario Average MOS
             f.write(f"##### Per-Scenario Average MOS ({fam_label})\n\n")
-            for p in ["lc", "he", "hev2", "standard"]:
+            for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["mos_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
                     continue
@@ -939,7 +939,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 2. Spec Conformance (SNR)
             f.write(f"##### Spec Conformance (Mean SNR - {fam_label})\n\n")
-            for p in ["lc", "he", "hev2", "standard"]:
+            for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["snr_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
                     continue
@@ -965,7 +965,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 3. Timing Alignment Delay
             f.write(f"##### Timing Alignment Delay (ms - {fam_label})\n\n")
-            for p in ["lc", "he", "hev2", "standard"]:
+            for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["delay_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
                     continue
@@ -991,7 +991,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 4. Decoding Speed
             f.write(f"##### Decoding Speed (xRT - {fam_label})\n\n")
-            for p in ["lc", "he", "hev2", "standard"]:
+            for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["speed_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
                     continue
