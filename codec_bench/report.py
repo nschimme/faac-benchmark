@@ -743,28 +743,64 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
         "valid_count": 0, "total_count": 0
     }))
 
+    p_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
+        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "snr_sum": 0, "snr_count": 0,
+        "delay_sum": 0, "delay_count": 0,
+        "ram_sum": 0, "ram_count": 0,
+        "speed_sum": 0, "speed_count": 0,
+        "valid_count": 0, "total_count": 0
+    })))
+
     for res in results:
         rk = res["row_key"]
         s = res["scenario"]
+        p = res.get("profile", "lc")
+
         stats[rk][s]["total_count"] += 1
+        p_stats[rk][p][s]["total_count"] += 1
+
         if res.get("decode_valid"):
             stats[rk][s]["valid_count"] += 1
+            p_stats[rk][p][s]["valid_count"] += 1
+
             if res.get("mos") is not None:
                 stats[rk][s]["mos_sum"] += res["mos"]
                 stats[rk][s]["mos_count"] += 1
                 stats[rk][s]["mos_min"] = min(stats[rk][s]["mos_min"], res["mos"])
+
+                p_stats[rk][p][s]["mos_sum"] += res["mos"]
+                p_stats[rk][p][s]["mos_count"] += 1
+                p_stats[rk][p][s]["mos_min"] = min(p_stats[rk][p][s]["mos_min"], res["mos"])
+
             if res.get("snr_db") is not None and res["snr_db"] != float("inf"):
                 stats[rk][s]["snr_sum"] += res["snr_db"]
                 stats[rk][s]["snr_count"] += 1
+
+                p_stats[rk][p][s]["snr_sum"] += res["snr_db"]
+                p_stats[rk][p][s]["snr_count"] += 1
+
             if res.get("alignment_delay_ms") is not None:
                 stats[rk][s]["delay_sum"] += abs(res["alignment_delay_ms"])
                 stats[rk][s]["delay_count"] += 1
+
+                p_stats[rk][p][s]["delay_sum"] += abs(res["alignment_delay_ms"])
+                p_stats[rk][p][s]["delay_count"] += 1
+
             if res.get("peak_ram_kb") is not None and res["peak_ram_kb"] > 0:
                 stats[rk][s]["ram_sum"] += res["peak_ram_kb"]
                 stats[rk][s]["ram_count"] += 1
+
+                p_stats[rk][p][s]["ram_sum"] += res["peak_ram_kb"]
+                p_stats[rk][p][s]["ram_count"] += 1
+
             if res.get("duration", 0) > 0 and res.get("audio_duration"):
-                stats[rk][s]["speed_sum"] += res["audio_duration"] / res["duration"]
+                spd = res["audio_duration"] / res["duration"]
+                stats[rk][s]["speed_sum"] += spd
                 stats[rk][s]["speed_count"] += 1
+
+                p_stats[rk][p][s]["speed_sum"] += spd
+                p_stats[rk][p][s]["speed_count"] += 1
 
     rob_stats = defaultdict(lambda: {"passed": 0, "total": 0})
     if robustness_results:
@@ -876,85 +912,109 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 1. Per-Scenario Average MOS
             f.write(f"##### Per-Scenario Average MOS ({fam_label})\n\n")
-            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
-            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
-            for s_name in fam_scenarios:
-                row_str = f"| {s_name} |"
-                valid_mos = [stats[rk][s_name]["mos_sum"] / stats[rk][s_name]["mos_count"] for rk in sorted_rk if stats[rk][s_name]["mos_count"] > 0]
-                best_m = max(valid_mos) if valid_mos else None
-                for rk in sorted_rk:
-                    st = stats[rk][s_name]
-                    if st["mos_count"] > 0:
-                        avg_m = st["mos_sum"] / st["mos_count"]
-                        is_best = best_m and abs(avg_m - best_m) < 1e-6
-                        p_bar = make_progress_bar(avg_m, 5.0)
-                        cell = f" **{avg_m:.3f}**{p_bar}" if is_best else f" {avg_m:.3f}{p_bar}"
-                        row_str += f"{cell} |"
-                    else:
-                        row_str += " N/A |"
-                f.write(row_str + "\n")
-            f.write("\n")
+            for p in ["lc", "he", "hev2", "standard"]:
+                p_has_data = any(p_stats[rk][p][s_name]["mos_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
+
+                f.write(f"###### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+                f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+                for s_name in fam_scenarios:
+                    row_str = f"| {s_name} |"
+                    valid_mos = [p_stats[rk][p][s_name]["mos_sum"] / p_stats[rk][p][s_name]["mos_count"] for rk in sorted_rk if p_stats[rk][p][s_name]["mos_count"] > 0]
+                    best_m = max(valid_mos) if valid_mos else None
+                    for rk in sorted_rk:
+                        st = p_stats[rk][p][s_name]
+                        if st["mos_count"] > 0:
+                            avg_m = st["mos_sum"] / st["mos_count"]
+                            is_best = best_m and abs(avg_m - best_m) < 1e-6
+                            p_bar = make_progress_bar(avg_m, 5.0)
+                            cell = f" **{avg_m:.3f}**{p_bar}" if is_best else f" {avg_m:.3f}{p_bar}"
+                            row_str += f"{cell} |"
+                        else:
+                            row_str += " N/A |"
+                    f.write(row_str + "\n")
+                f.write("\n")
 
             # 2. Spec Conformance (SNR)
             f.write(f"##### Spec Conformance (Mean SNR - {fam_label})\n\n")
-            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
-            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
-            for s_name in fam_scenarios:
-                row_str = f"| {s_name} |"
-                valid_snr = [stats[rk][s_name]["snr_sum"] / stats[rk][s_name]["snr_count"] for rk in sorted_rk if stats[rk][s_name]["snr_count"] > 0]
-                best_snr = max(valid_snr) if valid_snr else None
-                for rk in sorted_rk:
-                    st = stats[rk][s_name]
-                    if st["snr_count"] > 0:
-                        avg_snr = st["snr_sum"] / st["snr_count"]
-                        is_best = best_snr and abs(avg_snr - best_snr) < 1e-6
-                        cell = f" **{avg_snr:.1f} dB**" if is_best else f" {avg_snr:.1f} dB"
-                        row_str += f"{cell} |"
-                    else:
-                        row_str += " Bit-Exact / N/A |"
-                f.write(row_str + "\n")
-            f.write("\n")
+            for p in ["lc", "he", "hev2", "standard"]:
+                p_has_data = any(p_stats[rk][p][s_name]["snr_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
+
+                f.write(f"###### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+                f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+                for s_name in fam_scenarios:
+                    row_str = f"| {s_name} |"
+                    valid_snr = [p_stats[rk][p][s_name]["snr_sum"] / p_stats[rk][p][s_name]["snr_count"] for rk in sorted_rk if p_stats[rk][p][s_name]["snr_count"] > 0]
+                    best_snr = max(valid_snr) if valid_snr else None
+                    for rk in sorted_rk:
+                        st = p_stats[rk][p][s_name]
+                        if st["snr_count"] > 0:
+                            avg_snr = st["snr_sum"] / st["snr_count"]
+                            is_best = best_snr and abs(avg_snr - best_snr) < 1e-6
+                            cell = f" **{avg_snr:.1f} dB**" if is_best else f" {avg_snr:.1f} dB"
+                            row_str += f"{cell} |"
+                        else:
+                            row_str += " Bit-Exact / N/A |"
+                    f.write(row_str + "\n")
+                f.write("\n")
 
             # 3. Timing Alignment Delay
             f.write(f"##### Timing Alignment Delay (ms - {fam_label})\n\n")
-            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
-            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
-            for s_name in fam_scenarios:
-                row_str = f"| {s_name} |"
-                valid_del = [stats[rk][s_name]["delay_sum"] / stats[rk][s_name]["delay_count"] for rk in sorted_rk if stats[rk][s_name]["delay_count"] > 0]
-                best_del = min(valid_del) if valid_del else None
-                for rk in sorted_rk:
-                    st = stats[rk][s_name]
-                    if st["delay_count"] > 0:
-                        avg_del = st["delay_sum"] / st["delay_count"]
-                        is_best = best_del is not None and abs(avg_del - best_del) < 1e-6
-                        cell = f" **{avg_del:.2f} ms**" if is_best else f" {avg_del:.2f} ms"
-                        row_str += f"{cell} |"
-                    else:
-                        row_str += " N/A |"
-                f.write(row_str + "\n")
-            f.write("\n")
+            for p in ["lc", "he", "hev2", "standard"]:
+                p_has_data = any(p_stats[rk][p][s_name]["delay_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
+
+                f.write(f"###### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+                f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+                for s_name in fam_scenarios:
+                    row_str = f"| {s_name} |"
+                    valid_del = [p_stats[rk][p][s_name]["delay_sum"] / p_stats[rk][p][s_name]["delay_count"] for rk in sorted_rk if p_stats[rk][p][s_name]["delay_count"] > 0]
+                    best_del = min(valid_del) if valid_del else None
+                    for rk in sorted_rk:
+                        st = p_stats[rk][p][s_name]
+                        if st["delay_count"] > 0:
+                            avg_del = st["delay_sum"] / st["delay_count"]
+                            is_best = best_del is not None and abs(avg_del - best_del) < 1e-6
+                            cell = f" **{avg_del:.2f} ms**" if is_best else f" {avg_del:.2f} ms"
+                            row_str += f"{cell} |"
+                        else:
+                            row_str += " N/A |"
+                    f.write(row_str + "\n")
+                f.write("\n")
 
             # 4. Decoding Speed
             f.write(f"##### Decoding Speed (xRT - {fam_label})\n\n")
-            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
-            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
-            for s_name in fam_scenarios:
-                row_str = f"| {s_name} |"
-                valid_spd = [stats[rk][s_name]["speed_sum"] / stats[rk][s_name]["speed_count"] for rk in sorted_rk if stats[rk][s_name]["speed_count"] > 0]
-                best_spd = max(valid_spd) if valid_spd else None
-                for rk in sorted_rk:
-                    st = stats[rk][s_name]
-                    if st["speed_count"] > 0:
-                        avg_spd = st["speed_sum"] / st["speed_count"]
-                        is_best = best_spd and abs(avg_spd - best_spd) < 1e-6
-                        p_bar = make_progress_bar(avg_spd, best_spd or avg_spd)
-                        cell = f" **{avg_spd:.1f}x**{p_bar}" if is_best else f" {avg_spd:.1f}x{p_bar}"
-                        row_str += f"{cell} |"
-                    else:
-                        row_str += " N/A |"
-                f.write(row_str + "\n")
-            f.write("\n")
+            for p in ["lc", "he", "hev2", "standard"]:
+                p_has_data = any(p_stats[rk][p][s_name]["speed_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
+                if not p_has_data:
+                    continue
+
+                f.write(f"###### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+                f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+                for s_name in fam_scenarios:
+                    row_str = f"| {s_name} |"
+                    valid_spd = [p_stats[rk][p][s_name]["speed_sum"] / p_stats[rk][p][s_name]["speed_count"] for rk in sorted_rk if p_stats[rk][p][s_name]["speed_count"] > 0]
+                    best_spd = max(valid_spd) if valid_spd else None
+                    for rk in sorted_rk:
+                        st = p_stats[rk][p][s_name]
+                        if st["speed_count"] > 0:
+                            avg_spd = st["speed_sum"] / st["speed_count"]
+                            is_best = best_spd and abs(avg_spd - best_spd) < 1e-6
+                            p_bar = make_progress_bar(avg_spd, best_spd or avg_spd)
+                            cell = f" **{avg_spd:.1f}x**{p_bar}" if is_best else f" {avg_spd:.1f}x{p_bar}"
+                            row_str += f"{cell} |"
+                        else:
+                            row_str += " N/A |"
+                    f.write(row_str + "\n")
+                f.write("\n")
 
         if not skip_graphs and sorted_rk:
             f.write("\n### Decoder Efficiency & Footprint\n\n")
