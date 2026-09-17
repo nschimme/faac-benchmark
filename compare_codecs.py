@@ -857,7 +857,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     with open(output_path, "w") as f:
         f.write(title_str)
         if has_decoders:
-            nav_links = ["[🎧 Encoder Rankings](#overall-rankings)", "[🔊 Decoder Rankings](#-decoder-leaderboard)"]
+            nav_links = ["[🎧 Encoder Rankings](#overall-rankings)", "[🔊 Decoder Rankings](#decoder-leaderboard)"]
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("## Overall Rankings\n\n")
@@ -1460,7 +1460,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
     with open(output_path, "w") as f:
         if not run_encoders_leaderboard:
             f.write("# AAC Leaderboard\n\n")
-            nav_links = ["[📊 Decoder Rankings](#-decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
+            nav_links = ["[📊 Decoder Rankings](#decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
 
         f.write("## 🔊 Decoder Leaderboard\n\n")

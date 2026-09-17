@@ -189,23 +189,45 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
         return None, None
 
 def measure_peak_ram(cmd, env=None, check=False):
-    """Runs a command, captures stdout/stderr, and measures peak Resident Set Size (Max RSS in KB).
+    """Runs a command in an isolated child process to accurately measure peak Resident Set Size (Max RSS in KB).
 
     Returns (CompletedProcess, duration, max_rss_kb).
     """
     t_start = time.perf_counter()
     try:
         if sys.platform != "win32":
-            import resource
-            usage_start = resource.getrusage(resource.RUSAGE_CHILDREN)
-            res = subprocess.run(cmd, capture_output=True, check=check, env=env)
+            # Spawn a clean sub-runner python process so RUSAGE_CHILDREN measures only this single process
+            runner_script = (
+                "import subprocess, resource, sys\n"
+                "res = subprocess.run(sys.argv[1:], capture_output=True)\n"
+                "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+                "if sys.platform == 'darwin':\n"
+                "    rss = int(rss / 1024)\n"
+                "sys.stderr.write('__RSS__:' + str(rss) + '\\n')\n"
+                "sys.stdout.buffer.write(res.stdout)\n"
+                "sys.stderr.buffer.write(res.stderr)\n"
+                "sys.exit(res.returncode)\n"
+            )
+            runner_cmd = [sys.executable, "-c", runner_script] + cmd
+            proc = subprocess.run(runner_cmd, capture_output=True, env=env)
             t_end = time.perf_counter()
             duration = t_end - t_start
-            usage_end = resource.getrusage(resource.RUSAGE_CHILDREN)
 
-            rss = usage_end.ru_maxrss
-            if sys.platform == "darwin":
-                rss = int(rss / 1024)
+            rss = None
+            stderr_clean = []
+            for line in proc.stderr.splitlines():
+                if line.startswith(b"__RSS__:"):
+                    try:
+                        rss = int(line.split(b":", 1)[1].strip())
+                    except Exception:
+                        pass
+                else:
+                    stderr_clean.append(line)
+
+            clean_stderr = b"\n".join(stderr_clean)
+            res = subprocess.CompletedProcess(cmd, returncode=proc.returncode, stdout=proc.stdout, stderr=clean_stderr)
+            if check and res.returncode != 0:
+                raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
             return res, duration, rss
         else:
             res = subprocess.run(cmd, capture_output=True, check=check, env=env)
