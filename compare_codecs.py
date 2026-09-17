@@ -1505,10 +1505,9 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 else:
                     row_str += " N/A |"
             f.write(row_str + "\n")
-        f.write("\n</details>\n\n")
 
         if not skip_graphs and sorted_rk:
-            f.write("### Decoder Efficiency & Footprint\n\n")
+            f.write("\n### Decoder Efficiency & Footprint\n\n")
             labels = [f'"{overall[rk]["tool"]}"' for rk in sorted_rk]
             speeds = [f"{overall[rk]['avg_speed']:.1f}" for rk in sorted_rk]
             max_s = max([overall[rk]['avg_speed'] for rk in sorted_rk] + [1.0])
@@ -1521,6 +1520,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_s * 1.25) + 1}\n')
             f.write(f"    bar [{', '.join(speeds)}]\n")
             f.write("```\n\n")
+
+        f.write("\n</details>\n\n")
 
     print(f"\nDecoder leaderboard generated at: {output_path}")
 

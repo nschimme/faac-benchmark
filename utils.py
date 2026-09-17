@@ -204,6 +204,7 @@ def measure_peak_ram(cmd, env=None, check=False):
                 "if sys.platform == 'darwin':\n"
                 "    rss = int(rss / 1024)\n"
                 "sys.stderr.write('__RSS__:' + str(rss) + '\\n')\n"
+                "sys.stderr.flush()\n"
                 "sys.stdout.buffer.write(res.stdout)\n"
                 "sys.stderr.buffer.write(res.stderr)\n"
                 "sys.exit(res.returncode)\n"
