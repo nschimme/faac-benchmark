@@ -96,6 +96,14 @@ class AFConvertDecoder(Decoder):
         return [self.binary_path, "-f", "WAVE", "-d", "LEI16", input_path, output_path]
 
 
+class HelixAACDecoder(Decoder):
+    def __init__(self, name, binary_path, tool_id="helix_aac"):
+        super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, input_path, output_path]
+
+
 def detect_decoders(args):
     decoders = []
     existing_names = set()
@@ -138,6 +146,28 @@ def detect_decoders(args):
         ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_name_and_id("Apple AudioToolbox", ver, "afconvert", existing_names, existing_ids)
         decoders.append(AFConvertDecoder(name, afconvert_bin, tool_id))
+
+    helix_bins = flatten_arg_list(getattr(args, "helix_bin", None))
+    if not helix_bins:
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_bin = os.path.join(script_root, "bin", "helix-aac-dec")
+        if os.path.exists(default_bin):
+            helix_bins = [default_bin]
+        else:
+            build_script = os.path.join(script_root, "scripts", "build_helix_aac.sh")
+            if os.path.exists(build_script):
+                try:
+                    res = subprocess.run([build_script], capture_output=True, text=True, timeout=60)
+                    if res.returncode == 0 and res.stdout.strip() and os.path.exists(res.stdout.strip()):
+                        helix_bins = [res.stdout.strip()]
+                except Exception:
+                    pass
+
+    for h_bin in helix_bins:
+        if os.path.exists(h_bin):
+            ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
+            name, tool_id = make_unique_name_and_id("Helix AAC", ver or "1.0", "helix_aac", existing_names, existing_ids)
+            decoders.append(HelixAACDecoder(name, h_bin, tool_id))
 
     return decoders
 

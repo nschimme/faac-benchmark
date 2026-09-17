@@ -863,20 +863,98 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
         f.write('\n<a name="per-scenario-decoder-breakdowns"></a>\n')
         f.write("<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
-        f.write("### Per-Scenario Decoder Breakdown\n\n")
-        f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
-        f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+        f.write("### Detailed Per-Scenario Decoder Breakdowns\n\n")
 
-        for s_name in sorted(scenario_list, key=get_scenario_sort_key):
-            row_str = f"| {s_name} |"
-            for rk in sorted_rk:
-                st = stats[rk][s_name]
-                if st["mos_count"] > 0:
-                    avg_m = st["mos_sum"] / st["mos_count"]
-                    row_str += f" {avg_m:.3f} |"
-                else:
-                    row_str += " N/A |"
-            f.write(row_str + "\n")
+        present_families = scenario_families(scenario_list)
+        for fam in present_families:
+            fam_label = family_label(fam)
+            fam_scenarios = [s for s in scenario_list if scenario_family(s) == fam]
+            if not fam_scenarios:
+                continue
+
+            f.write(f"#### {fam_label}\n\n")
+
+            # 1. Per-Scenario Average MOS
+            f.write(f"##### Per-Scenario Average MOS ({fam_label})\n\n")
+            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+            for s_name in fam_scenarios:
+                row_str = f"| {s_name} |"
+                valid_mos = [stats[rk][s_name]["mos_sum"] / stats[rk][s_name]["mos_count"] for rk in sorted_rk if stats[rk][s_name]["mos_count"] > 0]
+                best_m = max(valid_mos) if valid_mos else None
+                for rk in sorted_rk:
+                    st = stats[rk][s_name]
+                    if st["mos_count"] > 0:
+                        avg_m = st["mos_sum"] / st["mos_count"]
+                        is_best = best_m and abs(avg_m - best_m) < 1e-6
+                        p_bar = make_progress_bar(avg_m, 5.0)
+                        cell = f" **{avg_m:.3f}**{p_bar}" if is_best else f" {avg_m:.3f}{p_bar}"
+                        row_str += f"{cell} |"
+                    else:
+                        row_str += " N/A |"
+                f.write(row_str + "\n")
+            f.write("\n")
+
+            # 2. Spec Conformance (SNR)
+            f.write(f"##### Spec Conformance (Mean SNR - {fam_label})\n\n")
+            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+            for s_name in fam_scenarios:
+                row_str = f"| {s_name} |"
+                valid_snr = [stats[rk][s_name]["snr_sum"] / stats[rk][s_name]["snr_count"] for rk in sorted_rk if stats[rk][s_name]["snr_count"] > 0]
+                best_snr = max(valid_snr) if valid_snr else None
+                for rk in sorted_rk:
+                    st = stats[rk][s_name]
+                    if st["snr_count"] > 0:
+                        avg_snr = st["snr_sum"] / st["snr_count"]
+                        is_best = best_snr and abs(avg_snr - best_snr) < 1e-6
+                        cell = f" **{avg_snr:.1f} dB**" if is_best else f" {avg_snr:.1f} dB"
+                        row_str += f"{cell} |"
+                    else:
+                        row_str += " Bit-Exact / N/A |"
+                f.write(row_str + "\n")
+            f.write("\n")
+
+            # 3. Timing Alignment Delay
+            f.write(f"##### Timing Alignment Delay (ms - {fam_label})\n\n")
+            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+            for s_name in fam_scenarios:
+                row_str = f"| {s_name} |"
+                valid_del = [stats[rk][s_name]["delay_sum"] / stats[rk][s_name]["delay_count"] for rk in sorted_rk if stats[rk][s_name]["delay_count"] > 0]
+                best_del = min(valid_del) if valid_del else None
+                for rk in sorted_rk:
+                    st = stats[rk][s_name]
+                    if st["delay_count"] > 0:
+                        avg_del = st["delay_sum"] / st["delay_count"]
+                        is_best = best_del is not None and abs(avg_del - best_del) < 1e-6
+                        cell = f" **{avg_del:.2f} ms**" if is_best else f" {avg_del:.2f} ms"
+                        row_str += f"{cell} |"
+                    else:
+                        row_str += " N/A |"
+                f.write(row_str + "\n")
+            f.write("\n")
+
+            # 4. Decoding Speed
+            f.write(f"##### Decoding Speed (xRT - {fam_label})\n\n")
+            f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
+            f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
+            for s_name in fam_scenarios:
+                row_str = f"| {s_name} |"
+                valid_spd = [stats[rk][s_name]["speed_sum"] / stats[rk][s_name]["speed_count"] for rk in sorted_rk if stats[rk][s_name]["speed_count"] > 0]
+                best_spd = max(valid_spd) if valid_spd else None
+                for rk in sorted_rk:
+                    st = stats[rk][s_name]
+                    if st["speed_count"] > 0:
+                        avg_spd = st["speed_sum"] / st["speed_count"]
+                        is_best = best_spd and abs(avg_spd - best_spd) < 1e-6
+                        p_bar = make_progress_bar(avg_spd, best_spd or avg_spd)
+                        cell = f" **{avg_spd:.1f}x**{p_bar}" if is_best else f" {avg_spd:.1f}x{p_bar}"
+                        row_str += f"{cell} |"
+                    else:
+                        row_str += " N/A |"
+                f.write(row_str + "\n")
+            f.write("\n")
 
         if not skip_graphs and sorted_rk:
             f.write("\n### Decoder Efficiency & Footprint\n\n")

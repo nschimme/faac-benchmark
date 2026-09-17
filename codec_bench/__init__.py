@@ -18,7 +18,7 @@ from codec_bench.encoders import (
 
 from codec_bench.decoders import (
     decoder_row_key, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder,
-    detect_decoders, process_decoder_task, process_decoder_robustness_task
+    HelixAACDecoder, detect_decoders, process_decoder_task, process_decoder_robustness_task
 )
 
 from codec_bench.report import (

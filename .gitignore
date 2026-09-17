@@ -7,6 +7,14 @@ env/
 venv/
 ENV/
 
+# Build artifacts & binaries
+*.o
+bin/
+build/
+*.so
+*.dylib
+*.a
+
 # Benchmark Assets
 results/
 output/

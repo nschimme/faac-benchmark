@@ -110,9 +110,9 @@ class FAACEncoder(Encoder):
         self.legacy = is_faac_legacy(binary_path, lib_override=lib_override)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        cmd = [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path]
+        cmd = [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "-o", output_path]
         if not self.legacy:
-            obj_type = "he-aac" if self.profile == "he" else "lc"
+            obj_type = "he-aac-v1" if self.profile == "he" else "lc"
             cmd.extend(["--object-type", obj_type])
         cmd.append(input_path)
         return cmd
