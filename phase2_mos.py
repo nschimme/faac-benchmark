@@ -240,27 +240,31 @@ except Exception:
 def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     """Score an already-converted ref/deg WAV pair.
 
-    Speech mode uses visqol-python (16 kHz mono) when available, falling back
-    to Zimtohrli (48 kHz resampled). Audio mode uses Zimtohrli directly.
+    Speech mode strictly uses visqol-python (16 kHz mono); audio mode strictly
+    uses Zimtohrli (48 kHz). The engine is chosen by the scenario's mode ALONE
+    to prevent mixing different metric scale distributions.
     Returns (mos, backend_used); mos is None on failure."""
     try:
-        if mode_str == "speech" and HAS_VISQOL_PYTHON:
-            try:
-                api = get_process_visqol_python("speech")
-                if api:
-                    with tempfile.TemporaryDirectory() as td:
-                        v_ref_16k = os.path.join(td, "v_ref_16k.wav")
-                        v_deg_16k = os.path.join(td, "v_deg_16k.wav")
-                        if wav_conv(v_ref, v_ref_16k, rate=16000, channels=1) and \
-                           wav_conv(v_deg, v_deg_16k, rate=16000, channels=1):
-                            result = api.measure(v_ref_16k, v_deg_16k)
-                            mos_v = float(result.moslqo)
-                            if not math.isnan(mos_v):
-                                return mos_v, "visqol-python"
-            except Exception as e:
-                print(f"  visqol-python speech evaluation failed: {e}, falling back to zimtohrli")
+        if mode_str == "speech":
+            if HAS_VISQOL_PYTHON:
+                try:
+                    api = get_process_visqol_python("speech")
+                    if api:
+                        with tempfile.TemporaryDirectory() as td:
+                            v_ref_16k = os.path.join(td, "v_ref_16k.wav")
+                            v_deg_16k = os.path.join(td, "v_deg_16k.wav")
+                            if wav_conv(v_ref, v_ref_16k, rate=16000, channels=1) and \
+                               wav_conv(v_deg, v_deg_16k, rate=16000, channels=1):
+                                result = api.measure(v_ref_16k, v_deg_16k)
+                                mos_v = float(result.moslqo)
+                                if not math.isnan(mos_v):
+                                    return mos_v, "visqol-python"
+                except Exception as e:
+                    print(f"  visqol-python speech evaluation failed: {e}")
+            print("  ERROR: visqol-python is required for speech-mode scoring but not available.")
+            return None, "visqol-python"
 
-        # Audio mode or speech fallback: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
+        # Audio mode: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
         if HAS_ZIMTOHRLI:
             try:
                 env = dict(os.environ)
