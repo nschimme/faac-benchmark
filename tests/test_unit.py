@@ -1074,7 +1074,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
                 content = f.read()
 
             self.assertIn("# AAC Encoder Leaderboard", content)
-            self.assertIn("## Overall Rankings", content)
+            self.assertIn("### Overall Encoder Rankings", content)
             self.assertIn("## Per-Scenario Breakdown & Visualizations", content)
             self.assertIn("xychart-beta", content)
             self.assertIn("#### Per-Scenario Average MOS", content)

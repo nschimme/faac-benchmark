@@ -80,7 +80,7 @@ class TestCompareDecoders(unittest.TestCase):
             self.assertTrue(os.path.exists(out_md))
             with open(out_md) as f:
                 text = f.read()
-                self.assertIn("# AAC Leaderboard", text)
+                self.assertIn("# 🔊 AAC Decoder Leaderboard", text)
                 self.assertIn("FAAD2", text)
                 self.assertIn("25.5 dB", text)
 

@@ -855,12 +855,22 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     title_str = "# Audio Encoder Leaderboard\n\n" if has_non_aac else "# AAC Encoder Leaderboard\n\n"
 
     with open(output_path, "w") as f:
-        f.write(title_str)
         if has_decoders:
-            nav_links = ["[🎧 Encoder Rankings](#overall-rankings)", "[🔊 Decoder Rankings](#decoder-leaderboard)"]
+            f.write("# 🎛️ Audio Codec Leaderboard\n\n")
+            nav_links = [
+                "[🎙️ Encoder Rankings](#encoder-leaderboard)",
+                "[🔊 Decoder Rankings](#decoder-leaderboard)",
+                "[📋 Encoder Breakdowns](#per-scenario-encoder-breakdowns)",
+                "[📋 Decoder Breakdowns](#per-scenario-decoder-breakdowns)"
+            ]
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
+            f.write('<a name="encoder-leaderboard"></a>\n')
+            f.write("## 🎙️ Encoder Leaderboard\n\n")
+        else:
+            f.write(title_str)
+
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
-        f.write("## Overall Rankings\n\n")
+        f.write("### Overall Encoder Rankings\n\n")
         # Overall MOS is a mean of per-scenario means, so the scenario set is
         # part of the number: adding or removing a family shifts every
         # encoder's absolute score even though nothing about the encoders
@@ -1048,7 +1058,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             if table_used_strikethrough:
                 f.write("_\\* Italicized scores indicate sub-optimal profile performance superseded by another profile from the same encoder at this bitrate._\n\n")
 
-        f.write("\n<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
+        f.write('\n<a name="per-scenario-encoder-breakdowns"></a>\n')
+        f.write("<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
         f.write("## Per-Scenario Breakdown & Visualizations\n\n")
 
         # 1-3. Quality per rate family.
@@ -1459,10 +1470,11 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w") as f:
         if not run_encoders_leaderboard:
-            f.write("# AAC Leaderboard\n\n")
-            nav_links = ["[📊 Decoder Rankings](#decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
+            f.write("# 🔊 AAC Decoder Leaderboard\n\n")
+            nav_links = ["[📊 Decoder Rankings](#decoder-leaderboard)", "[📋 Decoder Breakdowns](#per-scenario-decoder-breakdowns)"]
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
 
+        f.write('<a name="decoder-leaderboard"></a>\n')
         f.write("## 🔊 Decoder Leaderboard\n\n")
         f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Quality (MOS), Timing Alignment Error, Robustness, Speed, and Footprint.\n\n")
 
@@ -1490,7 +1502,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {delay_str} | {rob_str} | {s_str} | {ram_str} | {rom_str} |\n")
 
-        f.write("\n<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
+        f.write('\n<a name="per-scenario-decoder-breakdowns"></a>\n')
+        f.write("<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
         f.write("### Per-Scenario Decoder Breakdown\n\n")
         f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
         f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
