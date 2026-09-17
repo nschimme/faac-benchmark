@@ -115,8 +115,6 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
         file_pairs = []
         valid_keys = []
         for key, entry, info in speech_items:
-            v_rate = info["v_rate"]
-            v_channels = info["v_channels"]
             ref_input_path = info["ref_input_path"]
             aac_path = info["aac_path"]
 
@@ -124,8 +122,8 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                 v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
                 v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
 
-                if wav_conv(ref_input_path, v_ref, v_rate, v_channels) and \
-                   wav_conv(aac_path, v_deg, v_rate, v_channels):
+                if wav_conv(ref_input_path, v_ref, 16000, 1) and \
+                   wav_conv(aac_path, v_deg, 16000, 1):
                     file_pairs.append((v_ref, v_deg))
                     valid_keys.append(key)
 
@@ -136,7 +134,9 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                     if isinstance(result, Exception):
                         print(f"    Error for {key} in batch: {result}")
                     else:
-                        results[key] = (float(result.moslqo), "visqol-python")
+                        mos_v = float(result.moslqo)
+                        if not math.isnan(mos_v):
+                            results[key] = (mos_v, "visqol-python")
             except Exception as e:
                 print(f"    Batch execution failed for speech: {e}")
 
@@ -248,8 +248,15 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
             try:
                 api = get_process_visqol_python("speech")
                 if api:
-                    result = api.measure(v_ref, v_deg)
-                    return float(result.moslqo), "visqol-python"
+                    with tempfile.TemporaryDirectory() as td:
+                        v_ref_16k = os.path.join(td, "v_ref_16k.wav")
+                        v_deg_16k = os.path.join(td, "v_deg_16k.wav")
+                        if wav_conv(v_ref, v_ref_16k, rate=16000, channels=1) and \
+                           wav_conv(v_deg, v_deg_16k, rate=16000, channels=1):
+                            result = api.measure(v_ref_16k, v_deg_16k)
+                            mos_v = float(result.moslqo)
+                            if not math.isnan(mos_v):
+                                return mos_v, "visqol-python"
             except Exception as e:
                 print(f"  visqol-python speech evaluation failed: {e}, falling back to zimtohrli")
 
