@@ -188,54 +188,40 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
     except Exception:
         return None, None
 
-def measure_peak_ram(cmd, env=None):
-    """Runs a command and measures peak Resident Set Size (Max RSS in KB).
+def measure_peak_ram(cmd, env=None, check=False):
+    """Runs a command, captures stdout/stderr, and measures peak Resident Set Size (Max RSS in KB).
 
-    Returns (returncode, duration, max_rss_kb).
+    Returns (CompletedProcess, duration, max_rss_kb).
     """
     t_start = time.perf_counter()
     try:
-        time_bin = shutil.which("time")
-        if time_bin and sys.platform != "win32":
-            with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tf:
-                tmp_time_file = tf.name
-            try:
-                full_cmd = [time_bin, "-v", "-o", tmp_time_file] + cmd
-                res = subprocess.run(full_cmd, capture_output=True, env=env)
-                t_end = time.perf_counter()
-                duration = t_end - t_start
+        if sys.platform != "win32":
+            import resource
+            usage_start = resource.getrusage(resource.RUSAGE_CHILDREN)
+            res = subprocess.run(cmd, capture_output=True, check=check, env=env)
+            t_end = time.perf_counter()
+            duration = t_end - t_start
+            usage_end = resource.getrusage(resource.RUSAGE_CHILDREN)
 
-                max_rss_kb = None
-                if os.path.exists(tmp_time_file):
-                    with open(tmp_time_file, "r") as tf:
-                        content = tf.read()
-                    m = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", content)
-                    if m:
-                        max_rss_kb = int(m.group(1))
-                return res.returncode, duration, max_rss_kb
-            finally:
-                if os.path.exists(tmp_time_file):
-                    os.unlink(tmp_time_file)
-
-        import resource
-        usage_start = resource.getrusage(resource.RUSAGE_CHILDREN)
-        res = subprocess.run(cmd, capture_output=True, env=env)
+            rss = usage_end.ru_maxrss
+            if sys.platform == "darwin":
+                rss = int(rss / 1024)
+            return res, duration, rss
+        else:
+            res = subprocess.run(cmd, capture_output=True, check=check, env=env)
+            t_end = time.perf_counter()
+            return res, t_end - t_start, None
+    except Exception as e:
         t_end = time.perf_counter()
-        duration = t_end - t_start
-        usage_end = resource.getrusage(resource.RUSAGE_CHILDREN)
-
-        rss = usage_end.ru_maxrss
-        if sys.platform == "darwin":
-            rss = int(rss / 1024)
-        return res.returncode, duration, rss
-    except Exception:
-        t_end = time.perf_counter()
-        return -1, t_end - t_start, None
+        if check and isinstance(e, subprocess.CalledProcessError):
+            raise e
+        dummy_res = subprocess.CompletedProcess(cmd, returncode=-1, stdout=b"", stderr=str(e).encode())
+        return dummy_res, t_end - t_start, None
 
 def corrupt_adts_bitstream(input_path, output_path, seed=42):
-    """Deterministically corrupts an ADTS AAC bitstream file.
+    """Deterministically corrupts an audio bitstream file (ADTS .aac or MP4 .m4a).
 
-    Emulates frame drops (5% probability) and bit flips in audio payloads
+    Emulates frame/packet drops (5% probability) and bit flips in audio payloads
     using a fixed seed PRNG for 100% reproducible robustness tests.
     """
     import random
@@ -256,32 +242,52 @@ def corrupt_adts_bitstream(input_path, output_path, seed=42):
     i = 0
     n = len(data)
 
-    while i < n:
-        if i + 7 <= n and data[i] == 0xFF and (data[i + 1] & 0xF6) == 0xF0:
-            flen = ((data[i + 3] & 3) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
-            if flen <= 0 or i + flen > n:
-                out_data.extend(data[i:])
-                break
+    # Check if file starts with ADTS syncword (0xFFF)
+    is_adts = (data[0] == 0xFF and (data[1] & 0xF6) == 0xF0)
 
-            frame_data = bytearray(data[i:i + flen])
+    if is_adts:
+        while i < n:
+            if i + 7 <= n and data[i] == 0xFF and (data[i + 1] & 0xF6) == 0xF0:
+                flen = ((data[i + 3] & 3) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
+                if flen <= 0 or i + flen > n:
+                    out_data.extend(data[i:])
+                    break
 
-            # Deterministic 5% frame drop rate
-            if rng.random() < 0.05:
+                frame_data = bytearray(data[i:i + flen])
+
+                # Deterministic 5% frame drop rate
+                if rng.random() < 0.05:
+                    i += flen
+                    continue
+
+                # Deterministic bit flips in payload (beyond ADTS header)
+                header_len = 7 if (data[i + 1] & 1) else 9
+                if len(frame_data) > header_len:
+                    for idx in range(header_len, len(frame_data)):
+                        if rng.random() < 0.02:  # 2% byte corruption
+                            frame_data[idx] ^= rng.randint(1, 255)
+
+                out_data.extend(frame_data)
                 i += flen
+            else:
+                out_data.append(data[i])
+                i += 1
+    else:
+        # M4A / MP4 container or general bitstream: preserve container header offset (~512 bytes)
+        header_offset = min(512, n // 10)
+        out_data.extend(data[:header_offset])
+
+        # Apply deterministic bit flips and payload truncations
+        payload = bytearray(data[header_offset:])
+        chunk_size = 512
+        for offset in range(0, len(payload), chunk_size):
+            chunk = payload[offset:offset + chunk_size]
+            if rng.random() < 0.05:  # 5% chunk drop
                 continue
-
-            # Deterministic bit flips in payload (beyond ADTS header)
-            header_len = 7 if (data[i + 1] & 1) else 9
-            if len(frame_data) > header_len:
-                for idx in range(header_len, len(frame_data)):
-                    if rng.random() < 0.02:  # 2% byte corruption
-                        frame_data[idx] ^= rng.randint(1, 255)
-
-            out_data.extend(frame_data)
-            i += flen
-        else:
-            out_data.append(data[i])
-            i += 1
+            for idx in range(len(chunk)):
+                if rng.random() < 0.01:  # 1% byte corruption
+                    chunk[idx] ^= rng.randint(1, 255)
+            out_data.extend(chunk)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "wb") as f:

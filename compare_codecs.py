@@ -633,7 +633,7 @@ def detect_decoders(args):
 # REPORT GENERATION FUNCTIONS
 # -----------------------------------------------------------------------------
 
-def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False):
+def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False, has_decoders=False):
     # Aggregation keyed by row_key (tool, profile). Every encoder is compared
     # at the same target bitrate (there is no cross-encoder VBR/quality mode
     # here -- each encoder's own quality knob isn't comparable to any other's,
@@ -697,6 +697,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             err = abs(res["actual_bitrate"] - res["target_bitrate"]) / res["target_bitrate"] * 100
             stats[e][s]["br_err_sum"] += err
             stats[e][s]["br_err_count"] += 1
+
+        if res.get("peak_ram_kb") is not None and res["peak_ram_kb"] > 0:
+            stats[e][s]["ram_sum"] = stats[e][s].get("ram_sum", 0) + res["peak_ram_kb"]
+            stats[e][s]["ram_count"] = stats[e][s].get("ram_count", 0) + 1
 
         stats[e][s]["total_count"] += 1
         if res.get("decode_valid"):
@@ -782,7 +786,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
     tool_overall = {}
     for tool_name, candidates in tool_row_keys.items():
-        e_mos, e_speed, e_br_err, e_ic, e_centroid = [], [], [], [], []
+        e_mos, e_speed, e_br_err, e_ic, e_centroid, e_ram = [], [], [], [], [], []
         e_mos_min = 6.0
         has_data = False
         scenario_count = 0
@@ -814,6 +818,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             if s_stats["centroid_count"] > 0:
                 e_centroid.append(s_stats["centroid_sum"] / s_stats["centroid_count"])
                 s_has_data = True
+            if s_stats.get("ram_count", 0) > 0:
+                e_ram.append(s_stats["ram_sum"] / s_stats["ram_count"])
+                s_has_data = True
             if s_has_data:
                 has_data = True
                 scenario_count += 1
@@ -830,6 +837,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             "avg_centroid_ms": sum(e_centroid) / len(e_centroid) if e_centroid else 0,
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
             "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
+            "avg_ram_kb": sum(e_ram) / len(e_ram) if e_ram else 0,
             "text_size": enc_obj.text_size if enc_obj else 0,
             "rodata_size": enc_obj.rodata_size if enc_obj else 0,
             "valid_rate": (tool_valid / tool_total * 100) if tool_total > 0 else 0,
@@ -848,6 +856,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
     with open(output_path, "w") as f:
         f.write(title_str)
+        if has_decoders:
+            nav_links = ["[🎧 Encoder Rankings](#overall-rankings)", "[🔊 Decoder Rankings](#-decoder-leaderboard)"]
+            f.write(" | ".join(nav_links) + "\n\n---\n\n")
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("## Overall Rankings\n\n")
         # Overall MOS is a mean of per-scenario means, so the scenario set is
@@ -857,8 +868,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("> **Note**: Overall MOS averages the scenario set listed below, so absolute "
                 "values are only comparable between leaderboards built from the same set of "
                 "scenarios. Relative ranking is unaffected.\n\n")
-        f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | ROM (Flash) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['overall_mos'] for o in tool_overall.values()) if tool_overall else 0
         best_worst_mos = max(o['worst_mos'] for o in tool_overall.values()) if tool_overall else 0
@@ -902,9 +913,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             s_str = f"**{o['avg_speed']:.1f}x**" if o['avg_speed'] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if o['avg_br_err'] == best_br else f"{o['avg_br_err']:.1f}%"
+            ram_str = format_size(int(o["avg_ram_kb"] * 1024)) if o["avg_ram_kb"] > 0 else "N/A"
             rom_str = format_size(o['text_size'] + o['rodata_size'])
 
-            f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {tool_name} | {status_str} | {w_str} | {m_str} | {scenarios_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {ram_str} | {rom_str} |\n")
 
         scenarios = sorted(scenario_list, key=get_scenario_sort_key)
         all_em_keys_sorted = sorted(overall.keys())
@@ -1357,7 +1369,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     print(f"\nLeaderboard generated at: {output_path}")
 
 
-def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None, robustness_results=None):
+def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None, robustness_results=None, run_encoders_leaderboard=False):
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "snr_sum": 0, "snr_count": 0,
@@ -1446,8 +1458,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w") as f:
-        has_encoders = bool(encoders)
-        if not has_encoders:
+        if not run_encoders_leaderboard:
             f.write("# AAC Leaderboard\n\n")
             nav_links = ["[📊 Decoder Rankings](#-decoder-leaderboard)", "[📋 Decoder Scenarios](#per-scenario-decoder-breakdown)", "[⚙️ Decoder Efficiency](#decoder-efficiency--footprint)"]
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
@@ -1550,14 +1561,10 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
     cmd = encoder.get_encode_cmd(input_path, output_path, cfg["bitrate"], channels, sample_rate)
 
     try:
-        t_start = time.perf_counter()
-        res = subprocess.run(cmd, capture_output=True, check=False, env=encoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None)
 
         if res.returncode != 0:
             raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
-
-        t_end = time.perf_counter()
-        duration = t_end - t_start
 
         file_size = os.path.getsize(output_path)
         es_bytes = get_audio_es_bytes(output_path)
@@ -1587,6 +1594,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "target_bitrate": cfg["bitrate"],
             "decode_valid": valid,
             "decode_error": decode_err,
+            "peak_ram_kb": peak_ram_kb,
             "aac_path": output_path,
             "ref_path": input_path
         }
@@ -1644,10 +1652,10 @@ def process_decoder_task(decoder, res_item, output_dir):
     cmd = decoder.get_decode_cmd(aac_path, output_path)
 
     try:
-        retcode, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
 
-        if retcode != 0:
-            raise subprocess.CalledProcessError(retcode, cmd, output=b"", stderr=b"Decoding process failed")
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
@@ -1912,6 +1920,12 @@ def main():
             print(f"Detected decoders: {', '.join(d.name for d in decoders)}")
 
         valid_encoder_bitstreams = [r for r in encoder_results if r.get("decode_valid") and r.get("aac_path") and os.path.exists(r["aac_path"])]
+        if args.gate and valid_encoder_bitstreams:
+            gate_filenames = set()
+            for s_name in scenario_list:
+                gate_filenames.update(GATE_CLIPS.get(s_name, []))
+            if gate_filenames:
+                valid_encoder_bitstreams = [r for r in valid_encoder_bitstreams if r.get("filename") in gate_filenames]
         if valid_encoder_bitstreams and decoders:
             print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
@@ -1970,9 +1984,9 @@ def main():
     # Final Leaderboard Generation
     out_file = args.output
     if run_encoders and run_decoders and decoders:
-        generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
+        generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs, has_decoders=True)
         dec_file = out_file.replace(".md", "_decoders.md") if out_file.endswith(".md") else out_file + "_decoders"
-        generate_decoder_leaderboard(decoders, decoder_results, dec_file, scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=encoder_results, robustness_results=decoder_robustness_results)
+        generate_decoder_leaderboard(decoders, decoder_results, dec_file, scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=encoder_results, robustness_results=decoder_robustness_results, run_encoders_leaderboard=True)
 
         if os.path.exists(dec_file) and dec_file != out_file:
             with open(dec_file) as f_dec:

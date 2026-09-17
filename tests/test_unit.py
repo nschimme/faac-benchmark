@@ -1082,6 +1082,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
             self.assertIn("#### LC Profile", content)
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)
+            self.assertIn("Peak RAM", content)
             self.assertIn("### BD-Rate Relative Efficiency", content)
             self.assertNotIn("BD-rate evaluation skipped due to error", content)
 

@@ -67,8 +67,16 @@ def render_job_summary(data, name_override=None):
     lines.append("| Component | Size | Breakdown |")
     lines.append("| :--- | :--- | :--- |")
     lines.append(f"| **ROM Footprint** (`.text` + `.rodata` + `.data`) | **{format_bytes(lib_size)}** | Text: {format_bytes(text_sz)}, Rodata: {format_bytes(rodata_sz)}, Data: {format_bytes(data_sz)} |")
-    if bss_sz > 0:
-        lines.append(f"| **RAM Footprint** (`.bss`) | {format_bytes(bss_sz)} | |")
+    # Dynamic Peak RAM (Max RSS) across sample encodes
+    matrix_samples = data.get("matrix", {})
+    ram_samples = [s.get("peak_ram_kb") for s in matrix_samples.values() if s.get("peak_ram_kb")]
+    avg_peak_ram_bytes = int(sum(ram_samples) / len(ram_samples) * 1024) if ram_samples else 0
+
+    if bss_sz > 0 or avg_peak_ram_bytes > 0:
+        ram_detail = f"Static BSS: {format_bytes(bss_sz)}" if bss_sz > 0 else ""
+        if avg_peak_ram_bytes > 0:
+            ram_detail += (", " if ram_detail else "") + f"Mean Peak Dynamic RAM: {format_bytes(avg_peak_ram_bytes)}"
+        lines.append(f"| **RAM Footprint** | {format_bytes(avg_peak_ram_bytes or bss_sz)} | {ram_detail} |")
     if frontend_sz > 0:
         lines.append(f"| **Frontend Binary** | {format_bytes(frontend_sz)} | |")
     lines.append("")
