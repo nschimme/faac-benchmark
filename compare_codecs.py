@@ -354,7 +354,8 @@ def main():
                             mos_str = f", MOS: {res['mos']:.2f}" if res.get("mos") is not None else ""
                             snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
                             ch_tag = " (1ch)" if res.get("mono_downmix") else ""
-                            print(f"    [{completed_dec}/{total_dec_tasks}] {decoder.name} | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
+                            prof_str = profile_label(res.get('profile', 'lc'))
+                            print(f"    [{completed_dec}/{total_dec_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
 
             print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
             robustness_bitstreams = valid_encoder_bitstreams
@@ -380,7 +381,8 @@ def main():
                         if res:
                             decoder_robustness_results.append(res)
                             status_mark = "PASS" if res.get("passed") else "FAIL"
-                            print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} | {res['scenario']} | {res['filename']} -> {status_mark}")
+                            prof_str = profile_label(res.get('profile', 'lc'))
+                            print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
 
     # Final Leaderboard Generation
     out_file = args.output
