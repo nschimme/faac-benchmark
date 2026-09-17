@@ -14,7 +14,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.append(SCRIPT_DIR)
 
 import utils
-import compare_decoders as cd
+import compare_codecs as cd
 
 class TestCompareDecoders(unittest.TestCase):
     def test_compute_snr_identical(self):

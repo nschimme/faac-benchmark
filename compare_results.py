@@ -528,7 +528,7 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["centroid_deltas"].extend(clip_deltas)
                 # Raw |ms| pooled separately (not just the paired delta) so a
                 # significant verdict can be paired with the same 0-1
-                # fidelity number compare_encoders.py's leaderboard reports
+                # fidelity number compare_codecs.py's leaderboard reports
                 # (1 / (1 + mean|ms|)), for a maintainer to read as "how much".
                 o_abs_list = [abs(v) for v in o_centroid]
                 b_abs_list = [abs(v) for v in b_centroid]

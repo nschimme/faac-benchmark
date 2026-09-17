@@ -92,7 +92,7 @@ CORPORA = {
         "family": "44k1_stereo",
         "label": "44.1 kHz Stereo"},
     # 32 kHz is the SBR/HE-AAC eligibility boundary (see use_he_aac in
-    # compare_encoders.py) as well as a real broadcast rate.
+    # compare_codecs.py) as well as a real broadcast rate.
     "audio_32k": {
         "dir": "audio_32k",
         "rate": 32000,
