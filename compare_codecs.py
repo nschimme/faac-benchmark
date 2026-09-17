@@ -28,7 +28,8 @@ from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_
                    scenario_family, family_label, scenario_families, expand_scenario_list,
                    get_audio_es_bytes, is_system_library, flatten_arg_list, probe_version,
                    make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range,
-                   compute_snr, wav_conv, hosted_codec_ver)
+                   compute_snr, wav_conv, hosted_codec_ver, measure_delay_offset,
+                   measure_peak_ram, corrupt_adts_bitstream)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1356,10 +1357,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     print(f"\nLeaderboard generated at: {output_path}")
 
 
-def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None):
+def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None, robustness_results=None):
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
         "snr_sum": 0, "snr_count": 0,
+        "delay_sum": 0, "delay_count": 0,
+        "ram_sum": 0, "ram_count": 0,
         "speed_sum": 0, "speed_count": 0,
         "valid_count": 0, "total_count": 0
     }))
@@ -1377,14 +1380,28 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             if res.get("snr_db") is not None and res["snr_db"] != float("inf"):
                 stats[rk][s]["snr_sum"] += res["snr_db"]
                 stats[rk][s]["snr_count"] += 1
+            if res.get("alignment_delay_ms") is not None:
+                stats[rk][s]["delay_sum"] += abs(res["alignment_delay_ms"])
+                stats[rk][s]["delay_count"] += 1
+            if res.get("peak_ram_kb") is not None and res["peak_ram_kb"] > 0:
+                stats[rk][s]["ram_sum"] += res["peak_ram_kb"]
+                stats[rk][s]["ram_count"] += 1
             if res.get("duration", 0) > 0 and res.get("audio_duration"):
                 stats[rk][s]["speed_sum"] += res["audio_duration"] / res["duration"]
                 stats[rk][s]["speed_count"] += 1
 
+    rob_stats = defaultdict(lambda: {"passed": 0, "total": 0})
+    if robustness_results:
+        for r_res in robustness_results:
+            rk = r_res["row_key"]
+            rob_stats[rk]["total"] += 1
+            if r_res.get("passed"):
+                rob_stats[rk]["passed"] += 1
+
     decoder_info = {decoder_row_key(d): d for d in decoders}
     overall = {}
     for rk, dec_obj in decoder_info.items():
-        d_mos, d_speed, d_snr = [], [], []
+        d_mos, d_speed, d_snr, d_delay, d_ram = [], [], [], [], []
         d_worst_mos = 6.0
         d_total = d_valid = 0
         scenario_count = 0
@@ -1399,15 +1416,25 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 scenario_count += 1
             if st["snr_count"] > 0:
                 d_snr.append(st["snr_sum"] / st["snr_count"])
+            if st["delay_count"] > 0:
+                d_delay.append(st["delay_sum"] / st["delay_count"])
+            if st["ram_count"] > 0:
+                d_ram.append(st["ram_sum"] / st["ram_count"])
             if st["speed_count"] > 0:
                 d_speed.append(st["speed_sum"] / st["speed_count"])
+
+        rob_info = rob_stats[rk]
+        robustness_pct = (rob_info["passed"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
 
         overall[rk] = {
             "tool": dec_obj.name,
             "worst_mos": d_worst_mos if d_mos else 0,
             "overall_mos": sum(d_mos) / len(d_mos) if d_mos else 0,
             "avg_snr_db": sum(d_snr) / len(d_snr) if d_snr else None,
+            "avg_delay_ms": sum(d_delay) / len(d_delay) if d_delay else 0.0,
+            "avg_ram_kb": sum(d_ram) / len(d_ram) if d_ram else 0,
             "avg_speed": sum(d_speed) / len(d_speed) if d_speed else 0,
+            "robustness_pct": robustness_pct,
             "text_size": dec_obj.text_size,
             "rodata_size": dec_obj.rodata_size,
             "valid_rate": (d_valid / d_total * 100) if d_total > 0 else 0,
@@ -1426,15 +1453,16 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write(" | ".join(nav_links) + "\n\n---\n\n")
 
         f.write("## 🔊 Decoder Leaderboard\n\n")
-        f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Perceptual Quality (MOS), Speed, and Footprint.\n\n")
+        f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Quality (MOS), Timing Alignment Error, Robustness, Speed, and Footprint.\n\n")
 
         f.write("### Overall Decoder Rankings\n\n")
-        f.write("| Rank | Decoder | Status | Worst MOS | Overall MOS | Mean SNR | Speed (xRT) | ROM (Flash) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Decoder | Status | Worst MOS | Overall MOS | Mean SNR | Timing Error | Robustness | Speed (xRT) | Peak RAM | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_worst_mos = max(o["worst_mos"] for o in overall.values()) if overall else 0
         best_mos = max(o["overall_mos"] for o in overall.values()) if overall else 0
         best_speed = max(o["avg_speed"] for o in overall.values()) if overall else 0
+        best_robustness = max(o["robustness_pct"] for o in overall.values()) if overall else 100.0
 
         for i, rk in enumerate(sorted_rk):
             o = overall[rk]
@@ -1443,10 +1471,13 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             w_str = f"**{o['worst_mos']:.3f}**" if o["worst_mos"] == best_worst_mos and best_worst_mos > 0 else f"{o['worst_mos']:.3f}"
             m_str = f"**{o['overall_mos']:.3f}**" if o["overall_mos"] == best_mos and best_mos > 0 else f"{o['overall_mos']:.3f}"
             snr_str = f"{o['avg_snr_db']:.1f} dB" if o["avg_snr_db"] is not None else "Bit-exact"
+            delay_str = f"{o['avg_delay_ms']:.2f} ms"
+            rob_str = f"**{o['robustness_pct']:.1f}%**" if o["robustness_pct"] == best_robustness else f"{o['robustness_pct']:.1f}%"
             s_str = f"**{o['avg_speed']:.1f}x**" if o["avg_speed"] == best_speed and best_speed > 0 else f"{o['avg_speed']:.1f}x"
+            ram_str = format_size(int(o["avg_ram_kb"] * 1024)) if o["avg_ram_kb"] > 0 else "N/A"
             rom_str = format_size(o["text_size"] + o["rodata_size"])
 
-            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {s_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {delay_str} | {rob_str} | {s_str} | {ram_str} | {rom_str} |\n")
 
         f.write("\n<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
         f.write("### Per-Scenario Decoder Breakdown\n\n")
@@ -1602,6 +1633,8 @@ def process_decoder_task(decoder, res_item, output_dir):
             "decode_valid": False,
             "decode_error": "Input bitstream missing",
             "snr_db": None,
+            "alignment_delay_ms": None,
+            "peak_ram_kb": None,
             "decoded_wav": None
         }
 
@@ -1611,19 +1644,17 @@ def process_decoder_task(decoder, res_item, output_dir):
     cmd = decoder.get_decode_cmd(aac_path, output_path)
 
     try:
-        t_start = time.perf_counter()
-        res = subprocess.run(cmd, capture_output=True, check=False, env=decoder.get_run_env() or None)
+        retcode, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
 
-        if res.returncode != 0:
-            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
-
-        t_end = time.perf_counter()
-        duration = t_end - t_start
+        if retcode != 0:
+            raise subprocess.CalledProcessError(retcode, cmd, output=b"", stderr=b"Decoding process failed")
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
+        alignment_delay_ms = None
         if valid and ref_path and os.path.exists(ref_path):
             snr_db = compute_snr(ref_path, output_path)
+            _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
@@ -1638,6 +1669,8 @@ def process_decoder_task(decoder, res_item, output_dir):
             "decode_valid": valid,
             "decode_error": decode_err,
             "snr_db": snr_db,
+            "alignment_delay_ms": alignment_delay_ms,
+            "peak_ram_kb": peak_ram_kb,
             "decoded_wav": output_path
         }
     except Exception as e:
@@ -1658,8 +1691,36 @@ def process_decoder_task(decoder, res_item, output_dir):
             "decode_valid": False,
             "decode_error": f"Decoding failed: {detail}",
             "snr_db": None,
+            "alignment_delay_ms": None,
+            "peak_ram_kb": None,
             "decoded_wav": None
         }
+
+def process_decoder_robustness_task(decoder, res_item, output_dir):
+    """Executes a dedicated robustness test on a deterministically corrupted ADTS bitstream."""
+    aac_path = res_item.get("aac_path")
+    scenario_name = res_item["scenario"]
+    sample = res_item["filename"]
+
+    if not aac_path or not os.path.exists(aac_path):
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
+
+    corrupt_filename = f"corrupt_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_")
+    corrupt_path = os.path.join(output_dir, corrupt_filename)
+    out_wav_filename = f"corrupt_out_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.wav".replace(" ", "_")
+    out_wav_path = os.path.join(output_dir, out_wav_filename)
+
+    if not corrupt_adts_bitstream(aac_path, corrupt_path, seed=42):
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
+
+    cmd = decoder.get_decode_cmd(corrupt_path, out_wav_path)
+    try:
+        res = subprocess.run(cmd, capture_output=True, check=False, timeout=10, env=decoder.get_run_env() or None)
+        # Crash-free robustness pass: decoder did not crash (signal/SEGFAULT) or hang
+        passed = (res.returncode >= 0)
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": passed}
+    except Exception:
+        return {"tool": decoder.name, "row_key": decoder_row_key(decoder), "scenario": scenario_name, "filename": sample, "passed": False}
 
 
 def main():
@@ -1839,6 +1900,7 @@ def main():
 
     # Decoder Benchmarking Phase
     decoder_results = []
+    decoder_robustness_results = []
     decoders = []
     if run_decoders:
         decoders = detect_decoders(args)
@@ -1860,6 +1922,16 @@ def main():
                         res = future.result()
                         if res:
                             decoder_results.append(res)
+
+            print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
+            for decoder in decoders:
+                print(f"  Testing robustness for {decoder.name}...")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in valid_encoder_bitstreams]
+                    for future in concurrent.futures.as_completed(futures):
+                        res = future.result()
+                        if res:
+                            decoder_robustness_results.append(res)
 
             # Phase 2 MOS calculation for decoded WAVs if MOS is enabled
             if not args.skip_mos and decoder_results:
@@ -1900,7 +1972,7 @@ def main():
     if run_encoders and run_decoders and decoders:
         generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
         dec_file = out_file.replace(".md", "_decoders.md") if out_file.endswith(".md") else out_file + "_decoders"
-        generate_decoder_leaderboard(decoders, decoder_results, dec_file, scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=encoder_results)
+        generate_decoder_leaderboard(decoders, decoder_results, dec_file, scenario_list, skip_graphs=args.skip_graphs, encoders=encoders, encoder_results=encoder_results, robustness_results=decoder_robustness_results)
 
         if os.path.exists(dec_file) and dec_file != out_file:
             with open(dec_file) as f_dec:
@@ -1914,7 +1986,7 @@ def main():
     elif run_encoders:
         generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
     elif run_decoders and decoders:
-        generate_decoder_leaderboard(decoders, decoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
+        generate_decoder_leaderboard(decoders, decoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs, robustness_results=decoder_robustness_results)
 
 if __name__ == "__main__":
     main()

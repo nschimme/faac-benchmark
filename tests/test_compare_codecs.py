@@ -84,6 +84,33 @@ class TestCompareDecoders(unittest.TestCase):
                 self.assertIn("FAAD2", text)
                 self.assertIn("25.5 dB", text)
 
+    def test_corrupt_adts_bitstream(self):
+        with tempfile.TemporaryDirectory() as td:
+            in_aac = os.path.join(td, "in.aac")
+            out_aac = os.path.join(td, "corrupt.aac")
+            # Create synthetic ADTS header + payload
+            fake_adts = b"\xff\xf1\x50\x80\x01\x3f\xfc" + b"\x00" * 30
+            with open(in_aac, "wb") as f:
+                f.write(fake_adts * 10)
+
+            ok = utils.corrupt_adts_bitstream(in_aac, out_aac, seed=42)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(out_aac))
+
+    def test_measure_delay_offset(self):
+        with tempfile.TemporaryDirectory() as td:
+            wav1 = os.path.join(td, "w1.wav")
+            wav2 = os.path.join(td, "w2.wav")
+            import soundfile as sf
+            import numpy as np
+            data = np.random.uniform(-0.5, 0.5, 48000).astype(np.float32)
+            sf.write(wav1, data, 48000)
+            sf.write(wav2, data, 48000)
+
+            lag, ms = utils.measure_delay_offset(wav1, wav2)
+            self.assertEqual(lag, 0)
+            self.assertEqual(ms, 0.0)
+
     def test_compare_codecs_import(self):
         import compare_codecs
         self.assertTrue(hasattr(compare_codecs, "main"))

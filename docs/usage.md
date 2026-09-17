@@ -122,10 +122,12 @@ Options:
 The leaderboard evaluates key dimensions:
 1. **Quality**: Average and Worst MOS across scenarios (higher is better).
 2. **Spec Conformance (Decoders)**: Signal-to-Noise Ratio (SNR in dB) against reference decodes (higher/bit-exact is better).
-3. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
-4. **Efficiency**: Average throughput as a multiple of real-time (higher is better).
-5. **Footprint**: Compiled code and read-only data section size (`.text` + `.rodata` in KB, lower is better).
-6. **Accuracy**: Average bitrate error % relative to target (lower is better).
+3. **Timing Alignment (Decoders)**: Sample timing alignment error (in ms) relative to reference audio.
+4. **Robustness (Decoders)**: Crash-free decoding success rate (%) on deterministically corrupted ADTS bitstreams.
+5. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
+6. **Efficiency**: Average throughput as a multiple of real-time (higher is better).
+7. **RAM & Footprint**: Peak dynamic RAM (Max RSS in KB/MB) and compiled code section size (`.text` + `.rodata` in KB, lower is better).
+8. **Accuracy**: Average bitrate error % relative to target (lower is better).
 
 **Winner Highlighting**: The best-performing encoder or decoder in each category is **bolded** in the leaderboard tables.
 
