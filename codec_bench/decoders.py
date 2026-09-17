@@ -179,7 +179,7 @@ def detect_decoders(args):
                                 [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id("FAAD2", ver, "faad2", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("FAAD", ver, "faad2", existing_names, existing_ids)
         dec = FAADDecoder(name, f_bin, tool_id, lib_override=f_lib)
         if probe_decoder_capability(dec):
             decoders.append(dec)
@@ -287,32 +287,44 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         snr_db = None
         alignment_delay_ms = None
         mos_val = None
+        dec_channels = None
+        mono_downmix = False
 
-        if valid and ref_path and os.path.exists(ref_path):
-            snr_db = compute_snr(ref_path, output_path)
-            _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+        if valid:
+            try:
+                with wave.open(output_path, "rb") as w:
+                    dec_channels = w.getnchannels()
+            except Exception:
+                dec_channels = None
 
-            if not skip_mos:
-                try:
-                    cfg = SCENARIOS.get(scenario_name, {})
-                    v_rate = cfg.get("visqol_rate") or cfg.get("rate") or 48000
-                    v_channels = scenario_channels(cfg) if cfg else 2
-                    mode_str = cfg.get("mode", "audio")
+            cfg = SCENARIOS.get(scenario_name, {})
+            v_rate = cfg.get("visqol_rate") or cfg.get("rate") or 48000
+            v_channels = scenario_channels(cfg) if cfg else 2
+            mode_str = cfg.get("mode", "audio")
 
-                    with tempfile.TemporaryDirectory() as td:
-                        ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
-                        if not ref_wav:
-                            ref_wav = os.path.join(td, "ref_conv.wav")
-                            if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
-                                ref_wav = ref_path
+            if v_channels >= 2 and dec_channels == 1:
+                mono_downmix = True
 
-                        dec_wav = os.path.join(td, "dec_conv.wav")
-                        if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
-                            dec_wav = output_path
+            if ref_path and os.path.exists(ref_path):
+                snr_db = compute_snr(ref_path, output_path)
+                _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
 
-                        mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
-                except Exception:
-                    pass
+                if not skip_mos:
+                    try:
+                        with tempfile.TemporaryDirectory() as td:
+                            ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
+                            if not ref_wav:
+                                ref_wav = os.path.join(td, "ref_conv.wav")
+                                if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
+                                    ref_wav = ref_path
+
+                            dec_wav = os.path.join(td, "dec_conv.wav")
+                            if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
+                                dec_wav = output_path
+
+                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
+                    except Exception:
+                        pass
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
@@ -331,7 +343,9 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "snr_db": snr_db,
             "alignment_delay_ms": alignment_delay_ms,
             "peak_ram_kb": peak_ram_kb,
-            "decoded_wav": output_path
+            "decoded_wav": output_path,
+            "dec_channels": dec_channels,
+            "mono_downmix": mono_downmix
         }
     except Exception as e:
         detail = str(e)

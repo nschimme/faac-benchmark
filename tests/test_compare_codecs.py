@@ -56,15 +56,15 @@ class TestCompareDecoders(unittest.TestCase):
         decoders = cd.detect_decoders(args)
         faad_decs = [d for d in decoders if isinstance(d, cd.FAADDecoder)]
         self.assertEqual(len(faad_decs), 2)
-        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0")
-        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1")
+        self.assertEqual(faad_decs[0].name, "FAAD 2.10.0")
+        self.assertEqual(faad_decs[1].name, "FAAD 2.11.1")
 
     def test_generate_decoder_leaderboard(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "leaderboard.md")
-            dec = cd.FAADDecoder("FAAD2", "/bin/true", "faad")
+            dec = cd.FAADDecoder("FAAD", "/bin/true", "faad")
             results = [{
-                "tool": "FAAD2",
+                "tool": "FAAD",
                 "row_key": "faad",
                 "scenario": "48k_stereo_64k",
                 "filename": "clip1.wav",
@@ -81,7 +81,7 @@ class TestCompareDecoders(unittest.TestCase):
             with open(out_md) as f:
                 text = f.read()
                 self.assertIn("# 🔊 AAC Decoder Leaderboard", text)
-                self.assertIn("FAAD2", text)
+                self.assertIn("FAAD", text)
                 self.assertIn("25.5 dB", text)
 
     def test_corrupt_adts_bitstream(self):
@@ -118,10 +118,10 @@ class TestCompareDecoders(unittest.TestCase):
     def test_mode_both_leaderboard_rendering(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "combined.md")
-            dec = cd.FAADDecoder("FAAD2", "/bin/true", "faad")
+            dec = cd.FAADDecoder("FAAD", "/bin/true", "faad")
             enc = cd.FFmpegDecoder("FFmpeg AAC", "/bin/true", "ffmpeg_aac")
             results = [{
-                "tool": "FAAD2",
+                "tool": "FAAD",
                 "row_key": "faad",
                 "scenario": "48k_stereo_64k",
                 "filename": "clip1.wav",
@@ -138,7 +138,7 @@ class TestCompareDecoders(unittest.TestCase):
             with open(out_md) as f:
                 text = f.read()
                 self.assertIn("## 🔊 Decoder Leaderboard", text)
-                self.assertIn("FAAD2", text)
+                self.assertIn("FAAD", text)
 
 if __name__ == "__main__":
     unittest.main()

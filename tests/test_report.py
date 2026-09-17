@@ -13,15 +13,16 @@ class TestReport(unittest.TestCase):
     def test_generate_decoder_leaderboard(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "leaderboard.md")
-            d_obj = dec.FAADDecoder("FAAD2", "/bin/true", "faad")
+            d_obj = dec.FAADDecoder("FAAD", "/bin/true", "faad")
             results = [{
-                "tool": "FAAD2",
+                "tool": "FAAD",
                 "row_key": "faad",
                 "scenario": "48k_stereo_64k",
                 "filename": "clip1.wav",
                 "duration": 0.01,
                 "audio_duration": 5.0,
                 "snr_db": 25.5,
+                "alignment_delay_ms": 2.5,
                 "mos": 4.2,
                 "decode_valid": True,
                 "decode_error": ""
@@ -32,8 +33,38 @@ class TestReport(unittest.TestCase):
             with open(out_md) as f:
                 text = f.read()
                 self.assertIn("# 🔊 AAC Decoder Leaderboard", text)
-                self.assertIn("FAAD2", text)
+                self.assertIn("FAAD", text)
                 self.assertIn("25.5 dB", text)
+                self.assertIn("2.50 ms", text)
+                self.assertIn("█", text)
+
+    def test_decoder_quality_outliers_and_mono_downmix(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            d1 = dec.FAADDecoder("FAAD", "/bin/true", "faad")
+            d2 = dec.HelixAACDecoder("Helix", "/bin/true", "helix")
+            results = [
+                {
+                    "tool": "FAAD", "row_key": "faad", "scenario": "48k_stereo_16k",
+                    "filename": "clip1.wav", "profile": "hev2", "duration": 0.01,
+                    "audio_duration": 5.0, "snr_db": 30.0, "mos": 4.1,
+                    "decode_valid": True, "decode_error": "", "mono_downmix": False
+                },
+                {
+                    "tool": "Helix", "row_key": "helix", "scenario": "48k_stereo_16k",
+                    "filename": "clip1.wav", "profile": "hev2", "duration": 0.01,
+                    "audio_duration": 5.0, "snr_db": 15.0, "mos": 2.1,
+                    "decode_valid": True, "decode_error": "", "mono_downmix": True
+                }
+            ]
+
+            rep.generate_decoder_leaderboard([d1, d2], results, out_md, ["48k_stereo_16k"], skip_graphs=True)
+            self.assertTrue(os.path.exists(out_md))
+            with open(out_md) as f:
+                text = f.read()
+                self.assertIn("No HE-v2 PS (1ch)", text)
+                self.assertIn("(1ch)", text)
+                self.assertIn("Decoder Quality Outliers", text)
 
 if __name__ == "__main__":
     unittest.main()
