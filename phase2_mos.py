@@ -165,15 +165,84 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "v_channels": scenario_channels(cfg)
     }
 
+_ZIMTOHRLI_SUBPROCESS_SCRIPT = """
+import sys, json, math, scipy.signal, soundfile as sf, numpy as np, zimtohrli
+v_ref, v_deg = sys.argv[1], sys.argv[2]
+try:
+    ref_data, sr_r = sf.read(v_ref, dtype="float32", always_2d=True)
+    dec_data, sr_d = sf.read(v_deg, dtype="float32", always_2d=True)
+
+    ZIMT_RATE = 48000
+    if sr_r != ZIMT_RATE:
+        g = math.gcd(ZIMT_RATE, sr_r)
+        ref_data = scipy.signal.resample_poly(ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
+    if sr_d != ZIMT_RATE:
+        g = math.gcd(ZIMT_RATE, sr_d)
+        dec_data = scipy.signal.resample_poly(dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
+
+    if len(ref_data) == 0 or len(dec_data) == 0:
+        sys.exit(1)
+
+    r_mono = ref_data.mean(axis=1)
+    d_mono = dec_data.mean(axis=1)
+
+    n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
+    if n_search == 0:
+        sys.exit(1)
+
+    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+    d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+    corr = scipy.signal.correlate(r_norm, d_norm, mode="full")
+    lag = int(np.argmax(corr)) - (n_search - 1)
+
+    if lag < 0:
+        dec_aligned = dec_data[-lag:]
+        ref_aligned = ref_data[:len(ref_data) + lag]
+    elif lag > 0:
+        ref_aligned = ref_data[lag:]
+        dec_aligned = dec_data[:len(dec_data) - lag]
+    else:
+        ref_aligned, dec_aligned = ref_data, dec_data
+
+    n = min(len(ref_aligned), len(dec_aligned))
+    if n <= 0:
+        sys.exit(1)
+
+    num_ref_ch = ref_aligned.shape[1]
+    num_dec_ch = dec_aligned.shape[1]
+
+    if num_ref_ch != num_dec_ch:
+        if num_ref_ch == 1 and num_dec_ch > 1:
+            ref_aligned = np.repeat(ref_aligned, num_dec_ch, axis=1)
+        elif num_dec_ch == 1 and num_ref_ch > 1:
+            dec_aligned = np.repeat(dec_aligned, num_ref_ch, axis=1)
+        else:
+            common_ch = min(num_ref_ch, num_dec_ch)
+            ref_aligned = ref_aligned[:, :common_ch]
+            dec_aligned = dec_aligned[:, :common_ch]
+
+    z_engine = zimtohrli.Pyohrli()
+    num_channels = ref_aligned.shape[1]
+    per_channel_dist = [
+        z_engine.distance(
+            np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
+            np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
+        )
+        for ch in range(num_channels)
+    ]
+    dist = math.sqrt(sum(d * d for d in per_channel_dist))
+    mos = float(zimtohrli.mos_from_zimtohrli(dist))
+    print(json.dumps({"mos": mos, "backend": "zimtohrli"}))
+except Exception:
+    sys.exit(1)
+"""
+
 def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     """Score an already-converted ref/deg WAV pair.
 
     Speech mode uses visqol-python (16 kHz mono); audio mode uses Zimtohrli
-    (48 kHz). The engine is chosen by the scenario's mode ALONE. It used to
-    also trigger on `sr == 16000`, which was fine while 16 kHz meant speech,
-    but would now hijack any 16 kHz corpus a scenario deliberately scores in
-    audio mode. `sample_rate` is still accepted for callers that pass it, and
-    is unused for dispatch.
+    (48 kHz). The engine is chosen by the scenario's mode ALONE. `sample_rate`
+    is still accepted for callers that pass it, and is unused for dispatch.
     Returns (mos, backend_used); mos is None on failure."""
     try:
         if mode_str == "speech":
@@ -185,73 +254,24 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
             print("  ERROR: visqol-python is required for speech-mode scoring but not available.")
             return None, "visqol-python"
 
-        # Audio mode: use Zimtohrli
+        # Audio mode: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
         if HAS_ZIMTOHRLI:
-            z_engine = get_process_zimtohrli()
-            if z_engine:
-                ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
-                dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
-
-                ZIMT_RATE = 48000
-                if sr_r != ZIMT_RATE:
-                    g = math.gcd(ZIMT_RATE, sr_r)
-                    ref_data = scipy.signal.resample_poly(
-                        ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
-                if sr_d != ZIMT_RATE:
-                    g = math.gcd(ZIMT_RATE, sr_d)
-                    dec_data = scipy.signal.resample_poly(
-                        dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
-
-                if len(ref_data) == 0 or len(dec_data) == 0:
-                    return None, "zimtohrli"
-
-                r_mono = ref_data.mean(axis=1)
-                d_mono = dec_data.mean(axis=1)
-
-                n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
-                if n_search == 0:
-                    return None, "zimtohrli"
-
-                r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-                d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
-                corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
-                lag = int(np.argmax(corr)) - (n_search - 1)
-
-                if lag < 0:
-                    dec_aligned = dec_data[-lag:]
-                    ref_aligned = ref_data[:len(ref_data) + lag]
-                elif lag > 0:
-                    ref_aligned = ref_data[lag:]
-                    dec_aligned = dec_data[:len(dec_data) - lag]
+            try:
+                env = dict(os.environ)
+                if sys.platform == "darwin":
+                    env["NUMBA_THREADING_LAYER"] = "workqueue"
                 else:
-                    ref_aligned, dec_aligned = ref_data, dec_data
+                    env.setdefault("NUMBA_THREADING_LAYER", "omp")
 
-                n = min(len(ref_aligned), len(dec_aligned))
-                if n <= 0:
-                    return None, "zimtohrli"
-                num_ref_ch = ref_aligned.shape[1]
-                num_dec_ch = dec_aligned.shape[1]
+                proc = subprocess.run([sys.executable, "-c", _ZIMTOHRLI_SUBPROCESS_SCRIPT, v_ref, v_deg],
+                                      capture_output=True, text=True, timeout=30, env=env)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    data = json.loads(proc.stdout.strip())
+                    return data.get("mos"), data.get("backend", "zimtohrli")
+            except Exception as e:
+                print(f"  Zimtohrli evaluation failed: {e}")
+                return None, "zimtohrli"
 
-                if num_ref_ch != num_dec_ch:
-                    if num_ref_ch == 1 and num_dec_ch > 1:
-                        ref_aligned = np.repeat(ref_aligned, num_dec_ch, axis=1)
-                    elif num_dec_ch == 1 and num_ref_ch > 1:
-                        dec_aligned = np.repeat(dec_aligned, num_ref_ch, axis=1)
-                    else:
-                        common_ch = min(num_ref_ch, num_dec_ch)
-                        ref_aligned = ref_aligned[:, :common_ch]
-                        dec_aligned = dec_aligned[:, :common_ch]
-
-                num_channels = ref_aligned.shape[1]
-                per_channel_dist = [
-                    z_engine.distance(
-                        np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
-                        np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
-                    )
-                    for ch in range(num_channels)
-                ]
-                dist = math.sqrt(sum(d * d for d in per_channel_dist))
-                return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
         print("  ERROR: zimtohrli is required for audio scoring but not available.")
         return None, "zimtohrli"
 
