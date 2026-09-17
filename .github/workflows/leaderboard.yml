@@ -1,4 +1,4 @@
-name: Multi-Encoder Leaderboard
+name: Multi-Codec Leaderboard
 
 on:
   push:
@@ -8,22 +8,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  leaderboard:
+  codec-leaderboard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install Encoders
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y faac faad fdkaac ffmpeg
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install -r requirements.txt
 
@@ -31,7 +31,11 @@ jobs:
         run: |
           python3 setup_datasets.py
 
-      - name: Run Leaderboard
+      - name: Build Helix AAC Decoder
+        run: |
+          ./scripts/build_helix_aac.sh
+
+      - name: Run Codec Leaderboard
         run: |
           # Use --gate for PRs and push to save time/resources.
           # Run full benchmark for manual triggers.
@@ -41,12 +45,12 @@ jobs:
           fi
 
           # Zimtohrli is installed via requirements.txt and acts as default perceptual engine.
-          python3 compare_encoders.py $GATE_FLAG --output leaderboard_ci.md
+          python3 compare_codecs.py $GATE_FLAG --mode both --output leaderboard_ci.md
 
-      - name: Upload Leaderboard
-        uses: actions/upload-artifact@v7
+      - name: Upload Leaderboard Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: encoder-leaderboard
+          name: codec-leaderboard
           path: leaderboard_ci.md
 
       - name: Display Leaderboard in Summary

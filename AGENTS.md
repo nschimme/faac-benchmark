@@ -1,7 +1,7 @@
 # AGENTS.md
 
 - Tests are stdlib `unittest`, not pytest: `.venv/bin/python -m unittest discover -s tests -v`.
-- CI-critical code lives at repo root (`run_benchmark.py`, `compare_encoders.py`,
+- CI-critical code lives at repo root (`run_benchmark.py`, `compare_codecs.py`,
   `compare_results.py`, `phase*.py`, `config.py`, `utils.py`). Local/diagnostic
   tooling belongs in `scripts/`, documented in `docs/scripts.md` — don't add
   new one-off scripts at root.

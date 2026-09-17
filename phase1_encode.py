@@ -33,7 +33,7 @@ from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
                    decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
                    get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy,
-                   get_audio_es_bytes, ffmpeg_probe)
+                   get_audio_es_bytes, ffmpeg_probe, measure_peak_ram)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -152,10 +152,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
         cmd.extend(extra_args)
 
     try:
-        t_start = time.time()
-        proc = subprocess.run(list(cmd), env=env, check=True, capture_output=True)
-        t_duration = time.time() - t_start
-
+        proc, t_duration, peak_ram_kb = measure_peak_ram(list(cmd), env=env, check=True)
         object_type = parse_object_type(proc.stderr)
 
         mos = None
@@ -212,6 +209,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
             "accuracy_score": accuracy_score,
             "bias_status": bias_status,
             "time": t_duration,
+            "peak_ram_kb": peak_ram_kb,
             "md5": get_file_hash(output_path),
             "thresh": cfg["thresh"],
             "scenario": name,

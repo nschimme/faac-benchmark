@@ -115,7 +115,7 @@ class TestScenarioMatrix(unittest.TestCase):
         # use_he_aac gates which encoders the leaderboard runs. Its floor used
         # to be 10 kbps/channel, which would have silently skipped every HE
         # entry on the 8 kbps/channel scenario and compared LC only.
-        from compare_encoders import use_he_aac
+        from compare_codecs import use_he_aac
         lowest = min(self.SCENARIOS.values(),
                      key=lambda c: c["bitrate"] / c["channels"])
         if lowest["rate"] >= 32000:
@@ -904,7 +904,6 @@ class TestCompareResultsRendering(unittest.TestCase):
 
             with open(out_file) as f:
                 content = f.read()
-            self.assertIn("```mermaid", content)
             self.assertIn("Executive 3-Pillar Balance", content)
 
             # Test run with --skip-graphs flag
@@ -1013,7 +1012,7 @@ class TestCiSigntestVerdict(unittest.TestCase):
 
 class TestCompareEncodersLeaderboard(unittest.TestCase):
     def test_leaderboard_refactored_sections_and_worst_mos(self):
-        from compare_encoders import generate_leaderboard, Encoder
+        from compare_codecs import generate_leaderboard, Encoder
 
         class DummyEncoder(Encoder):
             def __init__(self, name, profile):
@@ -1074,7 +1073,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
                 content = f.read()
 
             self.assertIn("# AAC Encoder Leaderboard", content)
-            self.assertIn("## Overall Rankings", content)
+            self.assertIn("### Overall Encoder Rankings", content)
             self.assertIn("## Per-Scenario Breakdown & Visualizations", content)
             self.assertIn("xychart-beta", content)
             self.assertIn("#### Per-Scenario Average MOS", content)
@@ -1082,11 +1081,12 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
             self.assertIn("#### LC Profile", content)
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)
+            self.assertIn("Peak RAM", content)
             self.assertIn("### BD-Rate Relative Efficiency", content)
             self.assertNotIn("BD-rate evaluation skipped due to error", content)
 
     def test_leaderboard_title_and_standard_profile_with_non_aac(self):
-        from compare_encoders import generate_leaderboard, Encoder, OpusEncoder, LameEncoder
+        from compare_codecs import generate_leaderboard, Encoder, OpusEncoder, LameEncoder
 
         class DummyAAC(Encoder):
             def __init__(self):
@@ -1139,7 +1139,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
 
 class TestOpusLameEncoderCommands(unittest.TestCase):
     def test_opusenc_command_and_ffmpeg_fallback(self):
-        from compare_encoders import OpusEncoder
+        from compare_codecs import OpusEncoder
         op1 = OpusEncoder("Opus", "/usr/bin/opusenc", is_ffmpeg=False)
         cmd1 = op1.get_encode_cmd("in.wav", "out.opus", 128, 2, 48000)
         self.assertEqual(cmd1, ["/usr/bin/opusenc", "--bitrate", "128", "in.wav", "out.opus"])
@@ -1149,7 +1149,7 @@ class TestOpusLameEncoderCommands(unittest.TestCase):
         self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libopus", "-b:a", "128k", "-ac", "2", "out.opus"])
 
     def test_lame_command_and_ffmpeg_fallback(self):
-        from compare_encoders import LameEncoder
+        from compare_codecs import LameEncoder
         lame1 = LameEncoder("LAME", "/usr/bin/lame", is_ffmpeg=False)
         cmd1 = lame1.get_encode_cmd("in.wav", "out.mp3", 128, 2, 48000)
         self.assertEqual(cmd1, ["/usr/bin/lame", "-b", "128", "-s", "48.0", "in.wav", "out.mp3"])

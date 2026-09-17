@@ -528,7 +528,7 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["centroid_deltas"].extend(clip_deltas)
                 # Raw |ms| pooled separately (not just the paired delta) so a
                 # significant verdict can be paired with the same 0-1
-                # fidelity number compare_encoders.py's leaderboard reports
+                # fidelity number compare_codecs.py's leaderboard reports
                 # (1 / (1 + mean|ms|)), for a maintainer to read as "how much".
                 o_abs_list = [abs(v) for v in o_centroid]
                 b_abs_list = [abs(v) for v in b_centroid]
@@ -1173,35 +1173,22 @@ def main():
     tp_status = "✅ Pass" if global_metrics["avg_tp_reduction"] >= -1.0 else "⚠️ Slowdown"
     lib_status = "✅ Pass" if global_metrics["avg_lib_chg"] <= 0.5 else "⚠️ Growth"
 
-    mos_str_val = f"{avg_mos_delta_val:+.3f} MOS" if global_metrics["total_mos_count"] > 0 else "N/A"
+    if bit_exact_percent == 100.0:
+        quality_metric_label = "Bitstream Consistency"
+        mos_str_val = "100.0% (MD5 Match)"
+        mos_status = "✅ Pass"
+    else:
+        quality_metric_label = "Perceptual MOS Δ"
+        mos_str_val = f"{avg_mos_delta_val:+.3f} MOS" if global_metrics["total_mos_count"] > 0 else "N/A"
+
     tp_str_val = f"{global_metrics['avg_tp_reduction']:+.1f}%"
     lib_str_val = f"{global_metrics['avg_lib_chg']:+.2f}%"
 
     summary_lines.append("| Pillar | Metric | Change vs Baseline | Status |")
     summary_lines.append("| :--- | :--- | :---: | :---: |")
-    summary_lines.append(f"| 🎧 **Quality** | Perceptual MOS Δ | `{mos_str_val}` | {mos_status} |")
+    summary_lines.append(f"| 🎧 **Quality** | {quality_metric_label} | `{mos_str_val}` | {mos_status} |")
     summary_lines.append(f"| ⚡ **Performance** | Speed (Throughput Δ) | `{tp_str_val}` | {tp_status} |")
     summary_lines.append(f"| 📦 **Footprint** | Code Footprint Δ | `{lib_str_val}` | {lib_status} |")
-
-    # Render Executive 3-Pillar Balance Mermaid Chart
-    if not skip_graphs:
-        # Scale MOS delta to % relative to 5.0 MOS scale for normalized 3-pillar graph
-        mos_pct = (avg_mos_delta_val / 5.0) * 100
-        tp_pct = global_metrics["avg_tp_reduction"]
-        # Invert footprint size change so negative size change (reduction) appears as a positive improvement bar
-        footprint_improvement_pct = -global_metrics["avg_lib_chg"]
-
-        chart_vals = [mos_pct, tp_pct, footprint_improvement_pct]
-        max_val = max(abs(v) for v in chart_vals)
-        bound = max(int(max_val * 1.5) + 1, 5)
-
-        summary_lines.append("\n```mermaid")
-        summary_lines.append("xychart-beta")
-        summary_lines.append('    title "Executive 3-Pillar Balance (% Change vs Baseline)"')
-        summary_lines.append('    x-axis ["Quality (MOS Δ %)", "Speed (Throughput Δ %)", "Footprint (-Size Δ %)"]')
-        summary_lines.append(f'    y-axis "Improvement %" {-bound} --> {bound}')
-        summary_lines.append(f'    bar [{mos_pct:.2f}, {tp_pct:.2f}, {footprint_improvement_pct:.2f}]')
-        summary_lines.append("```\n")
 
     summary_lines.append("\n### Summary Details")
     if len(modes_present) > 1:
@@ -1223,7 +1210,7 @@ def main():
 
     families_with_data = [f for f in scenario_families(family_deltas.keys())
                           if family_deltas[f]]
-    if len(families_with_data) > 1:
+    if len(families_with_data) > 1 and bit_exact_percent < 100.0:
         summary_lines.append(f"\n#### {mos_label} Δ by Rate Family")
         if not skip_graphs:
             fam_labels = [f'"{family_label(fam)}"' for fam in families_with_data]
@@ -1257,15 +1244,18 @@ def main():
     if has_failed_or_warned:
         total_regressions = global_metrics["total_regressions"]
         if total_regressions > 0:
-            summary_lines.append(f"\n### ❌ Regression Details ({total_regressions})")
+            summary_lines.append(f"\n### ❌ Top Regression Details (Top 3 of {total_regressions})")
             for name, data in sorted(all_suite_data.items()):
                 if data["regressions"]:
                     summary_lines.append(f"\n#### {name}")
                     summary_lines.append(
                         f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                     summary_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                    for r in data["regressions"]:
+                    displayed_regs = data["regressions"][:3]
+                    for r in displayed_regs:
                         summary_lines.append(r["line"])
+                    if len(data["regressions"]) > 3:
+                        summary_lines.append(f"\n_...and {len(data['regressions']) - 3} additional regressed clips collapsed below._\n")
 
     # Build the full report
     report = list(summary_lines)

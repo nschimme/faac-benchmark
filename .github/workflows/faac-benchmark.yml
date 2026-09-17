@@ -1,0 +1,82 @@
+name: FAAC Benchmark
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  faac-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faac faad fdkaac ffmpeg valgrind meson ninja-build
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Setup Datasets
+        run: |
+          python3 setup_datasets.py
+
+      - name: Build FAAC HEAD from Source
+        run: |
+          git clone https://github.com/knik0/faac.git ../faac_src
+          cd ../faac_src
+          meson setup build --buildtype=release
+          ninja -C build
+
+      - name: Run Benchmark (Baseline - APT Legacy FAAC)
+        run: |
+          GATE_FLAG=""
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            GATE_FLAG="--gate"
+          fi
+
+          mkdir -p results
+          python3 run_benchmark.py "/usr/bin/faac" "/usr/lib/x86_64-linux-gnu/libfaac.so.0" "faac_base" "results/faac_base.json" $GATE_FLAG
+
+      - name: Run Benchmark (Candidate - FAAC HEAD)
+        run: |
+          GATE_FLAG=""
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            GATE_FLAG="--gate"
+          fi
+
+          FAAC_BIN="$(pwd)/../faac_src/build/frontend/faac"
+          FAAC_LIB="$(pwd)/../faac_src/build/libfaac/libfaac.so"
+
+          python3 run_benchmark.py "$FAAC_BIN" "$FAAC_LIB" "faac_cand" "results/faac_cand.json" $GATE_FLAG
+
+      - name: Generate Consolidated Comparison Report
+        run: |
+          python3 compare_results.py results/ --output faac_benchmark_report.md --summary-output summary.md || true
+
+      - name: Render Job Summaries & Report
+        run: |
+          if [ -f summary.md ]; then
+            cat summary.md >> $GITHUB_STEP_SUMMARY
+          elif [ -f faac_benchmark_report.md ]; then
+            cat faac_benchmark_report.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload FAAC Benchmark Results Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: faac-benchmark-results
+          path: |
+            results/*.json
+            faac_benchmark_report.md
+            summary.md

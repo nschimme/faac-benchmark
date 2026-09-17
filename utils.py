@@ -16,6 +16,7 @@ import sys
 import re
 import shutil
 import tempfile
+import time
 import math
 from functools import lru_cache
 
@@ -63,6 +64,326 @@ def get_binary_size(path):
         return os.path.getsize(path)
     return 0
 
+def is_system_library(path):
+    """Checks if a library path belongs to a system directory."""
+    if not path:
+        return False
+    if sys.platform == "darwin":
+        system_prefixes = ["/System/", "/usr/lib/libSystem", "/usr/lib/system/"]
+        return any(path.startswith(prefix) for prefix in system_prefixes)
+    return False
+
+def flatten_arg_list(arg_val):
+    """Flattens a string or list argument value into a list of strings split by commas."""
+    if not arg_val:
+        return []
+    if isinstance(arg_val, str):
+        arg_val = [arg_val]
+    res = []
+    for item in arg_val:
+        for p in item.split(","):
+            p = p.strip()
+            if p and p not in res:
+                res.append(p)
+    return res
+
+def probe_version(bin_path, flag_list, patterns, env=None):
+    """Probes a binary by running it with candidate flags and matching output against regex patterns."""
+    if not bin_path or not os.path.exists(bin_path):
+        return None
+    for flag in flag_list:
+        try:
+            cmd = [bin_path, flag] if flag else [bin_path]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
+            text = (res.stdout or "") + "\n" + (res.stderr or "")
+            for p in patterns:
+                m = re.search(p, text, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+    return None
+
+def make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids):
+    """Generates unique display name and sanitized tool ID."""
+    display_name = f"{base_name} {version}" if version else base_name
+    candidate_name = display_name
+    idx = 2
+    while candidate_name in existing_names:
+        candidate_name = f"{display_name} (#{idx})"
+        idx += 1
+    existing_names.add(candidate_name)
+
+    sanitized_id = re.sub(r"[^a-zA-Z0-9_]", "_", candidate_name.lower())
+    candidate_id = sanitized_id
+    idx = 2
+    while candidate_id in existing_ids:
+        candidate_id = f"{sanitized_id}_{idx}"
+        idx += 1
+    existing_ids.add(candidate_id)
+
+    return candidate_name, candidate_id
+
+def format_size(bytes_val):
+    """Formats bytes into human readable B / KB / MB representation."""
+    if bytes_val is None or bytes_val == 0:
+        return "0 B"
+    if bytes_val < 1024:
+        return f"{bytes_val} B"
+    if bytes_val < 1024 * 1024:
+        return f"{bytes_val / 1024:.1f} KB"
+    return f"{bytes_val / (1024 * 1024):.1f} MB"
+
+def make_progress_bar(val, max_val=1.0, width=8, lower_is_better=False):
+    """Generates an ASCII progress bar (e.g. ' ████░░░░')."""
+    if val is None or max_val <= 0:
+        return ""
+    ratio = max(0.0, min(1.0, val / max_val))
+    if lower_is_better:
+        ratio = 1.0 - ratio
+    filled = int(round(ratio * width))
+    return " " + "█" * filled + "░" * (width - filled)
+
+def zoomed_y_range(vals, y_range):
+    """Calculates a zoomed min/max y-axis range for Mermaid charts based on actual values."""
+    y_floor, y_ceiling = (float(x) for x in y_range.split("-->"))
+    if not vals:
+        return y_floor, y_ceiling
+    lo, hi = min(vals), max(vals)
+    pad = max((hi - lo) * 0.1, (y_ceiling - y_floor) * 0.02)
+    axis_lo, axis_hi = max(y_floor, lo - pad), min(y_ceiling, hi + pad)
+    if axis_hi - axis_lo < 1e-6:
+        axis_lo, axis_hi = y_floor, y_ceiling
+    return axis_lo, axis_hi
+
+def measure_delay_offset(ref_wav_path, cand_wav_path):
+    """Measures sample alignment timing offset (in ms) relative to reference WAV.
+
+    Returns (lag_samples, lag_ms) or (None, None) on failure.
+    Positive lag means decoded audio starts later than reference.
+    """
+    try:
+        import soundfile as sf
+        import scipy.signal
+
+        r_data, r_sr = sf.read(ref_wav_path, dtype='float32', always_2d=True)
+        c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
+
+        if r_sr != c_sr:
+            return None, None
+
+        r_mono = r_data.mean(axis=1)
+        c_mono = c_data.mean(axis=1)
+
+        n_search = min(len(r_mono), len(c_mono), r_sr * 3)
+        if n_search == 0:
+            return None, None
+
+        r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+        c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
+        corr = scipy.signal.correlate(r_norm, c_norm, mode='full')
+        lag = int(np.argmax(corr)) - (n_search - 1)
+        lag_ms = (lag / float(r_sr)) * 1000.0
+        return lag, float(lag_ms)
+    except Exception:
+        return None, None
+
+def measure_peak_ram(cmd, env=None, check=False, timeout=30):
+    """Runs a command in an isolated child process to accurately measure peak Resident Set Size (Max RSS in KB).
+
+    Returns (CompletedProcess, duration, max_rss_kb).
+    """
+    t_start = time.perf_counter()
+    try:
+        if sys.platform != "win32":
+            # Spawn a clean sub-runner python process so RUSAGE_CHILDREN measures only this single process
+            runner_script = (
+                "import subprocess, resource, sys\n"
+                "timeout_val = float(sys.argv[1]) if len(sys.argv) > 1 else None\n"
+                "cmd = sys.argv[2:]\n"
+                "try:\n"
+                "    res = subprocess.run(cmd, capture_output=True, timeout=timeout_val)\n"
+                "    ret = res.returncode\n"
+                "    out, err = res.stdout, res.stderr\n"
+                "except subprocess.TimeoutExpired:\n"
+                "    ret = -124\n"
+                "    out, err = b'', b'Command timed out'\n"
+                "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
+                "if sys.platform == 'darwin':\n"
+                "    rss = int(rss / 1024)\n"
+                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n'.encode())\n"
+                "sys.stderr.buffer.flush()\n"
+                "sys.stdout.buffer.write(out)\n"
+                "sys.stderr.buffer.write(err)\n"
+                "sys.exit(ret)\n"
+            )
+            runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
+            proc = subprocess.run(runner_cmd, capture_output=True, env=env, timeout=timeout + 5)
+            t_end = time.perf_counter()
+            duration = t_end - t_start
+
+            rss = None
+            stderr_clean = []
+            for line in proc.stderr.splitlines():
+                if line.startswith(b"__RSS__:"):
+                    try:
+                        rss = int(line.split(b":", 1)[1].strip())
+                    except Exception:
+                        pass
+                else:
+                    stderr_clean.append(line)
+
+            clean_stderr = b"\n".join(stderr_clean)
+            res = subprocess.CompletedProcess(cmd, returncode=proc.returncode, stdout=proc.stdout, stderr=clean_stderr)
+            if check and res.returncode != 0:
+                raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+            return res, duration, rss
+        else:
+            res = subprocess.run(cmd, capture_output=True, check=check, env=env)
+            t_end = time.perf_counter()
+            return res, t_end - t_start, None
+    except Exception as e:
+        t_end = time.perf_counter()
+        if check and isinstance(e, subprocess.CalledProcessError):
+            raise e
+        dummy_res = subprocess.CompletedProcess(cmd, returncode=-1, stdout=b"", stderr=str(e).encode())
+        return dummy_res, t_end - t_start, None
+
+def corrupt_adts_bitstream(input_path, output_path, seed=42):
+    """Deterministically corrupts an audio bitstream file (ADTS .aac or MP4 .m4a).
+
+    Emulates frame/packet drops (5% probability) and bit flips in audio payloads
+    using a fixed seed PRNG for 100% reproducible robustness tests.
+    """
+    import random
+    rng = random.Random(seed)
+
+    if not os.path.exists(input_path):
+        return False
+
+    with open(input_path, "rb") as f:
+        data = bytearray(f.read())
+
+    if len(data) < 14:
+        with open(output_path, "wb") as f:
+            f.write(data)
+        return False
+
+    out_data = bytearray()
+    i = 0
+    n = len(data)
+
+    # Check if file starts with ADTS syncword (0xFFF)
+    is_adts = (data[0] == 0xFF and (data[1] & 0xF6) == 0xF0)
+
+    if is_adts:
+        while i < n:
+            if i + 7 <= n and data[i] == 0xFF and (data[i + 1] & 0xF6) == 0xF0:
+                flen = ((data[i + 3] & 3) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
+                if flen <= 0 or i + flen > n:
+                    out_data.extend(data[i:])
+                    break
+
+                frame_data = bytearray(data[i:i + flen])
+
+                # Deterministic 5% frame drop rate
+                if rng.random() < 0.05:
+                    i += flen
+                    continue
+
+                # Deterministic bit flips in payload (beyond ADTS header)
+                header_len = 7 if (data[i + 1] & 1) else 9
+                if len(frame_data) > header_len:
+                    for idx in range(header_len, len(frame_data)):
+                        if rng.random() < 0.02:  # 2% byte corruption
+                            frame_data[idx] ^= rng.randint(1, 255)
+
+                out_data.extend(frame_data)
+                i += flen
+            else:
+                out_data.append(data[i])
+                i += 1
+    else:
+        # M4A / MP4 container or general bitstream: preserve container header offset (~512 bytes)
+        header_offset = min(512, n // 10)
+        out_data.extend(data[:header_offset])
+
+        # Apply deterministic bit flips and payload truncations
+        payload = bytearray(data[header_offset:])
+        chunk_size = 512
+        for offset in range(0, len(payload), chunk_size):
+            chunk = payload[offset:offset + chunk_size]
+            if rng.random() < 0.05:  # 5% chunk drop
+                continue
+            for idx in range(len(chunk)):
+                if rng.random() < 0.01:  # 1% byte corruption
+                    chunk[idx] ^= rng.randint(1, 255)
+            out_data.extend(chunk)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(out_data)
+
+    return True
+
+def compute_snr(ref_wav_path, cand_wav_path):
+    """Computes Signal-to-Noise Ratio (SNR in dB) between reference WAV and candidate decoded WAV.
+
+    Returns SNR in dB (or None on failure / sample mismatch).
+    Bit-exact decodes return float('inf').
+    """
+    try:
+        import soundfile as sf
+        import scipy.signal
+
+        r_data, r_sr = sf.read(ref_wav_path, dtype='float32', always_2d=True)
+        c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
+
+        if r_sr != c_sr:
+            return None
+
+        # Cross-correlate mono downmix to align priming delay offsets
+        r_mono = r_data.mean(axis=1)
+        c_mono = c_data.mean(axis=1)
+
+        n_search = min(len(r_mono), len(c_mono), r_sr * 3)
+        if n_search == 0:
+            return None
+
+        r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+        c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
+        corr = scipy.signal.correlate(r_norm, c_norm, mode='full')
+        lag = int(np.argmax(corr)) - (n_search - 1)
+
+        if lag < 0:
+            c_aligned = c_data[-lag:]
+            r_aligned = r_data[:len(r_data) + lag]
+        elif lag > 0:
+            r_aligned = r_data[lag:]
+            c_aligned = c_data[:len(c_data) - lag]
+        else:
+            r_aligned, c_aligned = r_data, c_data
+
+        n = min(len(r_aligned), len(c_aligned))
+        if n <= 0:
+            return None
+
+        r_aligned = r_aligned[:n]
+        c_aligned = c_aligned[:n]
+
+        ref_power = float(np.mean(r_aligned ** 2))
+        err_power = float(np.mean((r_aligned - c_aligned) ** 2))
+
+        if err_power < 1e-12:
+            return float('inf')
+        if ref_power < 1e-12:
+            return 0.0
+
+        snr = 10.0 * math.log10(ref_power / err_power)
+        return float(snr)
+    except Exception:
+        return None
+
 def resolve_wrapper_target(path):
     """If path is a shell wrapper script (e.g. one scripts/build_faac_matrix.sh
     writes to fix up a dylib search path before exec'ing the real binary),
@@ -104,6 +425,17 @@ def find_linked_lib(binary_path, name_substr):
     except Exception:
         pass
     return None
+
+def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
+    """Version label for a third-party codec FFmpeg hosts (libopus,
+    libmp3lame, libfdk-aac, vo-aacenc): ffmpeg -version never reports it, so
+    prefer the real library version recovered from its on-disk path
+    (guess_lib_version_from_path), falling back to labeling the version as
+    ffmpeg's explicitly -- rather than a bare number that would otherwise
+    look like the codec's own -- when that's not recoverable (no Homebrew
+    Cellar segment, no dpkg)."""
+    real_ver = guess_lib_version_from_path(find_linked_lib(ff_bin, lib_substr))
+    return real_ver if real_ver else (f"(ffmpeg {ffmpeg_ver})" if ffmpeg_ver else None)
 
 def guess_lib_version_from_path(lib_path):
     """Best-effort real version of a linked shared library.
@@ -394,8 +726,11 @@ def get_faad_path():
         return env_faad
     return shutil.which("faad")
 
+@lru_cache(maxsize=2048)
 def ffmpeg_probe(path):
-    """Basic probe using ffprobe."""
+    """Basic probe using ffprobe, cached in memory."""
+    if not path or not os.path.exists(path):
+        return None
     try:
         cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)

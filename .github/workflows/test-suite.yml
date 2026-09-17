@@ -10,17 +10,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faad ffmpeg valgrind
+          sudo apt-get install -y faac faad fdkaac ffmpeg valgrind
 
       - name: Install dependencies
         run: |
