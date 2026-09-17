@@ -253,6 +253,17 @@ def find_linked_lib(binary_path, name_substr):
         pass
     return None
 
+def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
+    """Version label for a third-party codec FFmpeg hosts (libopus,
+    libmp3lame, libfdk-aac, vo-aacenc): ffmpeg -version never reports it, so
+    prefer the real library version recovered from its on-disk path
+    (guess_lib_version_from_path), falling back to labeling the version as
+    ffmpeg's explicitly -- rather than a bare number that would otherwise
+    look like the codec's own -- when that's not recoverable (no Homebrew
+    Cellar segment, no dpkg)."""
+    real_ver = guess_lib_version_from_path(find_linked_lib(ff_bin, lib_substr))
+    return real_ver if real_ver else (f"(ffmpeg {ffmpeg_ver})" if ffmpeg_ver else None)
+
 def guess_lib_version_from_path(lib_path):
     """Best-effort real version of a linked shared library.
 

@@ -27,7 +27,8 @@ from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_
                    corpus_dir, select_corpus_clips, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families, expand_scenario_list,
                    get_audio_es_bytes, is_system_library, flatten_arg_list, probe_version,
-                   make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range)
+                   make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range,
+                   hosted_codec_ver)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -324,16 +325,6 @@ def get_audio_info(path):
 import re
 
 
-def hosted_codec_ver(ff_bin, lib_substr, ffmpeg_ver):
-    """Version label for a third-party codec FFmpeg hosts (libopus,
-    libmp3lame, libfdk-aac, vo-aacenc): ffmpeg -version never reports it, so
-    prefer the real library version recovered from its on-disk path
-    (guess_lib_version_from_path), falling back to labeling the version as
-    ffmpeg's explicitly -- rather than a bare number that would otherwise
-    look like the codec's own -- when that's not recoverable (no Homebrew
-    Cellar segment, no dpkg)."""
-    real_ver = guess_lib_version_from_path(find_linked_lib(ff_bin, lib_substr))
-    return real_ver if real_ver else (f"(ffmpeg {ffmpeg_ver})" if ffmpeg_ver else None)
 
 def probe_faac_version(faac_path, lib_override=None):
     """faac never prints its version via --help/-h (the banner is only

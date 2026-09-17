@@ -27,7 +27,7 @@ from utils import (get_binary_size, get_elf_section_sizes, decode_validate, get_
                    scenario_family, family_label, scenario_families, expand_scenario_list,
                    is_system_library, flatten_arg_list, probe_version,
                    make_unique_name_and_id, format_size, make_progress_bar, zoomed_y_range,
-                   compute_snr, wav_conv)
+                   compute_snr, wav_conv, hosted_codec_ver)
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -142,6 +142,15 @@ def detect_decoders(args):
         ver = probe_version(ff_bin, ["-version"], [r"ffmpeg\s+version\s+([^\s,]+)"])
         name, tool_id = make_unique_name_and_id("FFmpeg AAC", ver, "ffmpeg_aac", existing_names, existing_ids)
         decoders.append(FFmpegDecoder(name, ff_bin, tool_id=tool_id))
+
+        try:
+            res = subprocess.run([ff_bin, "-decoders"], capture_output=True, text=True)
+            stdout = res.stdout or ""
+            if "libfdk_aac" in stdout:
+                name_fdk, id_fdk = make_unique_name_and_id("FFmpeg FDK-AAC", hosted_codec_ver(ff_bin, "libfdk-aac", ver), "ffmpeg_libfdk_aac", existing_names, existing_ids)
+                decoders.append(FFmpegDecoder(name_fdk, ff_bin, tool_id=id_fdk))
+        except Exception:
+            pass
 
     afconvert_bins = flatten_arg_list(getattr(args, "afconvert_bin", None))
     if not afconvert_bins:
