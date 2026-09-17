@@ -20,7 +20,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
                    get_cached_ref_wav)
-import os
+
 os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
 import phase2_mos

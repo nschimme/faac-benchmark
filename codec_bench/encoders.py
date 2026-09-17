@@ -139,9 +139,9 @@ class FDKAACEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        m_val = "29" if self.profile == "hev2" else ("5" if self.profile == "he" else "2")
+        p_val = "29" if self.profile == "hev2" else ("5" if self.profile == "he" else "2")
         bps = bitrate_kbps * 1000
-        return [self.binary_path, "-m", m_val, "-b", str(bps), "-o", output_path, input_path]
+        return [self.binary_path, "-p", p_val, "-b", str(bps), "-o", output_path, input_path]
 
 
 class AACEncEncoder(Encoder):

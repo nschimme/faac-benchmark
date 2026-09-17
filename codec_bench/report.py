@@ -382,63 +382,65 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             f.write("</details>\n\n")
 
-            # 4. Stereo Image Fidelity per rate family
-            f.write(f"### Stereo Image Fidelity ({fam_label})\n\n")
-            f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
+            # 4. Stereo Image Fidelity per rate family (only for multi-channel / stereo families)
+            is_stereo_family = any(scenario_channels(s) >= 2 for s in fam_scenarios)
+            if is_stereo_family:
+                f.write(f"### Stereo Image Fidelity ({fam_label})\n\n")
+                f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
 
-            line_data_ic = {}
-            for rk in all_row_keys:
-                vals = [1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None for s in fam_scenarios]
-                if any(v is not None for v in vals):
-                    line_data_ic[rk] = vals
+                line_data_ic = {}
+                for rk in all_row_keys:
+                    vals = [1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None for s in fam_scenarios]
+                    if any(v is not None for v in vals):
+                        line_data_ic[rk] = vals
 
-            if not skip_graphs and line_data_ic:
-                chart_vals_ic = [v for vals in line_data_ic.values() for v in vals if v is not None]
-                axis_lo_ic, axis_hi_ic = zoomed_y_range(chart_vals_ic, "0.0 --> 1.0")
-                f.write("```mermaid\n")
-                f.write("xychart-beta\n")
-                f.write(f'    title "Stereo Image Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
-                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
-                f.write(f'    y-axis "Stereo Fidelity" {axis_lo_ic:.4g} --> {axis_hi_ic:.4g}\n')
-                for rk, vals in line_data_ic.items():
-                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
-                f.write("```\n\n")
+                if not skip_graphs and line_data_ic:
+                    chart_vals_ic = [v for vals in line_data_ic.values() for v in vals if v is not None]
+                    axis_lo_ic, axis_hi_ic = zoomed_y_range(chart_vals_ic, "0.0 --> 1.0")
+                    f.write("```mermaid\n")
+                    f.write("xychart-beta\n")
+                    f.write(f'    title "Stereo Image Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
+                    f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                    f.write(f'    y-axis "Stereo Fidelity" {axis_lo_ic:.4g} --> {axis_hi_ic:.4g}\n')
+                    for rk, vals in line_data_ic.items():
+                        v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
+                        f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
+                    f.write("```\n\n")
 
-            f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({fam_label})</b></summary>\n\n")
-            for p in ["lc", "he", "hev2", "standard"]:
-                p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
-                if not p_rks:
-                    continue
-                p_has_data = any(stats[rk][s_name]["ic_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
-                if not p_has_data:
-                    continue
+                f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({fam_label})</b></summary>\n\n")
+                for p in ["lc", "he", "hev2", "standard"]:
+                    p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
+                    if not p_rks:
+                        continue
+                    p_has_data = any(stats[rk][s_name]["ic_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
+                    if not p_has_data:
+                        continue
 
-                f.write(f"#### {profile_label(p)} Profile\n\n")
-                f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
-                f.write("| :--- | " + " | ".join([":---:"] * len(p_rks)) + " |\n")
+                    f.write(f"#### {profile_label(p)} Profile\n\n")
+                    f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
+                    f.write("| :--- | " + " | ".join([":---:"] * len(p_rks)) + " |\n")
 
-                for s_name in fam_scenarios:
-                    row_str = f"| {s_name} |"
-                    p_valid_ic = [1.0 - (stats[rk][s_name]["ic_sum"] / stats[rk][s_name]["ic_count"]) for rk in p_rks if stats[rk][s_name]["ic_count"] > 0]
-                    best_p_ic = max(p_valid_ic) if p_valid_ic else None
+                    for s_name in fam_scenarios:
+                        row_str = f"| {s_name} |"
+                        p_valid_ic = [1.0 - (stats[rk][s_name]["ic_sum"] / stats[rk][s_name]["ic_count"]) for rk in p_rks if stats[rk][s_name]["ic_count"] > 0]
+                        best_p_ic = max(p_valid_ic) if p_valid_ic else None
 
-                    for rk in p_rks:
-                        st = stats[rk][s_name]
-                        if st["ic_count"] > 0:
-                            ic_fid = 1.0 - (st["ic_sum"] / st["ic_count"])
-                            is_best = best_p_ic and abs(ic_fid - best_p_ic) < 1e-6
-                            p_bar = make_progress_bar(ic_fid, 1.0)
-                            if is_best:
-                                cell = f" **{ic_fid:.4f}**{p_bar}"
+                        for rk in p_rks:
+                            st = stats[rk][s_name]
+                            if st["ic_count"] > 0:
+                                ic_fid = 1.0 - (st["ic_sum"] / st["ic_count"])
+                                is_best = best_p_ic and abs(ic_fid - best_p_ic) < 1e-6
+                                p_bar = make_progress_bar(ic_fid, 1.0)
+                                if is_best:
+                                    cell = f" **{ic_fid:.4f}**{p_bar}"
+                                else:
+                                    cell = f" {ic_fid:.4f}{p_bar}"
+                                row_str += f"{cell} |"
                             else:
-                                cell = f" {ic_fid:.4f}{p_bar}"
-                            row_str += f"{cell} |"
-                        else:
-                            row_str += " N/A |"
-                    f.write(row_str + "\n")
-                f.write("\n")
-            f.write("</details>\n\n")
+                                row_str += " N/A |"
+                        f.write(row_str + "\n")
+                    f.write("\n")
+                f.write("</details>\n\n")
 
             # 5. Transient Fidelity per rate family
             f.write(f"### Transient Fidelity ({fam_label})\n\n")
@@ -929,9 +931,30 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 continue
 
             f.write(f"#### {fam_label}\n\n")
+            x_labels = [s.rsplit("_", 1)[-1] for s in fam_scenarios]
 
             # 1. Per-Scenario Average MOS
             f.write(f"##### Per-Scenario Average MOS ({fam_label})\n\n")
+
+            dec_line_data_mos = {}
+            for rk in sorted_rk:
+                vals = [stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None for s in fam_scenarios]
+                if any(v is not None for v in vals):
+                    dec_line_data_mos[rk] = vals
+
+            if not skip_graphs and dec_line_data_mos:
+                chart_vals_mos = [v for vals in dec_line_data_mos.values() for v in vals if v is not None]
+                axis_lo_m, axis_hi_m = zoomed_y_range(chart_vals_mos, "1.0 --> 5.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Decoder Perceptual Quality across Bitrates - {fam_label} (Average MOS)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "MOS Score" {axis_lo_m:.4g} --> {axis_hi_m:.4g}\n')
+                for rk, vals in dec_line_data_mos.items():
+                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
+                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                f.write("```\n\n")
+
             for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["mos_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
@@ -961,6 +984,26 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 2. Spec Conformance (SNR)
             f.write(f"##### Spec Conformance (Mean SNR - {fam_label})\n\n")
+
+            dec_line_data_snr = {}
+            for rk in sorted_rk:
+                vals = [stats[rk][s]["snr_sum"] / stats[rk][s]["snr_count"] if stats[rk][s]["snr_count"] > 0 else None for s in fam_scenarios]
+                if any(v is not None for v in vals):
+                    dec_line_data_snr[rk] = vals
+
+            if not skip_graphs and dec_line_data_snr:
+                chart_vals_snr = [v for vals in dec_line_data_snr.values() for v in vals if v is not None]
+                axis_lo_s, axis_hi_s = zoomed_y_range(chart_vals_snr, "0.0 --> 60.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Decoder Spec Conformance across Bitrates - {fam_label} (Mean SNR dB)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "SNR (dB)" {axis_lo_s:.4g} --> {axis_hi_s:.4g}\n')
+                for rk, vals in dec_line_data_snr.items():
+                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
+                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                f.write("```\n\n")
+
             for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["snr_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
@@ -1013,6 +1056,26 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             # 4. Decoding Speed
             f.write(f"##### Decoding Speed (xRT - {fam_label})\n\n")
+
+            dec_line_data_speed = {}
+            for rk in sorted_rk:
+                vals = [stats[rk][s]["speed_sum"] / stats[rk][s]["speed_count"] if stats[rk][s]["speed_count"] > 0 else None for s in fam_scenarios]
+                if any(v is not None for v in vals):
+                    dec_line_data_speed[rk] = vals
+
+            if not skip_graphs and dec_line_data_speed:
+                chart_vals_speed = [v for vals in dec_line_data_speed.values() for v in vals if v is not None]
+                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_speed, "0.0 --> 200.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Decoding Speed across Bitrates - {fam_label} (xRealtime)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "Speed (xRT)" {axis_lo_sp:.4g} --> {axis_hi_sp:.4g}\n')
+                for rk, vals in dec_line_data_speed.items():
+                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
+                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                f.write("```\n\n")
+
             for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["speed_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
