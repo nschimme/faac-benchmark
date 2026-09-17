@@ -221,6 +221,19 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                     ref_aligned, dec_aligned = ref_data, dec_data
 
                 n = min(len(ref_aligned), len(dec_aligned))
+                num_ref_ch = ref_aligned.shape[1]
+                num_dec_ch = dec_aligned.shape[1]
+
+                if num_ref_ch != num_dec_ch:
+                    if num_ref_ch == 1 and num_dec_ch > 1:
+                        ref_aligned = np.repeat(ref_aligned, num_dec_ch, axis=1)
+                    elif num_dec_ch == 1 and num_ref_ch > 1:
+                        dec_aligned = np.repeat(dec_aligned, num_ref_ch, axis=1)
+                    else:
+                        common_ch = min(num_ref_ch, num_dec_ch)
+                        ref_aligned = ref_aligned[:, :common_ch]
+                        dec_aligned = dec_aligned[:, :common_ch]
+
                 num_channels = ref_aligned.shape[1]
                 per_channel_dist = [
                     z_engine.distance(

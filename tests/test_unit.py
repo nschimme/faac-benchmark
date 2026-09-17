@@ -739,6 +739,28 @@ class TestZimtohrliScoring(unittest.TestCase):
             self.assertIsNotNone(mos)
             self.assertEqual(len(call_lengths), 2, "expected one distance() call per channel")
 
+    def test_channel_mismatch_ref_stereo_dec_mono(self):
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=1, sr=48000, ch=2)
+            write_wav(deg, seconds=1, sr=48000, ch=1)
+
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNotNone(mos)
+
+    def test_channel_mismatch_ref_mono_dec_stereo(self):
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=1, sr=48000, ch=1)
+            write_wav(deg, seconds=1, sr=48000, ch=2)
+
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNotNone(mos)
+
 
 class TestCompareResultsRendering(unittest.TestCase):
     def test_summary_table_mos_delta_rendering(self):

@@ -36,5 +36,41 @@ class TestDecoders(unittest.TestCase):
             self.assertTrue(ok)
             self.assertTrue(os.path.exists(out_aac))
 
+    def test_process_decoder_task_channel_mismatch(self):
+        from helpers import write_wav
+        class DummyDecoder(dec.Decoder):
+            def __init__(self, out_wav):
+                super().__init__("DummyDecoder", "/usr/bin/true", "dummy_dec")
+                self.out_wav = out_wav
+
+            def get_decode_cmd(self, input_path, output_path):
+                # Dummy command that copies the pre-created out_wav
+                return ["cp", self.out_wav, output_path]
+
+        with tempfile.TemporaryDirectory() as td:
+            ref_wav = os.path.join(td, "ref.wav")
+            dec_out = os.path.join(td, "dec_mono.wav")
+            bitstream = os.path.join(td, "test.aac")
+
+            write_wav(ref_wav, seconds=1, sr=48000, ch=2)
+            write_wav(dec_out, seconds=1, sr=48000, ch=1)
+            with open(bitstream, "wb") as f:
+                f.write(b"dummy")
+
+            res_item = {
+                "row_key": "enc_row_1",
+                "scenario": "48k_stereo_128k",
+                "filename": "sample.wav",
+                "aac_path": bitstream,
+                "ref_path": ref_wav,
+                "profile": "lc"
+            }
+
+            decoder = DummyDecoder(dec_out)
+            res = dec.process_decoder_task(decoder, res_item, td)
+
+            self.assertTrue(res["decode_valid"])
+            self.assertIsNotNone(res["mos"])
+
 if __name__ == "__main__":
     unittest.main()

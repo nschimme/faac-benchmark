@@ -19,11 +19,12 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
-                   get_cached_ref_wav)
+                   get_cached_ref_wav, scenario_channels, wav_conv)
 
 os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
 import phase2_mos
+from config import SCENARIOS
 
 def decoder_row_key(decoder):
     """Stable identity key for a decoder tool."""
@@ -293,8 +294,23 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
 
             if not skip_mos:
                 try:
-                    mode_str = res_item.get("mode", "audio")
-                    mos_val, _backend = phase2_mos.score_wav_pair(ref_path, output_path, mode_str=mode_str)
+                    cfg = SCENARIOS.get(scenario_name, {})
+                    v_rate = cfg.get("visqol_rate") or cfg.get("rate") or 48000
+                    v_channels = scenario_channels(cfg) if cfg else 2
+                    mode_str = cfg.get("mode", "audio")
+
+                    with tempfile.TemporaryDirectory() as td:
+                        ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
+                        if not ref_wav:
+                            ref_wav = os.path.join(td, "ref_conv.wav")
+                            if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
+                                ref_wav = ref_path
+
+                        dec_wav = os.path.join(td, "dec_conv.wav")
+                        if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
+                            dec_wav = output_path
+
+                        mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
                 except Exception:
                     pass
 
