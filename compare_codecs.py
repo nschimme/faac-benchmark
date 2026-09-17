@@ -28,14 +28,11 @@ from utils import (get_scenario_sort_key, safe_run, corpus_dir,
 import os
 os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
-import threading
 import soundfile as sf
 import phase2_mos
 import phase3_stereo
 import transient
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
-
-mos_lock = threading.Lock()
 
 # Re-export everything from codec_bench package for 100% backward compatibility
 from codec_bench import (
@@ -116,8 +113,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
 
                     if ref_wav and os.path.exists(ref_wav):
                         if not skip_mos:
-                            with mos_lock:
-                                mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, decoded_wav, mode_str=cfg.get("mode", "audio"), sample_rate=cfg.get("rate"))
+                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, decoded_wav, mode_str=cfg.get("mode", "audio"), sample_rate=cfg.get("rate"))
 
                         if not skip_stereo:
                             ic_err_val = phase3_stereo.coherence_error(ref_wav, decoded_wav)
@@ -240,11 +236,15 @@ def main():
         else:
             print(f"Detected encoders ({len(encoders)} variants): {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
 
-        if args.resume and os.path.exists(args.results_json):
-            print(f"==> Resume mode: Loading existing results from {args.results_json}")
-            with open(args.results_json) as f:
-                encoder_results = json.load(f)
-        elif encoders:
+        if os.path.exists(args.results_json):
+            print(f"==> Loading existing results from {args.results_json}")
+            try:
+                with open(args.results_json) as f:
+                    encoder_results = json.load(f)
+            except Exception:
+                pass
+
+        if not encoder_results and encoders:
             total_tasks = 0
             tasks = []
             for s_name in scenario_list:
@@ -274,7 +274,7 @@ def main():
             os.makedirs(ref_cache_dir, exist_ok=True)
 
             completed = 0
-            with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
                                           args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
@@ -295,6 +295,13 @@ def main():
     decoder_robustness_results = []
     decoders = []
     if run_decoders:
+        if not encoder_results and os.path.exists(args.results_json):
+            try:
+                with open(args.results_json) as f:
+                    encoder_results = json.load(f)
+            except Exception:
+                pass
+
         decoders = detect_decoders(args)
         if not decoders:
             print("No decoders detected!")
@@ -317,7 +324,7 @@ def main():
             print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
                 print(f"  Decoding with {decoder.name}...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
                     futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir) for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
@@ -338,7 +345,7 @@ def main():
 
             for decoder in decoders:
                 print(f"  Testing robustness for {decoder.name}...")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
                     futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in robustness_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()

@@ -21,7 +21,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faad fdkaac ffmpeg valgrind meson ninja-build
+          sudo apt-get install -y faac faad fdkaac ffmpeg valgrind meson ninja-build
 
       - name: Install Python dependencies
         run: |

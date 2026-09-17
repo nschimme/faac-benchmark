@@ -23,10 +23,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
 import os
 os.environ["NUMBA_THREADING_LAYER"] = "omp"
 
-import threading
 import phase2_mos
-
-mos_lock = threading.Lock()
 
 def decoder_row_key(decoder):
     """Stable identity key for a decoder tool."""
@@ -242,8 +239,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             if not skip_mos:
                 try:
                     mode_str = res_item.get("mode", "audio")
-                    with mos_lock:
-                        mos_val, _backend = phase2_mos.score_wav_pair(ref_path, output_path, mode_str=mode_str)
+                    mos_val, _backend = phase2_mos.score_wav_pair(ref_path, output_path, mode_str=mode_str)
                 except Exception:
                     pass
 
