@@ -240,21 +240,20 @@ except Exception:
 def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     """Score an already-converted ref/deg WAV pair.
 
-    Speech mode uses visqol-python (16 kHz mono); audio mode uses Zimtohrli
-    (48 kHz). The engine is chosen by the scenario's mode ALONE. `sample_rate`
-    is still accepted for callers that pass it, and is unused for dispatch.
+    Speech mode uses visqol-python (16 kHz mono) when available, falling back
+    to Zimtohrli (48 kHz resampled). Audio mode uses Zimtohrli directly.
     Returns (mos, backend_used); mos is None on failure."""
     try:
-        if mode_str == "speech":
-            if HAS_VISQOL_PYTHON:
+        if mode_str == "speech" and HAS_VISQOL_PYTHON:
+            try:
                 api = get_process_visqol_python("speech")
                 if api:
                     result = api.measure(v_ref, v_deg)
                     return float(result.moslqo), "visqol-python"
-            print("  ERROR: visqol-python is required for speech-mode scoring but not available.")
-            return None, "visqol-python"
+            except Exception as e:
+                print(f"  visqol-python speech evaluation failed: {e}, falling back to zimtohrli")
 
-        # Audio mode: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
+        # Audio mode or speech fallback: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
         if HAS_ZIMTOHRLI:
             try:
                 env = dict(os.environ)
