@@ -338,15 +338,23 @@ def main():
         os.makedirs(ref_cache_dir, exist_ok=True)
 
         if valid_encoder_bitstreams and decoders:
-            print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
+            total_dec_tasks = len(valid_encoder_bitstreams)
+            print(f"\n>>> Running Decoder Benchmarks across {total_dec_tasks} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
                 print(f"  Decoding with {decoder.name}...")
+                completed_dec = 0
                 with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
                     futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir) for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
+                        completed_dec += 1
                         if res:
                             decoder_results.append(res)
+                            status_mark = "OK" if res["decode_valid"] else "FAIL"
+                            mos_str = f", MOS: {res['mos']:.2f}" if res.get("mos") is not None else ""
+                            snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
+                            ch_tag = " (1ch)" if res.get("mono_downmix") else ""
+                            print(f"    [{completed_dec}/{total_dec_tasks}] {decoder.name} | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
 
             print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
             robustness_bitstreams = valid_encoder_bitstreams
@@ -360,14 +368,19 @@ def main():
                         gate_robustness.append(item)
                 robustness_bitstreams = gate_robustness
 
+            total_rob_tasks = len(robustness_bitstreams)
             for decoder in decoders:
                 print(f"  Testing robustness for {decoder.name}...")
+                completed_rob = 0
                 with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
                     futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in robustness_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
+                        completed_rob += 1
                         if res:
                             decoder_robustness_results.append(res)
+                            status_mark = "PASS" if res.get("passed") else "FAIL"
+                            print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} | {res['scenario']} | {res['filename']} -> {status_mark}")
 
     # Final Leaderboard Generation
     out_file = args.output
