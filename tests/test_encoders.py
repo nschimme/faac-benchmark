@@ -26,5 +26,9 @@ class TestEncoders(unittest.TestCase):
         self.assertIn("-b", cmd)
         self.assertIn("128", cmd)
 
+    def test_afconvert_rebranding(self):
+        af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
+        self.assertEqual(af_enc.name, "Apple AAC 15.3")
+
 if __name__ == "__main__":
     unittest.main()

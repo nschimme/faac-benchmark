@@ -66,5 +66,26 @@ class TestReport(unittest.TestCase):
                 self.assertIn("(1ch)", text)
                 self.assertIn("Decoder Quality Outliers", text)
 
+    def test_unknown_row_key_fallback_and_timeout_rendering(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            results = [
+                {
+                    "tool": "Apple AudioToolbox", "row_key": "apple_aac_2_0_he", "scenario": "48k_stereo_32k",
+                    "filename": "clip1.wav", "profile": "he", "duration": 0.0,
+                    "audio_duration": 5.0, "actual_bitrate": 32.0, "target_bitrate": 32,
+                    "decode_valid": False, "decode_error": "Timeout expired", "timeout": True
+                }
+            ]
+
+            rep.generate_leaderboard([], results, out_md, ["48k_stereo_32k"], skip_graphs=True)
+            self.assertTrue(os.path.exists(out_md))
+
+            rep.generate_decoder_leaderboard([], results, out_md, ["48k_stereo_32k"], skip_graphs=True)
+            with open(out_md) as f:
+                text = f.read()
+                self.assertIn("1x timeout", text)
+                self.assertIn("Timeout expired", text)
+
 if __name__ == "__main__":
     unittest.main()

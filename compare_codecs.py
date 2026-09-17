@@ -26,7 +26,10 @@ from utils import (get_scenario_sort_key, safe_run, corpus_dir,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
                    get_cached_ref_wav)
 import os
-os.environ["NUMBA_THREADING_LAYER"] = "omp"
+if sys.platform == "darwin":
+    os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
+else:
+    os.environ.setdefault("NUMBA_THREADING_LAYER", "omp")
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
@@ -108,7 +111,33 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
         res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None)
 
         if res.returncode != 0:
-            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+            stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
+            stderr_clean = stderr_text.strip()
+            if stderr_clean:
+                stderr_tail = next((l for l in reversed(stderr_clean.splitlines()) if l.strip()), "")
+                detail = f"exit code {res.returncode}: {stderr_tail}"
+            elif res.returncode < 0:
+                detail = f"Process terminated by signal {-res.returncode}"
+            else:
+                detail = f"exit code {res.returncode}"
+
+            return {
+                "tool": encoder.name,
+                "row_key": encoder_row_key(encoder),
+                "scenario": scenario_name,
+                "filename": sample,
+                "profile": encoder.profile,
+                "duration": 0,
+                "audio_duration": None,
+                "peak_ram_kb": None,
+                "size": 0,
+                "actual_bitrate": None,
+                "target_bitrate": bitrate_kbps,
+                "decode_valid": False,
+                "decode_error": f"Encoding failed: {detail}",
+                "aac_path": None,
+                "ref_path": input_path
+            }
 
         audio_duration = ffmpeg_probe(input_path)
         mos_val = None
@@ -350,7 +379,7 @@ def main():
                         completed_dec += 1
                         if res:
                             decoder_results.append(res)
-                            status_mark = "OK" if res["decode_valid"] else "FAIL"
+                            status_mark = "TIMEOUT" if res.get("timeout") else ("OK" if res["decode_valid"] else "FAIL")
                             mos_str = f", MOS: {res['mos']:.2f}" if res.get("mos") is not None else ""
                             snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
                             ch_tag = " (1ch)" if res.get("mono_downmix") else ""
@@ -380,7 +409,7 @@ def main():
                         completed_rob += 1
                         if res:
                             decoder_robustness_results.append(res)
-                            status_mark = "PASS" if res.get("passed") else "FAIL"
+                            status_mark = "TIMEOUT" if res.get("timeout") else ("PASS" if res.get("passed") else "FAIL")
                             prof_str = profile_label(res.get('profile', 'lc'))
                             print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
 

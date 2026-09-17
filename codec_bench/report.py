@@ -97,6 +97,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     encoder_info = {encoder_row_key(e): e for e in encoders}
     all_row_keys = sorted(stats.keys())
 
+    for rk in all_row_keys:
+        if rk not in encoder_info:
+            tool_name = next((r.get("tool") for r in results if r.get("row_key") == rk), rk)
+            profile = next((r.get("profile") for r in results if r.get("row_key") == rk), "lc")
+            encoder_info[rk] = type("DummyEncoder", (), {
+                "name": tool_name,
+                "profile": profile,
+                "tool_id": rk,
+                "text_size": 0,
+                "rodata_size": 0
+            })()
+
     tools = sorted(list({encoder_info[rk].name for rk in all_row_keys if rk in encoder_info}))
 
     def is_suboptimal(tool_name, s_name, profile, check_mos):
@@ -291,7 +303,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             table_used_strikethrough = False
             for p in ["lc", "he", "hev2", "standard"]:
-                p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
+                p_rks = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
                 p_has_data = any(stats[rk][s_name]["mos_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
@@ -774,20 +786,36 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
         "valid_count": 0, "total_count": 0
     })))
 
+    decoder_info = {decoder_row_key(d): d for d in decoders}
     clip_mos = defaultdict(dict)
     bug_flags = []
     mono_downmix_counts = defaultdict(int)
+    timeout_counts = defaultdict(int)
 
     for res in results:
         rk = res["row_key"]
         s = res["scenario"]
         p = res.get("profile", "lc")
 
+        if rk not in decoder_info:
+            tool_name = res.get("tool") or rk
+            decoder_info[rk] = type("DummyDecoder", (), {
+                "name": tool_name,
+                "tool_id": rk,
+                "text_size": 0,
+                "rodata_size": 0
+            })()
+
         stats[rk][s]["total_count"] += 1
         p_stats[rk][p][s]["total_count"] += 1
 
         if res.get("mono_downmix"):
             mono_downmix_counts[rk] += 1
+
+        if res.get("timeout") or "timed out" in (res.get("decode_error") or "").lower() or "timeout" in (res.get("decode_error") or "").lower():
+            timeout_counts[rk] += 1
+            if res.get("filename"):
+                bug_flags.append((decoder_info[rk].name, p, s, res["filename"], 0.0, 0.0, "Timeout expired"))
 
         if res.get("decode_valid"):
             stats[rk][s]["valid_count"] += 1
@@ -846,7 +874,6 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             if r_res.get("passed"):
                 rob_stats[rk]["passed"] += 1
 
-    decoder_info = {decoder_row_key(d): d for d in decoders}
     overall = {}
     for rk, dec_obj in decoder_info.items():
         d_mos, d_speed, d_snr, d_delay, d_ram = [], [], [], [], []
@@ -919,7 +946,9 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             o = overall[rk]
             rank_str = f"🏆 {i+1}" if i == 0 and o["worst_mos"] > 0 else f"{i+1}"
 
-            if mono_downmix_counts[rk] > 0:
+            if timeout_counts[rk] > 0:
+                status_str = f"⚠️ ({timeout_counts[rk]}x timeout)"
+            elif mono_downmix_counts[rk] > 0:
                 status_str = "No HE-v2 PS (1ch)"
             elif o["valid_rate"] == 100:
                 status_str = "OK"
