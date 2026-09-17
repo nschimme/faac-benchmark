@@ -396,7 +396,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 f.write(f'    y-axis "Stereo Fidelity" {axis_lo_ic:.4g} --> {axis_hi_ic:.4g}\n')
                 for rk, vals in line_data_ic.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -451,7 +451,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 f.write(f'    y-axis "Transient Fidelity" {axis_lo_c:.4g} --> {axis_hi_c:.4g}\n')
                 for rk, vals in line_data_cent.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -506,7 +506,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 f.write(f'    y-axis "Bitrate Error (%)" {axis_lo_br:.4g} --> {axis_hi_br:.4g}\n')
                 for rk, vals in line_data_br.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Bitrate Accuracy Table ({fam_label})</b></summary>\n\n")
@@ -599,7 +599,6 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 } for r in base_recs}
 
                 bd_rows = []
-                all_notes = set()
                 for cand_key in all_row_keys:
                     if cand_key == base_key:
                         continue
@@ -617,11 +616,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     cand_name = encoder_info[cand_key].name if cand_key in encoder_info else cand_key
                     cand_prof = encoder_info[cand_key].profile if cand_key in encoder_info else "lc"
 
-                    overall_bd, is_valid, note = bdr.compute_matrix_bd_rate(base_mat, cand_mat)
-                    if note:
-                        all_notes.add(note)
+                    bdr_analysis = bdr.analyze(base_mat, cand_mat)
+                    segs = bdr_analysis.get("segments", [])
+                    valid_means = [s["stats"]["mean"] for s in segs if s.get("stats") and s["stats"].get("mean") is not None]
 
-                    if is_valid and overall_bd is not None:
+                    if valid_means:
+                        overall_bd = sum(valid_means) / len(valid_means)
                         bd_str = f"**{overall_bd:+.2f}%**" if overall_bd < 0 else f"{overall_bd:+.2f}%"
                         bd_rows.append((cand_name, profile_label(cand_prof), bd_str))
 
@@ -675,6 +675,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write("| Scenario | " + " | ".join(encoder_info[rk].name for rk in p_rks) + " |\n")
             f.write("| :--- | " + " | ".join([":---:"] * len(p_rks)) + " |\n")
 
+            max_p_speed = max([stats[rk][s_name]["speed_sum"] / stats[rk][s_name]["speed_count"] for rk in p_rks for s_name in scenario_list if stats[rk][s_name]["speed_count"] > 0] + [1.0])
+
             for s_name in sorted(scenario_list, key=get_scenario_sort_key):
                 row_str = f"| {s_name} |"
                 p_valid_speed = [stats[rk][s_name]["speed_sum"] / stats[rk][s_name]["speed_count"] for rk in p_rks if stats[rk][s_name]["speed_count"] > 0]
@@ -685,7 +687,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     if st["speed_count"] > 0:
                         speed = st["speed_sum"] / st["speed_count"]
                         is_best = best_p_speed and abs(speed - best_p_speed) < 1e-6
-                        p_bar = make_progress_bar(speed, best_p_speed or speed)
+                        p_bar = make_progress_bar(speed, max_p_speed)
                         if is_best:
                             cell = f" **{speed:.1f}x**{p_bar}"
                         else:
@@ -917,6 +919,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 if not p_has_data:
                     continue
 
+                max_p_dec_speed = max([p_stats[rk][p][s_name]["speed_sum"] / p_stats[rk][p][s_name]["speed_count"] for rk in sorted_rk for s_name in fam_scenarios if p_stats[rk][p][s_name]["speed_count"] > 0] + [1.0])
+
                 f.write(f"###### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
@@ -1008,7 +1012,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                         if st["speed_count"] > 0:
                             avg_spd = st["speed_sum"] / st["speed_count"]
                             is_best = best_spd and abs(avg_spd - best_spd) < 1e-6
-                            p_bar = make_progress_bar(avg_spd, best_spd or avg_spd)
+                            p_bar = make_progress_bar(avg_spd, max_p_dec_speed)
                             cell = f" **{avg_spd:.1f}x**{p_bar}" if is_best else f" {avg_spd:.1f}x{p_bar}"
                             row_str += f"{cell} |"
                         else:

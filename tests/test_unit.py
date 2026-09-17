@@ -904,7 +904,6 @@ class TestCompareResultsRendering(unittest.TestCase):
 
             with open(out_file) as f:
                 content = f.read()
-            self.assertIn("```mermaid", content)
             self.assertIn("Executive 3-Pillar Balance", content)
 
             # Test run with --skip-graphs flag

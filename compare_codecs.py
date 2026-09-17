@@ -325,10 +325,21 @@ def main():
                             decoder_results.append(res)
 
             print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
+            robustness_bitstreams = valid_encoder_bitstreams
+            if args.gate and valid_encoder_bitstreams:
+                seen_scenarios = set()
+                gate_robustness = []
+                for item in valid_encoder_bitstreams:
+                    sc_key = (item.get("scenario"), item.get("row_key"))
+                    if sc_key not in seen_scenarios:
+                        seen_scenarios.add(sc_key)
+                        gate_robustness.append(item)
+                robustness_bitstreams = gate_robustness
+
             for decoder in decoders:
                 print(f"  Testing robustness for {decoder.name}...")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                    futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in valid_encoder_bitstreams]
+                    futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in robustness_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
                         if res:

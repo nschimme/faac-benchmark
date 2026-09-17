@@ -1190,28 +1190,6 @@ def main():
     summary_lines.append(f"| ⚡ **Performance** | Speed (Throughput Δ) | `{tp_str_val}` | {tp_status} |")
     summary_lines.append(f"| 📦 **Footprint** | Code Footprint Δ | `{lib_str_val}` | {lib_status} |")
 
-    # Render Executive 3-Pillar Balance Mermaid Chart
-    if not skip_graphs:
-        # Scale MOS delta to % relative to 5.0 MOS scale for normalized 3-pillar graph
-        mos_pct = 0.0 if bit_exact_percent == 100.0 else (avg_mos_delta_val / 5.0) * 100
-        tp_pct = global_metrics["avg_tp_reduction"]
-        # Invert footprint size change so negative size change (reduction) appears as a positive improvement bar
-        footprint_improvement_pct = -global_metrics["avg_lib_chg"]
-
-        chart_vals = [mos_pct, tp_pct, footprint_improvement_pct]
-        max_val = max(abs(v) for v in chart_vals)
-        bound = max(int(max_val * 1.5) + 1, 5)
-
-        quality_chart_label = "Consistency %" if bit_exact_percent == 100.0 else "Quality (MOS Δ %)"
-
-        summary_lines.append("\n```mermaid")
-        summary_lines.append("xychart-beta")
-        summary_lines.append('    title "Executive 3-Pillar Balance (% Change vs Baseline)"')
-        summary_lines.append(f'    x-axis ["{quality_chart_label}", "Speed (Throughput Δ %)", "Footprint (-Size Δ %)"]')
-        summary_lines.append(f'    y-axis "Improvement %" {-bound} --> {bound}')
-        summary_lines.append(f'    bar [{mos_pct:.2f}, {tp_pct:.2f}, {footprint_improvement_pct:.2f}]')
-        summary_lines.append("```\n")
-
     summary_lines.append("\n### Summary Details")
     if len(modes_present) > 1:
         # Both ABR and VBR ran: one table per mode

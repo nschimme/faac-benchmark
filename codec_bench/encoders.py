@@ -140,7 +140,8 @@ class FDKAACEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         m_val = "29" if self.profile == "hev2" else ("5" if self.profile == "he" else "2")
-        return [self.binary_path, "-m", m_val, "-b", str(bitrate_kbps), "-o", output_path, input_path]
+        bps = bitrate_kbps * 1000
+        return [self.binary_path, "-m", m_val, "-b", str(bps), "-o", output_path, input_path]
 
 
 class AACEncEncoder(Encoder):
