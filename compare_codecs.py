@@ -1632,7 +1632,7 @@ def main():
     encoders = []
     encoder_results = []
 
-    if run_encoders or (run_decoders and not args.resume and not os.path.exists(args.results_json)):
+    if run_encoders or (run_decoders and not os.path.exists(args.results_json)):
         encoders = detect_encoders(args)
         if not encoders and run_encoders:
             print("No encoders detected!")
@@ -1641,8 +1641,8 @@ def main():
     if encoders:
         print(f"Detected encoders: {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
 
-    if args.resume and os.path.exists(args.results_json):
-        print(f"==> --resume: reloading {args.results_json}, skipping Phase 1 (encoding)")
+    if (args.resume or not run_encoders) and os.path.exists(args.results_json):
+        print(f"==> Loading bitstreams from {args.results_json}")
         with open(args.results_json) as f:
             encoder_results = json.load(f)
     elif encoders:
@@ -1831,6 +1831,10 @@ def main():
                 dec_md = f_dec.read()
             with open(out_file, "a") as f_main:
                 f_main.write("\n\n---\n\n" + dec_md)
+            try:
+                os.remove(dec_file)
+            except OSError:
+                pass
     elif run_encoders:
         generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
     elif run_decoders and decoders:
