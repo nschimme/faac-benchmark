@@ -202,10 +202,16 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                     dec_data = scipy.signal.resample_poly(
                         dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
 
+                if len(ref_data) == 0 or len(dec_data) == 0:
+                    return None, "zimtohrli"
+
                 r_mono = ref_data.mean(axis=1)
                 d_mono = dec_data.mean(axis=1)
 
                 n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
+                if n_search == 0:
+                    return None, "zimtohrli"
+
                 r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
                 d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
                 corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
@@ -221,6 +227,8 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                     ref_aligned, dec_aligned = ref_data, dec_data
 
                 n = min(len(ref_aligned), len(dec_aligned))
+                if n <= 0:
+                    return None, "zimtohrli"
                 num_ref_ch = ref_aligned.shape[1]
                 num_dec_ch = dec_aligned.shape[1]
 

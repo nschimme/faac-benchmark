@@ -387,7 +387,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "dec_channels": dec_channels,
             "mono_downmix": mono_downmix
         }
-    except Exception as e:
+    except BaseException as e:
         detail = str(e)
         is_timeout = False
         if isinstance(e, subprocess.CalledProcessError):
@@ -462,7 +462,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
         passed = (res.returncode == 0)
         is_timeout = (res.returncode == -124) or ("timed out" in (res.stderr or "").lower())
-    except Exception as e:
+    except BaseException as e:
         passed = False
         is_timeout = "timed out" in str(e).lower() or "timeout" in str(e).lower()
     finally:

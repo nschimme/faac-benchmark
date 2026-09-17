@@ -200,7 +200,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "ref_path": input_path
         }
 
-    except Exception as e:
+    except BaseException as e:
         detail = str(e)
         if isinstance(e, subprocess.CalledProcessError):
             stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")

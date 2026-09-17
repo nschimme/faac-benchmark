@@ -750,6 +750,17 @@ class TestZimtohrliScoring(unittest.TestCase):
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
 
+    def test_score_wav_pair_empty_audio_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=0, sr=48000, ch=2)
+            write_wav(deg, seconds=0, sr=48000, ch=2)
+
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNone(mos)
+
     def test_channel_mismatch_ref_mono_dec_stereo(self):
         with tempfile.TemporaryDirectory() as td:
             ref = os.path.join(td, "ref.wav")
