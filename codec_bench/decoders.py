@@ -17,7 +17,7 @@ import re
 from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    get_faad_path, ffmpeg_probe, decode_validate, find_linked_lib,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
-                   probe_version, make_unique_name_and_id, compute_snr,
+                   probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream)
 
 def decoder_row_key(decoder):
@@ -99,6 +99,7 @@ class AFConvertDecoder(Decoder):
 class HelixAACDecoder(Decoder):
     def __init__(self, name, binary_path, tool_id="helix_aac"):
         super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+        self.requires_adts = True
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, input_path, output_path]
@@ -135,7 +136,7 @@ def detect_decoders(args):
         ffmpeg_bin = ffmpeg_raw or get_ffmpeg_path()
 
     if ffmpeg_bin and os.path.exists(ffmpeg_bin):
-        res = subprocess.run([ffmpeg_bin, "-version"], capture_output=True, text=True)
+        res = safe_run([ffmpeg_bin, "-version"], capture_output=True, check=False)
         m = re.search(r"ffmpeg version (\S+)", res.stdout)
         ffmpeg_ver = m.group(1) if m else None
         name, tool_id = make_unique_name_and_id("FFmpeg AAC", ffmpeg_ver, "ffmpeg_aac", existing_names, existing_ids)
@@ -157,7 +158,7 @@ def detect_decoders(args):
             build_script = os.path.join(script_root, "scripts", "build_helix_aac.sh")
             if os.path.exists(build_script):
                 try:
-                    res = subprocess.run([build_script], capture_output=True, text=True, timeout=60)
+                    res = safe_run([build_script], capture_output=True, check=False)
                     if res.returncode == 0 and res.stdout.strip() and os.path.exists(res.stdout.strip()):
                         helix_bins = [res.stdout.strip()]
                 except Exception:
@@ -199,7 +200,21 @@ def process_decoder_task(decoder, res_item, output_dir):
     output_filename = f"dec_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.wav".replace(" ", "_")
     output_path = os.path.join(output_dir, output_filename)
 
-    cmd = decoder.get_decode_cmd(aac_path, output_path)
+    requires_adts = getattr(decoder, "requires_adts", False)
+    temp_adts = None
+    bitstream_input = aac_path
+
+    if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
+        temp_adts = os.path.join(output_dir, f"demux_{decoder_row_key(decoder)}_{scenario_name}_{sample}.aac".replace(" ", "_"))
+        cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
+        try:
+            res_demux = safe_run(cmd_demux, capture_output=True, check=False)
+            if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
+                bitstream_input = temp_adts
+        except Exception:
+            pass
+
+    cmd = decoder.get_decode_cmd(bitstream_input, output_path)
 
     try:
         res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
@@ -255,6 +270,12 @@ def process_decoder_task(decoder, res_item, output_dir):
             "peak_ram_kb": None,
             "decoded_wav": None
         }
+    finally:
+        if temp_adts and os.path.exists(temp_adts):
+            try:
+                os.remove(temp_adts)
+            except OSError:
+                pass
 
 
 def process_decoder_robustness_task(decoder, res_item, output_dir):
@@ -265,11 +286,27 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     scenario_name = res_item["scenario"]
     sample = res_item["filename"]
 
+    requires_adts = getattr(decoder, "requires_adts", False)
+    temp_adts = None
+    bitstream_input = aac_path
+
+    if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
+        temp_adts = os.path.join(output_dir, f"demux_rob_{decoder_row_key(decoder)}_{scenario_name}_{sample}.aac".replace(" ", "_"))
+        cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
+        try:
+            res_demux = safe_run(cmd_demux, capture_output=True, check=False)
+            if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
+                bitstream_input = temp_adts
+        except Exception:
+            pass
+
     corrupt_filename = f"corrupt_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}"
     corrupt_path = os.path.join(output_dir, corrupt_filename)
     dec_corrupt_wav = os.path.join(output_dir, f"{corrupt_filename}.wav")
 
-    if not corrupt_adts_bitstream(aac_path, corrupt_path, seed=42):
+    if not corrupt_adts_bitstream(bitstream_input, corrupt_path, seed=42):
+        if temp_adts and os.path.exists(temp_adts):
+            os.remove(temp_adts)
         return None
 
     cmd = decoder.get_decode_cmd(corrupt_path, dec_corrupt_wav)
@@ -278,6 +315,12 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         passed = (res.returncode == 0)
     except Exception:
         passed = False
+    finally:
+        if temp_adts and os.path.exists(temp_adts):
+            try:
+                os.remove(temp_adts)
+            except OSError:
+                pass
 
     return {
         "tool": decoder.name,

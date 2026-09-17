@@ -271,7 +271,7 @@ def main():
 
                     phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
                     cmd_phase2 = [sys.executable, phase2_script, bridge_json, output_dir, external_data_dir]
-                    subprocess.run(cmd_phase2, check=False)
+                    safe_run(cmd_phase2, check=False)
 
                     if os.path.exists(bridge_json):
                         with open(bridge_json) as f:
@@ -286,7 +286,7 @@ def main():
                 print("\n>>> Phase 3: Stereo Coherence for Encoders")
                 phase3_script = os.path.join(SCRIPT_DIR, "phase3_stereo.py")
                 cmd_phase3 = [sys.executable, phase3_script, bridge_json, output_dir, external_data_dir]
-                subprocess.run(cmd_phase3, check=False)
+                safe_run(cmd_phase3, check=False)
 
                 with open(bridge_json) as f:
                     updated_bridge = json.load(f)
@@ -300,7 +300,7 @@ def main():
                 score_transient_script = os.path.join(SCRIPT_DIR, "scripts", "score_transient.py")
                 if os.path.exists(score_transient_script):
                     cmd_transient = [sys.executable, score_transient_script, bridge_json, output_dir, external_data_dir]
-                    subprocess.run(cmd_transient, check=False)
+                    safe_run(cmd_transient, check=False)
 
                     with open(bridge_json) as f:
                         updated_bridge = json.load(f)
@@ -374,7 +374,7 @@ def main():
 
                     phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
                     cmd_phase2 = [sys.executable, phase2_script, dec_bridge_json, output_dir, external_data_dir]
-                    subprocess.run(cmd_phase2, check=False)
+                    safe_run(cmd_phase2, check=False)
 
                     if os.path.exists(dec_bridge_json):
                         with open(dec_bridge_json) as f:
