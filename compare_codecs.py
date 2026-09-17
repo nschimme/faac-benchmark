@@ -23,7 +23,12 @@ from collections import defaultdict
 from utils import (get_scenario_sort_key, safe_run, corpus_dir,
                    select_corpus_clips, scenario_channels, scenario_rate,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
-                   decode_validate, ffmpeg_probe, expand_scenario_list)
+                   decode_validate, ffmpeg_probe, expand_scenario_list,
+                   get_cached_ref_wav)
+import soundfile as sf
+import phase2_mos
+import phase3_stereo
+import transient
 from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 
 # Re-export everything from codec_bench package for 100% backward compatibility
@@ -64,8 +69,8 @@ def get_audio_info(path):
         return 44100, 2
 
 
-def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir):
-    """Executes single encoder task in worker thread."""
+def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir, skip_mos=False, skip_stereo=False, skip_transient=False, ref_cache_dir=None):
+    """Executes single encoder task in worker thread with colocated metric evaluation."""
     input_path = os.path.join(data_dir, sample)
     sample_rate, channels = get_audio_info(input_path)
     bitrate_kbps = cfg["bitrate"]
@@ -86,12 +91,37 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
 
         audio_duration = ffmpeg_probe(input_path)
+        mos_val = None
+        ic_err_val = None
+        centroid_deltas = None
 
         with tempfile.TemporaryDirectory() as td:
             decoded_wav = os.path.join(td, "decoded.wav")
             decode_ok = wav_conv(output_path, decoded_wav, rate=sample_rate, channels=channels)
             if decode_ok:
                 valid, decode_err = decode_validate(output_path)
+
+                if valid:
+                    ref_wav = get_cached_ref_wav(ref_cache_dir or td, input_path, sample_rate, channels) if ref_cache_dir else None
+                    if not ref_wav:
+                        ref_wav = os.path.join(td, "ref_conv.wav")
+                        if not wav_conv(input_path, ref_wav, rate=sample_rate, channels=channels):
+                            ref_wav = None
+
+                    if ref_wav and os.path.exists(ref_wav):
+                        if not skip_mos:
+                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, decoded_wav, mode_str=cfg.get("mode", "audio"), sample_rate=cfg.get("rate"))
+
+                        if not skip_stereo:
+                            ic_err_val = phase3_stereo.coherence_error(ref_wav, decoded_wav)
+
+                        if not skip_transient:
+                            try:
+                                r_data, r_sr = sf.read(ref_wav, dtype="float32", always_2d=True)
+                                c_data, c_sr = sf.read(decoded_wav, dtype="float32", always_2d=True)
+                                centroid_deltas = transient.attack_centroid_deltas(r_data.mean(axis=1), c_data.mean(axis=1), r_sr)
+                            except Exception:
+                                pass
             else:
                 valid, decode_err = False, "Decode failed (wav_conv)"
 
@@ -114,6 +144,9 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "target_bitrate": bitrate_kbps,
             "decode_valid": valid,
             "decode_error": decode_err,
+            "mos": mos_val,
+            "ic_err": ic_err_val,
+            "attack_centroid_ms": centroid_deltas,
             "aac_path": output_path if valid else None,
             "ref_path": input_path
         }
@@ -230,9 +263,13 @@ def main():
             total_tasks = len(tasks)
             print(f"\n>>> Running Encoder Scenarios across {total_tasks} tasks ({num_cpus} threads)...")
 
+            ref_cache_dir = os.path.join(output_dir, "ref_cache")
+            os.makedirs(ref_cache_dir, exist_ok=True)
+
             completed = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir)
+                futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
+                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
 
                 for future in concurrent.futures.as_completed(futures):
@@ -245,69 +282,6 @@ def main():
 
             with open(args.results_json, "w") as f:
                 json.dump(encoder_results, f, indent=2)
-
-            # Phase 2: Perceptual Quality (MOS) for Encoders
-            if not args.skip_mos and encoder_results:
-                print("\n>>> Phase 2: Perceptual Quality (MOS) for Encoders")
-                bridge_data = {"matrix": {}}
-                valid_count = 0
-                for i, res in enumerate(encoder_results):
-                    if not res.get("decode_valid") or not res.get("aac_path"):
-                        continue
-                    key = f"res_{res['row_key']}_{i}"
-                    bridge_data["matrix"][key] = {
-                        "scenario": res["scenario"],
-                        "filename": res["filename"],
-                        "aac": os.path.basename(res["aac_path"]),
-                        "profile": res.get("profile", "lc"),
-                        "mos": None
-                    }
-                    valid_count += 1
-
-                if valid_count > 0:
-                    bridge_json = "bridge_results.json"
-                    with open(bridge_json, "w") as f:
-                        json.dump(bridge_data, f, indent=2)
-
-                    phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
-                    cmd_phase2 = [sys.executable, phase2_script, bridge_json, output_dir, external_data_dir]
-                    safe_run(cmd_phase2, check=False)
-
-                    if os.path.exists(bridge_json):
-                        with open(bridge_json) as f:
-                            updated_bridge = json.load(f)
-                        for i, res in enumerate(encoder_results):
-                            key = f"res_{res['row_key']}_{i}"
-                            if key in updated_bridge.get("matrix", {}):
-                                res["mos"] = updated_bridge["matrix"][key].get("mos")
-
-            # Phase 3: Stereo Image Fidelity & Transient Fidelity for Encoders
-            if not args.skip_stereo and encoder_results:
-                print("\n>>> Phase 3: Stereo Coherence for Encoders")
-                phase3_script = os.path.join(SCRIPT_DIR, "phase3_stereo.py")
-                cmd_phase3 = [sys.executable, phase3_script, bridge_json, output_dir, external_data_dir]
-                safe_run(cmd_phase3, check=False)
-
-                with open(bridge_json) as f:
-                    updated_bridge = json.load(f)
-                for i, res in enumerate(encoder_results):
-                    key = f"res_{res['row_key']}_{i}"
-                    if key in updated_bridge.get("matrix", {}):
-                        res["ic_err"] = updated_bridge["matrix"][key].get("ic_err")
-
-            if not args.skip_transient and encoder_results:
-                print("\n>>> Phase 3: Transient Fidelity for Encoders")
-                score_transient_script = os.path.join(SCRIPT_DIR, "scripts", "score_transient.py")
-                if os.path.exists(score_transient_script):
-                    cmd_transient = [sys.executable, score_transient_script, bridge_json, output_dir, external_data_dir]
-                    safe_run(cmd_transient, check=False)
-
-                    with open(bridge_json) as f:
-                        updated_bridge = json.load(f)
-                    for i, res in enumerate(encoder_results):
-                        key = f"res_{res['row_key']}_{i}"
-                        if key in updated_bridge.get("matrix", {}):
-                            res["attack_centroid_ms"] = updated_bridge["matrix"][key].get("attack_centroid_ms")
 
     # Decoder Benchmarking Phase
     decoder_results = []
@@ -329,12 +303,15 @@ def main():
                 gate_filenames.update(GATE_CLIPS.get(s_name, []))
             if gate_filenames:
                 valid_encoder_bitstreams = [r for r in valid_encoder_bitstreams if r.get("filename") in gate_filenames]
+        ref_cache_dir = os.path.join(output_dir, "ref_cache")
+        os.makedirs(ref_cache_dir, exist_ok=True)
+
         if valid_encoder_bitstreams and decoders:
             print(f"\n>>> Running Decoder Benchmarks across {len(valid_encoder_bitstreams)} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
                 print(f"  Decoding with {decoder.name}...")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir) for item in valid_encoder_bitstreams]
+                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir) for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
                         if res:
@@ -349,40 +326,6 @@ def main():
                         res = future.result()
                         if res:
                             decoder_robustness_results.append(res)
-
-            # Phase 2 MOS calculation for decoded WAVs if MOS is enabled
-            if not args.skip_mos and decoder_results:
-                print("\n>>> Phase 2: Perceptual Quality (MOS) for Decoders")
-                dec_bridge_data = {"matrix": {}}
-                valid_dec_count = 0
-                for i, res in enumerate(decoder_results):
-                    if not res.get("decoded_wav") or not os.path.exists(res["decoded_wav"]):
-                        continue
-                    key = f"dec_res_{res['row_key']}_{i}"
-                    dec_bridge_data["matrix"][key] = {
-                        "scenario": res["scenario"],
-                        "filename": res["filename"],
-                        "aac": os.path.basename(res["decoded_wav"]),
-                        "mos": None
-                    }
-                    valid_dec_count += 1
-
-                if valid_dec_count > 0:
-                    dec_bridge_json = "dec_bridge_results.json"
-                    with open(dec_bridge_json, "w") as f:
-                        json.dump(dec_bridge_data, f, indent=2)
-
-                    phase2_script = os.path.join(SCRIPT_DIR, "phase2_mos.py")
-                    cmd_phase2 = [sys.executable, phase2_script, dec_bridge_json, output_dir, external_data_dir]
-                    safe_run(cmd_phase2, check=False)
-
-                    if os.path.exists(dec_bridge_json):
-                        with open(dec_bridge_json) as f:
-                            updated_bridge = json.load(f)
-                        for i, res in enumerate(decoder_results):
-                            key = f"dec_res_{res['row_key']}_{i}"
-                            if key in updated_bridge.get("matrix", {}):
-                                res["mos"] = updated_bridge["matrix"][key].get("mos")
 
     # Final Leaderboard Generation
     out_file = args.output

@@ -11,10 +11,10 @@ jobs:
   codec-leaderboard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -48,7 +48,7 @@ jobs:
           python3 compare_codecs.py $GATE_FLAG --mode both --output leaderboard_ci.md
 
       - name: Upload Leaderboard Artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: codec-leaderboard
           path: leaderboard_ci.md

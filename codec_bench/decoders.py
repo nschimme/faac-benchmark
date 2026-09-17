@@ -18,7 +18,9 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    get_faad_path, ffmpeg_probe, decode_validate, find_linked_lib,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
-                   measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream)
+                   measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
+                   get_cached_ref_wav)
+import phase2_mos
 
 def decoder_row_key(decoder):
     """Stable identity key for a decoder tool."""
@@ -173,7 +175,7 @@ def detect_decoders(args):
     return decoders
 
 
-def process_decoder_task(decoder, res_item, output_dir):
+def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None):
     aac_path = res_item.get("aac_path")
     ref_path = res_item.get("ref_path")
     scenario_name = res_item["scenario"]
@@ -225,9 +227,18 @@ def process_decoder_task(decoder, res_item, output_dir):
         valid, decode_err = decode_validate(output_path)
         snr_db = None
         alignment_delay_ms = None
+        mos_val = None
+
         if valid and ref_path and os.path.exists(ref_path):
             snr_db = compute_snr(ref_path, output_path)
             _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+
+            if not skip_mos:
+                try:
+                    mode_str = res_item.get("mode", "audio")
+                    mos_val, _backend = phase2_mos.score_wav_pair(ref_path, output_path, mode_str=mode_str)
+                except Exception:
+                    pass
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
@@ -242,6 +253,7 @@ def process_decoder_task(decoder, res_item, output_dir):
             "audio_duration": audio_duration,
             "decode_valid": valid,
             "decode_error": decode_err,
+            "mos": mos_val,
             "snr_db": snr_db,
             "alignment_delay_ms": alignment_delay_ms,
             "peak_ram_kb": peak_ram_kb,

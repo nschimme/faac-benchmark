@@ -188,7 +188,7 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
     except Exception:
         return None, None
 
-def measure_peak_ram(cmd, env=None, check=False):
+def measure_peak_ram(cmd, env=None, check=False, timeout=30):
     """Runs a command in an isolated child process to accurately measure peak Resident Set Size (Max RSS in KB).
 
     Returns (CompletedProcess, duration, max_rss_kb).
@@ -199,18 +199,26 @@ def measure_peak_ram(cmd, env=None, check=False):
             # Spawn a clean sub-runner python process so RUSAGE_CHILDREN measures only this single process
             runner_script = (
                 "import subprocess, resource, sys\n"
-                "res = subprocess.run(sys.argv[1:], capture_output=True)\n"
+                "timeout_val = float(sys.argv[1]) if len(sys.argv) > 1 else None\n"
+                "cmd = sys.argv[2:]\n"
+                "try:\n"
+                "    res = subprocess.run(cmd, capture_output=True, timeout=timeout_val)\n"
+                "    ret = res.returncode\n"
+                "    out, err = res.stdout, res.stderr\n"
+                "except subprocess.TimeoutExpired:\n"
+                "    ret = -124\n"
+                "    out, err = b'', b'Command timed out'\n"
                 "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
                 "if sys.platform == 'darwin':\n"
                 "    rss = int(rss / 1024)\n"
                 "sys.stderr.write('__RSS__:' + str(rss) + '\\n')\n"
                 "sys.stderr.flush()\n"
-                "sys.stdout.buffer.write(res.stdout)\n"
-                "sys.stderr.buffer.write(res.stderr)\n"
-                "sys.exit(res.returncode)\n"
+                "sys.stdout.buffer.write(out)\n"
+                "sys.stderr.buffer.write(err)\n"
+                "sys.exit(ret)\n"
             )
-            runner_cmd = [sys.executable, "-c", runner_script] + cmd
-            proc = subprocess.run(runner_cmd, capture_output=True, env=env)
+            runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
+            proc = subprocess.run(runner_cmd, capture_output=True, env=env, timeout=timeout + 5)
             t_end = time.perf_counter()
             duration = t_end - t_start
 
@@ -718,8 +726,11 @@ def get_faad_path():
         return env_faad
     return shutil.which("faad")
 
+@lru_cache(maxsize=2048)
 def ffmpeg_probe(path):
-    """Basic probe using ffprobe."""
+    """Basic probe using ffprobe, cached in memory."""
+    if not path or not os.path.exists(path):
+        return None
     try:
         cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
