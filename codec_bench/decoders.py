@@ -110,6 +110,53 @@ class HelixAACDecoder(Decoder):
         return [self.binary_path, input_path, output_path]
 
 
+import tempfile
+import wave
+
+def probe_decoder_capability(decoder):
+    """Probes whether a decoder binary exists and is capable of decoding."""
+    if not decoder.binary_path:
+        return False
+    if not os.path.exists(decoder.binary_path):
+        return True
+
+    ffmpeg_bin = get_ffmpeg_path()
+    if not ffmpeg_bin:
+        return True
+
+    with tempfile.TemporaryDirectory() as td:
+        dummy_wav = os.path.join(td, "test_ref.wav")
+        dummy_aac = os.path.join(td, "test.aac")
+        dummy_out = os.path.join(td, "test_out.wav")
+
+        try:
+            with wave.open(dummy_wav, "wb") as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(b"\x00\x00" * 44100)
+
+            cmd_enc = [ffmpeg_bin, "-y", "-i", dummy_wav, "-c:a", "aac", "-b:a", "64k", "-ac", "2", dummy_aac]
+            res_enc = safe_run(cmd_enc, capture_output=True, check=False)
+            if res_enc.returncode != 0 or not os.path.exists(dummy_aac):
+                return True
+
+            bitstream_input = dummy_aac
+            if getattr(decoder, "requires_adts", False):
+                demux_aac = os.path.join(td, "test_demux.aac")
+                cmd_demux = [ffmpeg_bin, "-y", "-i", dummy_aac, "-c:a", "copy", demux_aac]
+                res_demux = safe_run(cmd_demux, capture_output=True, check=False)
+                if res_demux.returncode == 0 and os.path.exists(demux_aac):
+                    bitstream_input = demux_aac
+
+            cmd_dec = decoder.get_decode_cmd(bitstream_input, dummy_out)
+            res_dec, _duration, _ram = measure_peak_ram(cmd_dec, env=decoder.get_run_env() or None)
+
+            return res_dec.returncode == 0 and os.path.exists(dummy_out) and os.path.getsize(dummy_out) > 0
+        except Exception:
+            return True
+
+
 def detect_decoders(args):
     decoders = []
     existing_names = set()
@@ -132,7 +179,9 @@ def detect_decoders(args):
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_name_and_id("FAAD2", ver, "faad2", existing_names, existing_ids)
-        decoders.append(FAADDecoder(name, f_bin, tool_id, lib_override=f_lib))
+        dec = FAADDecoder(name, f_bin, tool_id, lib_override=f_lib)
+        if probe_decoder_capability(dec):
+            decoders.append(dec)
 
     ffmpeg_raw = getattr(args, "ffmpeg_bin", None)
     if isinstance(ffmpeg_raw, list):
@@ -145,13 +194,17 @@ def detect_decoders(args):
         m = re.search(r"ffmpeg version (\S+)", res.stdout)
         ffmpeg_ver = m.group(1) if m else None
         name, tool_id = make_unique_name_and_id("FFmpeg AAC", ffmpeg_ver, "ffmpeg_aac", existing_names, existing_ids)
-        decoders.append(FFmpegDecoder(name, ffmpeg_bin, tool_id))
+        dec = FFmpegDecoder(name, ffmpeg_bin, tool_id)
+        if probe_decoder_capability(dec):
+            decoders.append(dec)
 
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
         ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_name_and_id("Apple AudioToolbox", ver, "afconvert", existing_names, existing_ids)
-        decoders.append(AFConvertDecoder(name, afconvert_bin, tool_id))
+        dec = AFConvertDecoder(name, afconvert_bin, tool_id)
+        if probe_decoder_capability(dec):
+            decoders.append(dec)
 
     helix_bins = flatten_arg_list(getattr(args, "helix_bin", None))
     if not helix_bins:
@@ -173,7 +226,9 @@ def detect_decoders(args):
         if os.path.exists(h_bin):
             ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
             name, tool_id = make_unique_name_and_id("Helix AAC", ver or "1.0", "helix_aac", existing_names, existing_ids)
-            decoders.append(HelixAACDecoder(name, h_bin, tool_id))
+            dec = HelixAACDecoder(name, h_bin, tool_id)
+            if probe_decoder_capability(dec):
+                decoders.append(dec)
 
     return decoders
 
