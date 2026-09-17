@@ -1150,20 +1150,6 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                     f.write(row_str + "\n")
                 f.write("\n")
 
-        if bug_flags:
-            f.write("<details><summary><b>🐛 View Quality Outliers (Issues Worth Investigating)</b></summary>\n\n")
-            f.write("### Decoder Quality Outliers (Issues Worth Investigating)\n\n")
-            f.write("> **Note**: Flags clips where this decoder scored **≥0.75 MOS lower** than the average of all other decoders on the exact same clip or produced mono output on stereo bitstreams.\n\n")
-
-            f.write("| Decoder | Profile | Scenario | Outlier Clip | Decoder MOS | Peer Avg MOS | Defect Gap | Issue / Cause |\n")
-            f.write("| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :--- |\n")
-
-            sorted_flags = sorted(bug_flags, key=lambda x: (x[5] - x[4]), reverse=True)
-            for tool_name, p, s_name, filename, this_mos, peer_avg, issue in sorted_flags:
-                gap = peer_avg - this_mos
-                f.write(f"| {tool_name} | {profile_label(p)} | {s_name} | `{filename}` | {this_mos:.2f} | {peer_avg:.2f} | **-{gap:.2f} MOS** | {issue} |\n")
-            f.write("\n</details>\n\n")
-
         if not skip_graphs and sorted_rk:
             f.write("\n### Decoder Efficiency & Footprint\n\n")
             labels = [f'"{overall[rk]["tool"]}"' for rk in sorted_rk]
@@ -1180,5 +1166,19 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write("```\n\n")
 
         f.write("\n</details>\n\n")
+
+        if bug_flags:
+            f.write("<details><summary><b>🐛 View Quality Outliers (Issues Worth Investigating)</b></summary>\n\n")
+            f.write("### Decoder Quality Outliers (Issues Worth Investigating)\n\n")
+            f.write("> **Note**: Flags clips where this decoder scored **≥0.75 MOS lower** than the average of all other decoders on the exact same clip or produced mono output on stereo bitstreams.\n\n")
+
+            f.write("| Decoder | Profile | Scenario | Outlier Clip | Decoder MOS | Peer Avg MOS | Defect Gap | Issue / Cause |\n")
+            f.write("| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :--- |\n")
+
+            sorted_flags = sorted(bug_flags, key=lambda x: (x[5] - x[4]), reverse=True)
+            for tool_name, p, s_name, filename, this_mos, peer_avg, issue in sorted_flags:
+                gap = peer_avg - this_mos
+                f.write(f"| {tool_name} | {profile_label(p)} | {s_name} | `{filename}` | {this_mos:.2f} | {peer_avg:.2f} | **-{gap:.2f} MOS** | {issue} |\n")
+            f.write("\n</details>\n\n")
 
     print(f"\nDecoder leaderboard generated at: {output_path}")
