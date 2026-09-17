@@ -19,7 +19,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
-                   get_cached_ref_wav, scenario_channels, wav_conv)
+                   get_cached_ref_wav, scenario_channels, wav_conv, corpus_dir)
 
 if sys.platform == "darwin":
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
@@ -251,6 +251,15 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
     scenario_name = res_item["scenario"]
     sample = res_item["filename"]
 
+    if not ref_path or not os.path.exists(ref_path):
+        cfg = SCENARIOS.get(scenario_name, {})
+        if cfg:
+            external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "external")
+            fallback_ref = os.path.join(corpus_dir(cfg, external_data_dir), sample)
+            if os.path.exists(fallback_ref):
+                ref_path = fallback_ref
+
     if not aac_path or not os.path.exists(aac_path):
         return {
             "tool": decoder.name,
@@ -363,8 +372,8 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                                 dec_wav = output_path
 
                             mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
