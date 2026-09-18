@@ -19,6 +19,21 @@ class TestEncoders(unittest.TestCase):
         self.assertTrue(enc.use_he_v2_aac(16, 2, 44100))
         self.assertFalse(enc.use_he_v2_aac(16, 1, 44100))
 
+    def test_channel_support_51(self):
+        lame = enc.LameEncoder("LAME", "/usr/bin/lame")
+        ok_2ch, _ = lame.supports_scenario(128, 2, 44100)
+        self.assertTrue(ok_2ch)
+        ok_6ch, reason = lame.supports_scenario(256, 6, 44100)
+        self.assertFalse(ok_6ch)
+        self.assertIn("max 2 channels", reason)
+
+        fdk_hev2 = enc.FDKAACEncoder("fdkaac", "/usr/bin/fdkaac", profile="hev2")
+        ok_hev2_2ch, _ = fdk_hev2.supports_scenario(16, 2, 44100)
+        self.assertTrue(ok_hev2_2ch)
+        ok_hev2_6ch, reason_hev2 = fdk_hev2.supports_scenario(256, 6, 44100)
+        self.assertFalse(ok_hev2_6ch)
+        self.assertIn("exactly 2 channels", reason_hev2)
+
     def test_encoder_commands(self):
         faac_enc = enc.FAACEncoder("FAAC 2.0", "/usr/bin/faac", tool_id="faac_2_0", profile="lc")
         cmd = faac_enc.get_encode_cmd("in.wav", "out.m4a", 128, 2, 44100)

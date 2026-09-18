@@ -31,6 +31,34 @@ class TestDecodeValidate(unittest.TestCase):
             self.assertTrue(err)
 
 
+class TestSanitizeM4aEncoderTag(unittest.TestCase):
+    def test_sanitize_m4a_encoder_tag_normalizes_git_hash(self):
+        from utils import sanitize_m4a_encoder_tag, get_file_hash
+        import hashlib
+
+        data1 = b"\x00\x00\x00\x28\xa9too\x00\x00\x00\x20data\x00\x00\x00\x00FAAC 2.1.0 (faac-2.1-51-gc3c8f22)\x00\x00"
+        data2 = b"\x00\x00\x00\x28\xa9too\x00\x00\x00\x20data\x00\x00\x00\x00FAAC 2.1.0 (faac-2.1-52-g8aebaa3)\x00\x00"
+
+        s1 = sanitize_m4a_encoder_tag(data1)
+        s2 = sanitize_m4a_encoder_tag(data2)
+
+        self.assertEqual(len(s1), len(data1))
+        self.assertEqual(len(s2), len(data2))
+        self.assertEqual(hashlib.md5(s1).hexdigest(), hashlib.md5(s2).hexdigest())
+
+        with tempfile.TemporaryDirectory() as td:
+            f1 = os.path.join(td, "a.m4a")
+            f2 = os.path.join(td, "b.m4a")
+            with open(f1, "wb") as f:
+                f.write(data1)
+            with open(f2, "wb") as f:
+                f.write(data2)
+
+            h1 = get_file_hash(f1)
+            h2 = get_file_hash(f2)
+            self.assertEqual(h1, h2)
+
+
 class TestProvenanceHash(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -135,6 +163,19 @@ class TestScenarioMatrix(unittest.TestCase):
         for corpus_name, corpus in self.CORPORA.items():
             self.assertIn(corpus["family"], self.FAMILY_ORDER,
                           f"{corpus_name}'s family is missing from FAMILY_ORDER")
+
+    def test_51_surround_corpus_and_scenarios(self):
+        self.assertIn("audio_51", self.CORPORA)
+        c51 = self.CORPORA["audio_51"]
+        self.assertEqual(c51["channels"], 6)
+        self.assertEqual(c51["rate"], 44100)
+        self.assertEqual(c51["family"], "44k1_51")
+        self.assertIn("44k1_51", self.FAMILY_ORDER)
+
+        scen_51 = [name for name, cfg in self.SCENARIOS.items() if cfg["corpus"] == "audio_51"]
+        self.assertEqual(len(scen_51), 6)
+        self.assertIn("44k1_51_96k", self.SCENARIOS)
+        self.assertIn("44k1_51_448k", self.SCENARIOS)
 
 
 class TestScenarioSortKey(unittest.TestCase):
@@ -722,6 +763,19 @@ class TestZimtohrliScoring(unittest.TestCase):
             mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
+
+    def test_multi_channel_51_surround_scoring(self):
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=1, sr=44100, ch=6)
+            write_wav(deg, seconds=1, sr=44100, ch=6)
+
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=44100)
+
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNotNone(mos)
+            self.assertGreater(mos, 1.0)
 
     def test_score_wav_pair_empty_audio_files(self):
         with tempfile.TemporaryDirectory() as td:

@@ -38,6 +38,10 @@ DATASETS = {
     "SoundExpert": {
         "url": "https://github.com/nschimme/SoundExpert/archive/refs/tags/SoundExpert.zip",
         "name": "SoundExpert Sound samples"
+    },
+    "FFmpeg51": {
+        "url": "https://samples.mplayerhq.hu/A-codecs/lossless/6_Channel_ID.wav",
+        "name": "FFmpeg 5.1 Surround Reference Sample",
     }
 }
 
@@ -244,6 +248,41 @@ def setup_tcd_ref(rate, dest_name):
                          rate, f"TCD-VoIP clean references @ {rate} Hz")
 
 
+def setup_audio_51():
+    """Download or generate the 5.1 surround 6_Channel_ID.wav reference sample."""
+    dest_dir = os.path.join(BASE_DATA_DIR, "audio_51")
+    os.makedirs(dest_dir, exist_ok=True)
+    out_path = os.path.join(dest_dir, "6_Channel_ID.wav")
+    if not os.path.exists(out_path):
+        dataset_info = DATASETS.get("FFmpeg51", {})
+        url = dataset_info.get("url")
+        download_ok = False
+        if url:
+            print(f"Downloading {dataset_info.get('name', '5.1 Surround Reference')}...")
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                tmp_path = out_path + ".tmp"
+                with urllib.request.urlopen(req) as response, open(tmp_path, 'wb') as out:
+                    shutil.copyfileobj(response, out)
+                shutil.move(tmp_path, out_path)
+                download_ok = True
+            except Exception as e:
+                print(f"Download failed ({e}), falling back to generating 5.1 surround sample with FFmpeg...")
+
+        if not download_ok:
+            print(f"Generating 5.1 surround sample {out_path} with FFmpeg...")
+            filter_expr = "aevalsrc='sin(2*PI*440*t)|sin(2*PI*880*t)|sin(2*PI*220*t)|sin(2*PI*110*t)|sin(2*PI*550*t)|sin(2*PI*660*t)':d=10"
+            try:
+                (
+                    ffmpeg
+                    .input(filter_expr, format='lavfi')
+                    .output(out_path, ar=44100, sample_fmt='s16')
+                    .run(quiet=True, overwrite_output=True)
+                )
+            except ffmpeg.Error as e:
+                print(f"FFmpeg error generating 5.1 surround sample: {e.stderr.decode() if e.stderr else e}")
+
+
 def setup_derived_audio(dest_name, rate):
     """Build a music corpus by resampling the 48 kHz one already on disk.
 
@@ -386,11 +425,12 @@ CORPUS_BUILDERS = {
     # but "audio" must exist first, which build order below guarantees.
     "audio_44k1": ([], lambda: setup_derived_audio("audio_44k1", 44100)),
     "audio_32k": ([], lambda: setup_derived_audio("audio_32k", 32000)),
+    "audio_51": ([], setup_audio_51),
 }
 
 # Build order matters: the derived music corpora read data/external/audio.
 BUILD_ORDER = ["audio", "speech", "speech_clean_16k", "speech_clean_24k",
-               "audio_44k1", "audio_32k"]
+               "audio_44k1", "audio_32k", "audio_51"]
 
 
 def corpus_is_populated(dirname):

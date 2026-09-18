@@ -82,8 +82,8 @@ class Encoder:
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and sample_rate < 32000:
             return False, f"sample rate {sample_rate} Hz < 32 kHz required for SBR ({profile_label(self.profile)})"
-        if self.profile == "hev2" and channels < 2:
-            return False, f"HE-v2 (Parametric Stereo) requires >= 2 channels (got {channels})"
+        if self.profile == "hev2" and channels != 2:
+            return False, f"HE-v2 (Parametric Stereo) requires exactly 2 channels (got {channels})"
         return True, ""
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
@@ -191,6 +191,11 @@ class LameEncoder(Encoder):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr=lib_substr)
         self.is_ffmpeg = is_ffmpeg
         self.file_ext = ".mp3"
+
+    def supports_scenario(self, bitrate_kbps, channels, sample_rate):
+        if channels > 2:
+            return False, f"LAME MP3 supports max 2 channels (got {channels})"
+        return super().supports_scenario(bitrate_kbps, channels, sample_rate)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         if self.is_ffmpeg:

@@ -16,6 +16,7 @@ next run without re-downloading everything (`--force` rebuilds all).
 | `audio_32k` | `data/external/audio_32k/` | 32 kHz stereo | downsampled from `audio` |
 | `audio_44k1` | `data/external/audio_44k1/` | 44.1 kHz stereo | downsampled from `audio` |
 | `audio_48k` | `data/external/audio/` | 48 kHz stereo | PMLT2014 + SoundExpert |
+| `audio_51` | `data/external/audio_51/` | 44.1 kHz 5.1 surround | FFmpeg Multichannel 6 Channel ID |
 
 A corpus may declare `max_clips`/`strata`, a deterministic cap applied by
 `utils.select_corpus_clips`: clips are taken round-robin across the strata its
@@ -65,6 +66,12 @@ from the corpus and the mode — never set them by hand.
 | `48k_stereo_192k` | audio_48k | 48k stereo | 192k | 96k/ch | |
 | `48k_stereo_256k` | audio_48k | 48k stereo | 256k | 128k/ch | transparency |
 | `48k_stereo_320k` | audio_48k | 48k stereo | 320k | 160k/ch | top of the format's usable range |
+| `44k1_51_96k` | audio_51 | 44.1k 5.1 | 96k | 16k/ch | low-rate HE-AAC 5.1 |
+| `44k1_51_160k` | audio_51 | 44.1k 5.1 | 160k | 26.7k/ch | mobile 5.1 surround |
+| `44k1_51_224k` | audio_51 | 44.1k 5.1 | 224k | 37.3k/ch | high-rate HE-AAC 5.1 |
+| `44k1_51_256k` | audio_51 | 44.1k 5.1 | 256k | 42.7k/ch | AAC-LC 5.1 entry |
+| `44k1_51_384k` | audio_51 | 44.1k 5.1 | 384k | 64k/ch | broadcast 5.1 standard |
+| `44k1_51_448k` | audio_51 | 44.1k 5.1 | 448k | 74.7k/ch | high-bitrate 5.1 surround |
 
 `48k_stereo_40k` / `48k_stereo_48k` are named **by rate, not codec**. While HE-AAC is not
 auto-engaged in faac they run as pure LC (valid low-rate LC tests); once faac's

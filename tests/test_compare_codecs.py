@@ -115,6 +115,44 @@ class TestCompareDecoders(unittest.TestCase):
         import compare_codecs
         self.assertTrue(hasattr(compare_codecs, "main"))
 
+    def test_51_surround_leaderboard_rendering(self):
+        from compare_codecs import generate_leaderboard, Encoder
+
+        class DummyEncoder(Encoder):
+            def __init__(self, name, profile):
+                super().__init__(name, None, name.lower(), profile)
+            def get_encode_cmd(self, i, o, b, c, s):
+                return ["echo"]
+
+        encoders = [DummyEncoder("Tool51", "lc")]
+        results = [{
+            "tool": "Tool51",
+            "profile": "lc",
+            "row_key": "tool51_lc",
+            "scenario": "44k1_51_256k",
+            "filename": "6_Channel_ID.wav",
+            "duration": 1.0,
+            "audio_duration": 10.0,
+            "size": 1000,
+            "actual_bitrate": 256.0,
+            "target_bitrate": 256,
+            "decode_valid": True,
+            "decode_error": "",
+            "mos": 4.1,
+            "ic_err": 0.05,
+            "attack_centroid_ms": [1.0]
+        }]
+
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard_51.md")
+            scenario_list = ["44k1_51_256k"]
+            generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=True)
+            self.assertTrue(os.path.exists(out_md))
+            with open(out_md) as f:
+                text = f.read()
+                self.assertIn("44.1 kHz 5.1 Surround", text)
+                self.assertIn("Tool51", text)
+
     def test_mode_both_leaderboard_rendering(self):
         with tempfile.TemporaryDirectory() as td:
             out_md = os.path.join(td, "combined.md")

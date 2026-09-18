@@ -42,22 +42,44 @@ def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
                 print(f"STDERR: {e.stderr}")
         raise e
 
+def sanitize_m4a_encoder_tag(data):
+    """Normalizes variable FAAC version strings in the ©too MP4 metadata atom while preserving exact container bytes and file length."""
+    if not isinstance(data, (bytes, bytearray)):
+        return data
+
+    def replace_fn(match):
+        s = match.group(2)
+        prefix = match.group(0)[:match.start(2) - match.start(0)]
+        return prefix + b"FAAC " + b"0" * max(0, len(s) - 5)
+
+    pattern = rb"(\x29too|\xa9too)[\s\S]{1,64}?(FAAC [a-zA-Z0-9.\-_\s()/:=]+)"
+    return re.sub(pattern, replace_fn, data)
+
+
 def get_file_hash(path, algo="md5"):
-    """Calculates the hash of a file."""
+    """Calculates the hash of a file, normalizing dynamic FAAC encoder version tags for M4A containers."""
     if not os.path.exists(path):
         return ""
 
     if algo == "md5":
         hasher = hashlib.md5()
+        with open(path, "rb") as f:
+            data = f.read()
+
+        if path.lower().endswith((".m4a", ".mp4", ".aac")):
+            data = sanitize_m4a_encoder_tag(data)
+
+        hasher.update(data)
+        return hasher.hexdigest()
+
     elif algo == "sha256":
         hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
     else:
         raise ValueError(f"Unsupported algorithm: {algo}")
-
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 def get_binary_size(path):
     if os.path.exists(path):
@@ -982,6 +1004,8 @@ def scenario_family(name_or_cfg):
     if not rate:
         return "other"
     label = f"{rate // 1000}k" if rate % 1000 == 0 else f"{rate // 1000}k{(rate % 1000) // 100}"
+    if channels == 6:
+        return f"{label}_51"
     return f"{label}_{'mono' if channels == 1 else 'stereo'}"
 
 
@@ -1093,14 +1117,22 @@ def _parse_scenario_name(name):
     channels = 0
     bitrate = 0
 
-    m = re.match(r"^(\d+)k(\d)?_(mono|stereo|speech|audio)(?:_[a-z0-9]+)?_(\d+)k$", name)
+    m = re.match(r"^(\d+)k(\d)?_(mono|stereo|51|speech|audio)(?:_[a-z0-9]+)?_(\d+)k$", name)
     if m:
         rate = int(m.group(1)) * 1000 + (int(m.group(2)) * 100 if m.group(2) else 0)
-        channels = 1 if m.group(3) in ("mono", "speech") else 2
+        ch_type = m.group(3)
+        if ch_type in ("mono", "speech"):
+            channels = 1
+        elif ch_type in ("stereo", "audio"):
+            channels = 2
+        elif ch_type == "51":
+            channels = 6
         bitrate = int(m.group(4))
         return rate, channels, bitrate
 
-    if "mono" in name or "speech" in name:
+    if "51" in name:
+        channels = 6
+    elif "mono" in name or "speech" in name:
         channels = 1
     elif "stereo" in name or "audio" in name:
         channels = 2
