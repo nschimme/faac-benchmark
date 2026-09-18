@@ -115,8 +115,6 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
         file_pairs = []
         valid_keys = []
         for key, entry, info in speech_items:
-            v_rate = info["v_rate"]
-            v_channels = info["v_channels"]
             ref_input_path = info["ref_input_path"]
             aac_path = info["aac_path"]
 
@@ -124,8 +122,8 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                 v_ref = os.path.join(batch_tmpdir, f"{key}_ref.wav")
                 v_deg = os.path.join(batch_tmpdir, f"{key}_deg.wav")
 
-                if wav_conv(ref_input_path, v_ref, v_rate, v_channels) and \
-                   wav_conv(aac_path, v_deg, v_rate, v_channels):
+                if wav_conv(ref_input_path, v_ref, 16000, 1) and \
+                   wav_conv(aac_path, v_deg, 16000, 1):
                     file_pairs.append((v_ref, v_deg))
                     valid_keys.append(key)
 
@@ -136,7 +134,9 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
                     if isinstance(result, Exception):
                         print(f"    Error for {key} in batch: {result}")
                     else:
-                        results[key] = (float(result.moslqo), "visqol-python")
+                        mos_v = float(result.moslqo)
+                        if not math.isnan(mos_v):
+                            results[key] = (mos_v, "visqol-python")
             except Exception as e:
                 print(f"    Batch execution failed for speech: {e}")
 
@@ -165,72 +165,123 @@ def get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_fi
         "v_channels": scenario_channels(cfg)
     }
 
+_ZIMTOHRLI_SUBPROCESS_SCRIPT = """
+import sys, json, math, scipy.signal, soundfile as sf, numpy as np, zimtohrli
+v_ref, v_deg = sys.argv[1], sys.argv[2]
+try:
+    ref_data, sr_r = sf.read(v_ref, dtype="float32", always_2d=True)
+    dec_data, sr_d = sf.read(v_deg, dtype="float32", always_2d=True)
+
+    ZIMT_RATE = 48000
+    if sr_r != ZIMT_RATE:
+        g = math.gcd(ZIMT_RATE, sr_r)
+        ref_data = scipy.signal.resample_poly(ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
+    if sr_d != ZIMT_RATE:
+        g = math.gcd(ZIMT_RATE, sr_d)
+        dec_data = scipy.signal.resample_poly(dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
+
+    if len(ref_data) == 0 or len(dec_data) == 0:
+        sys.exit(1)
+
+    r_mono = ref_data.mean(axis=1)
+    d_mono = dec_data.mean(axis=1)
+
+    n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
+    if n_search == 0:
+        sys.exit(1)
+
+    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
+    d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+    corr = scipy.signal.correlate(r_norm, d_norm, mode="full")
+    lag = int(np.argmax(corr)) - (n_search - 1)
+
+    if lag < 0:
+        dec_aligned = dec_data[-lag:]
+        ref_aligned = ref_data[:len(ref_data) + lag]
+    elif lag > 0:
+        ref_aligned = ref_data[lag:]
+        dec_aligned = dec_data[:len(dec_data) - lag]
+    else:
+        ref_aligned, dec_aligned = ref_data, dec_data
+
+    n = min(len(ref_aligned), len(dec_aligned))
+    if n <= 0:
+        sys.exit(1)
+
+    num_ref_ch = ref_aligned.shape[1]
+    num_dec_ch = dec_aligned.shape[1]
+
+    if num_ref_ch != num_dec_ch:
+        if num_ref_ch == 1 and num_dec_ch > 1:
+            ref_aligned = np.repeat(ref_aligned, num_dec_ch, axis=1)
+        elif num_dec_ch == 1 and num_ref_ch > 1:
+            dec_aligned = np.repeat(dec_aligned, num_ref_ch, axis=1)
+        else:
+            common_ch = min(num_ref_ch, num_dec_ch)
+            ref_aligned = ref_aligned[:, :common_ch]
+            dec_aligned = dec_aligned[:, :common_ch]
+
+    z_engine = zimtohrli.Pyohrli()
+    num_channels = ref_aligned.shape[1]
+    per_channel_dist = [
+        z_engine.distance(
+            np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
+            np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
+        )
+        for ch in range(num_channels)
+    ]
+    dist = math.sqrt(sum(d * d for d in per_channel_dist))
+    mos = float(zimtohrli.mos_from_zimtohrli(dist))
+    print(json.dumps({"mos": mos, "backend": "zimtohrli"}))
+except Exception:
+    sys.exit(1)
+"""
+
 def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     """Score an already-converted ref/deg WAV pair.
 
-    Speech mode uses visqol-python (16 kHz mono); audio mode uses Zimtohrli
-    (48 kHz). The engine is chosen by the scenario's mode ALONE. It used to
-    also trigger on `sr == 16000`, which was fine while 16 kHz meant speech,
-    but would now hijack any 16 kHz corpus a scenario deliberately scores in
-    audio mode. `sample_rate` is still accepted for callers that pass it, and
-    is unused for dispatch.
+    Speech mode strictly uses visqol-python (16 kHz mono); audio mode strictly
+    uses Zimtohrli (48 kHz). The engine is chosen by the scenario's mode ALONE
+    to prevent mixing different metric scale distributions.
     Returns (mos, backend_used); mos is None on failure."""
     try:
         if mode_str == "speech":
             if HAS_VISQOL_PYTHON:
-                api = get_process_visqol_python("speech")
-                if api:
-                    result = api.measure(v_ref, v_deg)
-                    return float(result.moslqo), "visqol-python"
+                try:
+                    api = get_process_visqol_python("speech")
+                    if api:
+                        with tempfile.TemporaryDirectory() as td:
+                            v_ref_16k = os.path.join(td, "v_ref_16k.wav")
+                            v_deg_16k = os.path.join(td, "v_deg_16k.wav")
+                            if wav_conv(v_ref, v_ref_16k, rate=16000, channels=1) and \
+                               wav_conv(v_deg, v_deg_16k, rate=16000, channels=1):
+                                result = api.measure(v_ref_16k, v_deg_16k)
+                                mos_v = float(result.moslqo)
+                                if not math.isnan(mos_v):
+                                    return mos_v, "visqol-python"
+                except Exception as e:
+                    print(f"  visqol-python speech evaluation failed: {e}")
             print("  ERROR: visqol-python is required for speech-mode scoring but not available.")
             return None, "visqol-python"
 
-        # Audio mode: use Zimtohrli
+        # Audio mode: use Zimtohrli via isolated sub-process runner to prevent C++ extension memory faults
         if HAS_ZIMTOHRLI:
-            z_engine = get_process_zimtohrli()
-            if z_engine:
-                ref_data, sr_r = sf.read(v_ref, dtype='float32', always_2d=True)
-                dec_data, sr_d = sf.read(v_deg, dtype='float32', always_2d=True)
-
-                ZIMT_RATE = 48000
-                if sr_r != ZIMT_RATE:
-                    g = math.gcd(ZIMT_RATE, sr_r)
-                    ref_data = scipy.signal.resample_poly(
-                        ref_data, ZIMT_RATE // g, sr_r // g, axis=0)
-                if sr_d != ZIMT_RATE:
-                    g = math.gcd(ZIMT_RATE, sr_d)
-                    dec_data = scipy.signal.resample_poly(
-                        dec_data, ZIMT_RATE // g, sr_d // g, axis=0)
-
-                r_mono = ref_data.mean(axis=1)
-                d_mono = dec_data.mean(axis=1)
-
-                n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
-                r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-                d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
-                corr = scipy.signal.correlate(r_norm, d_norm, mode='full')
-                lag = int(np.argmax(corr)) - (n_search - 1)
-
-                if lag < 0:
-                    dec_aligned = dec_data[-lag:]
-                    ref_aligned = ref_data[:len(ref_data) + lag]
-                elif lag > 0:
-                    ref_aligned = ref_data[lag:]
-                    dec_aligned = dec_data[:len(dec_data) - lag]
+            try:
+                env = dict(os.environ)
+                if sys.platform == "darwin":
+                    env["NUMBA_THREADING_LAYER"] = "workqueue"
                 else:
-                    ref_aligned, dec_aligned = ref_data, dec_data
+                    env.setdefault("NUMBA_THREADING_LAYER", "omp")
 
-                n = min(len(ref_aligned), len(dec_aligned))
-                num_channels = ref_aligned.shape[1]
-                per_channel_dist = [
-                    z_engine.distance(
-                        np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
-                        np.ascontiguousarray(dec_aligned[:n, ch], dtype=np.float32)
-                    )
-                    for ch in range(num_channels)
-                ]
-                dist = math.sqrt(sum(d * d for d in per_channel_dist))
-                return float(zimtohrli.mos_from_zimtohrli(dist)), "zimtohrli"
+                proc = subprocess.run([sys.executable, "-c", _ZIMTOHRLI_SUBPROCESS_SCRIPT, v_ref, v_deg],
+                                      capture_output=True, text=True, timeout=30, env=env)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    data = json.loads(proc.stdout.strip())
+                    return data.get("mos"), data.get("backend", "zimtohrli")
+            except Exception as e:
+                print(f"  Zimtohrli evaluation failed: {e}")
+                return None, "zimtohrli"
+
         print("  ERROR: zimtohrli is required for audio scoring but not available.")
         return None, "zimtohrli"
 

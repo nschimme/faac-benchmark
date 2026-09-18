@@ -19,11 +19,15 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
-                   get_cached_ref_wav)
+                   get_cached_ref_wav, scenario_channels, wav_conv, corpus_dir)
 
-os.environ["NUMBA_THREADING_LAYER"] = "omp"
+if sys.platform == "darwin":
+    os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
+else:
+    os.environ.setdefault("NUMBA_THREADING_LAYER", "omp")
 
 import phase2_mos
+from config import SCENARIOS
 
 def decoder_row_key(decoder):
     """Stable identity key for a decoder tool."""
@@ -178,7 +182,7 @@ def detect_decoders(args):
                                 [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id("FAAD2", ver, "faad2", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id("FAAD", ver, "faad2", existing_names, existing_ids)
         dec = FAADDecoder(name, f_bin, tool_id, lib_override=f_lib)
         if probe_decoder_capability(dec):
             decoders.append(dec)
@@ -200,8 +204,16 @@ def detect_decoders(args):
 
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
-        ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id("Apple AudioToolbox", ver, "afconvert", existing_names, existing_ids)
+        ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        if not ver and sys.platform == "darwin":
+            try:
+                import platform
+                mac_v = platform.mac_ver()[0]
+                if mac_v:
+                    ver = mac_v
+            except Exception:
+                pass
+        name, tool_id = make_unique_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
         dec = AFConvertDecoder(name, afconvert_bin, tool_id)
         if probe_decoder_capability(dec):
             decoders.append(dec)
@@ -238,6 +250,15 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
     ref_path = res_item.get("ref_path")
     scenario_name = res_item["scenario"]
     sample = res_item["filename"]
+
+    if not ref_path or not os.path.exists(ref_path):
+        cfg = SCENARIOS.get(scenario_name, {})
+        if cfg:
+            external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "external")
+            fallback_ref = os.path.join(corpus_dir(cfg, external_data_dir), sample)
+            if os.path.exists(fallback_ref):
+                ref_path = fallback_ref
 
     if not aac_path or not os.path.exists(aac_path):
         return {
@@ -280,23 +301,79 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
 
         if res.returncode != 0:
-            raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
+            stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
+            stderr_clean = stderr_text.strip()
+            is_timeout = (res.returncode == -124) or ("timed out" in stderr_clean.lower()) or ("timeout" in stderr_clean.lower())
+            if is_timeout:
+                err_detail = "Timeout expired"
+            elif stderr_clean:
+                stderr_tail = next((l for l in reversed(stderr_clean.splitlines()) if l.strip()), "")
+                err_detail = f"exit code {res.returncode}: {stderr_tail}"
+            elif res.returncode < 0:
+                err_detail = f"Process terminated by signal {-res.returncode}"
+            else:
+                err_detail = f"exit code {res.returncode}"
+
+            return {
+                "tool": decoder.name,
+                "row_key": decoder_row_key(decoder),
+                "encoder_row_key": res_item["row_key"],
+                "scenario": scenario_name,
+                "filename": sample,
+                "profile": res_item.get("profile", "lc"),
+                "duration": 0,
+                "audio_duration": None,
+                "decode_valid": False,
+                "decode_error": err_detail if is_timeout else f"Decode failed: {err_detail}",
+                "timeout": is_timeout,
+                "snr_db": None,
+                "alignment_delay_ms": None,
+                "peak_ram_kb": None,
+                "decoded_wav": None
+            }
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
         alignment_delay_ms = None
         mos_val = None
+        dec_channels = None
+        mono_downmix = False
 
-        if valid and ref_path and os.path.exists(ref_path):
-            snr_db = compute_snr(ref_path, output_path)
-            _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+        if valid:
+            try:
+                with wave.open(output_path, "rb") as w:
+                    dec_channels = w.getnchannels()
+            except Exception:
+                dec_channels = None
 
-            if not skip_mos:
-                try:
-                    mode_str = res_item.get("mode", "audio")
-                    mos_val, _backend = phase2_mos.score_wav_pair(ref_path, output_path, mode_str=mode_str)
-                except Exception:
-                    pass
+            cfg = SCENARIOS.get(scenario_name, {})
+            v_rate = cfg.get("visqol_rate") or cfg.get("rate") or 48000
+            v_channels = scenario_channels(cfg) if cfg else 2
+            mode_str = cfg.get("mode", "audio")
+
+            if v_channels >= 2 and dec_channels == 1:
+                mono_downmix = True
+
+            if ref_path and os.path.exists(ref_path):
+                snr_db = compute_snr(ref_path, output_path)
+                _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+
+                if not skip_mos:
+                    try:
+                        with tempfile.TemporaryDirectory() as td:
+                            ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
+                            if not ref_wav:
+                                ref_wav = os.path.join(td, "ref_conv.wav")
+                                if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
+                                    ref_wav = ref_path
+
+                            dec_wav = os.path.join(td, "dec_conv.wav")
+                            if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
+                                dec_wav = output_path
+
+                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
+                    except Exception as e:
+                        print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
@@ -315,15 +392,24 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "snr_db": snr_db,
             "alignment_delay_ms": alignment_delay_ms,
             "peak_ram_kb": peak_ram_kb,
-            "decoded_wav": output_path
+            "decoded_wav": output_path,
+            "dec_channels": dec_channels,
+            "mono_downmix": mono_downmix
         }
-    except Exception as e:
+    except BaseException as e:
         detail = str(e)
+        is_timeout = False
         if isinstance(e, subprocess.CalledProcessError):
             stderr_text = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            if e.returncode == -124 or "timed out" in stderr_text.lower() or "timeout" in stderr_text.lower():
+                is_timeout = True
             stderr_tail = next((l for l in reversed(stderr_text.splitlines()) if l.strip()), "")
             if stderr_tail:
                 detail = f"exit code {e.returncode}: {stderr_tail}"
+        elif "timed out" in detail.lower() or "timeout" in detail.lower():
+            is_timeout = True
+
+        err_msg = "Timeout expired" if is_timeout else f"Decode failed: {detail}"
         return {
             "tool": decoder.name,
             "row_key": decoder_row_key(decoder),
@@ -334,7 +420,8 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "duration": 0,
             "audio_duration": None,
             "decode_valid": False,
-            "decode_error": f"Decode failed: {detail}",
+            "decode_error": err_msg,
+            "timeout": is_timeout,
             "snr_db": None,
             "alignment_delay_ms": None,
             "peak_ram_kb": None,
@@ -383,8 +470,10 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
         passed = (res.returncode == 0)
-    except Exception:
+        is_timeout = (res.returncode == -124) or ("timed out" in (res.stderr or "").lower())
+    except BaseException as e:
         passed = False
+        is_timeout = "timed out" in str(e).lower() or "timeout" in str(e).lower()
     finally:
         if temp_adts and os.path.exists(temp_adts):
             try:
@@ -398,5 +487,6 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         "encoder_row_key": res_item["row_key"],
         "scenario": scenario_name,
         "filename": sample,
-        "passed": passed
+        "passed": passed,
+        "timeout": is_timeout
     }

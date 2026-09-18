@@ -215,7 +215,8 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 "sys.stderr.buffer.flush()\n"
                 "sys.stdout.buffer.write(out)\n"
                 "sys.stderr.buffer.write(err)\n"
-                "sys.exit(ret)\n"
+                "ret_code = ret if (ret >= 0 and ret <= 255) else (128 + abs(ret) if ret < 0 else ret % 256)\n"
+                "sys.exit(ret_code)\n"
             )
             runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
             proc = subprocess.run(runner_cmd, capture_output=True, env=env, timeout=timeout + 5)

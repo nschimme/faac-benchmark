@@ -77,14 +77,19 @@ def decode_stereo(path, tmpdir, tag, rate=48000):
 
 
 def read_stereo(path):
-    with wave.open(path, "rb") as w:
-        ch = w.getnchannels()
-        raw = w.readframes(w.getnframes())
-    a = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
-    if ch >= 2:
-        a = a.reshape(-1, ch)
-        return a[:, 0], a[:, 1]
-    return a, a  # mono source: both channels identical
+    try:
+        with wave.open(path, "rb") as w:
+            ch = w.getnchannels()
+            raw = w.readframes(w.getnframes())
+        if not raw:
+            return np.array([]), np.array([])
+        a = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+        if ch >= 2:
+            a = a.reshape(-1, ch)
+            return a[:, 0], a[:, 1]
+        return a, a  # mono source: both channels identical
+    except Exception:
+        return np.array([]), np.array([])
 
 
 def estimate_delay(ref, deg, win=50000, maxlag=4096):
@@ -124,6 +129,9 @@ def coherence_error(ref_path, deg_path):
     Returns None if the reference is mono (no stereo image to measure)."""
     rL, rR = read_stereo(ref_path)
     dL, dR = read_stereo(deg_path)
+
+    if len(rL) == 0 or len(dL) == 0:
+        return None
 
     # Mono reference: nothing to measure.
     if np.array_equal(rL, rR):

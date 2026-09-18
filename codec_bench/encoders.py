@@ -364,8 +364,16 @@ def detect_encoders(args):
 
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
-        ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id("Apple AudioToolbox", ver, "afconvert", existing_names, existing_ids)
+        ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        if not ver and sys.platform == "darwin":
+            try:
+                import platform
+                mac_v = platform.mac_ver()[0]
+                if mac_v:
+                    ver = mac_v
+            except Exception:
+                pass
+        name, tool_id = make_unique_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
         for p in ["lc", "he", "hev2"]:
             enc = AFConvertEncoder(name, afconvert_bin, tool_id, p)
             if probe_encoder_capability(enc):

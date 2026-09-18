@@ -97,6 +97,18 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     encoder_info = {encoder_row_key(e): e for e in encoders}
     all_row_keys = sorted(stats.keys())
 
+    for rk in all_row_keys:
+        if rk not in encoder_info:
+            tool_name = next((r.get("tool") for r in results if r.get("row_key") == rk), rk)
+            profile = next((r.get("profile") for r in results if r.get("row_key") == rk), "lc")
+            encoder_info[rk] = type("DummyEncoder", (), {
+                "name": tool_name,
+                "profile": profile,
+                "tool_id": rk,
+                "text_size": 0,
+                "rodata_size": 0
+            })()
+
     tools = sorted(list({encoder_info[rk].name for rk in all_row_keys if rk in encoder_info}))
 
     def is_suboptimal(tool_name, s_name, profile, check_mos):
@@ -291,7 +303,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             table_used_strikethrough = False
             for p in ["lc", "he", "hev2", "standard"]:
-                p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
+                p_rks = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
                 p_has_data = any(stats[rk][s_name]["mos_count"] > 0 for rk in p_rks for s_name in fam_scenarios)
@@ -766,7 +778,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
     }))
 
     p_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
-        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "mos_sum": 0, "mos_count": 0, "mos_min": 6.0, "mos_min_file": None,
         "snr_sum": 0, "snr_count": 0,
         "delay_sum": 0, "delay_count": 0,
         "ram_sum": 0, "ram_count": 0,
@@ -774,13 +786,36 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
         "valid_count": 0, "total_count": 0
     })))
 
+    decoder_info = {decoder_row_key(d): d for d in decoders}
+    clip_mos = defaultdict(dict)
+    bug_flags = []
+    mono_downmix_counts = defaultdict(int)
+    timeout_counts = defaultdict(int)
+
     for res in results:
         rk = res["row_key"]
         s = res["scenario"]
         p = res.get("profile", "lc")
 
+        if rk not in decoder_info:
+            tool_name = res.get("tool") or rk
+            decoder_info[rk] = type("DummyDecoder", (), {
+                "name": tool_name,
+                "tool_id": rk,
+                "text_size": 0,
+                "rodata_size": 0
+            })()
+
         stats[rk][s]["total_count"] += 1
         p_stats[rk][p][s]["total_count"] += 1
+
+        if res.get("mono_downmix"):
+            mono_downmix_counts[rk] += 1
+
+        if res.get("timeout") or "timed out" in (res.get("decode_error") or "").lower() or "timeout" in (res.get("decode_error") or "").lower():
+            timeout_counts[rk] += 1
+            if res.get("filename"):
+                bug_flags.append((decoder_info[rk].name, p, s, res["filename"], 0.0, 0.0, "Timeout expired"))
 
         if res.get("decode_valid"):
             stats[rk][s]["valid_count"] += 1
@@ -789,11 +824,18 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             if res.get("mos") is not None:
                 stats[rk][s]["mos_sum"] += res["mos"]
                 stats[rk][s]["mos_count"] += 1
-                stats[rk][s]["mos_min"] = min(stats[rk][s]["mos_min"], res["mos"])
+                if res["mos"] < stats[rk][s].get("mos_min", 6.0):
+                    stats[rk][s]["mos_min"] = res["mos"]
+                    stats[rk][s]["mos_min_file"] = res.get("filename")
 
                 p_stats[rk][p][s]["mos_sum"] += res["mos"]
                 p_stats[rk][p][s]["mos_count"] += 1
-                p_stats[rk][p][s]["mos_min"] = min(p_stats[rk][p][s]["mos_min"], res["mos"])
+                if res["mos"] < p_stats[rk][p][s].get("mos_min", 6.0):
+                    p_stats[rk][p][s]["mos_min"] = res["mos"]
+                    p_stats[rk][p][s]["mos_min_file"] = res.get("filename")
+
+                if res.get("filename"):
+                    clip_mos[(s, res["filename"])][rk] = res["mos"]
 
             if res.get("snr_db") is not None and res["snr_db"] != float("inf"):
                 stats[rk][s]["snr_sum"] += res["snr_db"]
@@ -832,7 +874,6 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             if r_res.get("passed"):
                 rob_stats[rk]["passed"] += 1
 
-    decoder_info = {decoder_row_key(d): d for d in decoders}
     overall = {}
     for rk, dec_obj in decoder_info.items():
         d_mos, d_speed, d_snr, d_delay, d_ram = [], [], [], [], []
@@ -905,7 +946,15 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             o = overall[rk]
             rank_str = f"🏆 {i+1}" if i == 0 and o["worst_mos"] > 0 else f"{i+1}"
 
-            status_str = "OK" if o["valid_rate"] == 100 else f"⚠️ ({o['valid_rate']:.0f}% valid)"
+            if timeout_counts[rk] > 0:
+                status_str = f"⚠️ ({timeout_counts[rk]}x timeout)"
+            elif mono_downmix_counts[rk] > 0:
+                status_str = "No HE-v2 PS (1ch)"
+            elif o["valid_rate"] == 100:
+                status_str = "OK"
+            else:
+                status_str = f"⚠️ ({o['valid_rate']:.0f}% valid)"
+
             w_str = f"**{o['worst_mos']:.3f}**" if abs(o['worst_mos'] - best_worst_mos) < 1e-6 and o['worst_mos'] > 0 else f"{o['worst_mos']:.3f}"
             m_str = f"**{o['overall_mos']:.3f}**" if abs(o['overall_mos'] - best_mos) < 1e-6 and o['overall_mos'] > 0 else f"{o['overall_mos']:.3f}"
 
@@ -955,6 +1004,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                     f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
+            table_used_1ch_note = False
             for p in ["lc", "he", "hev2"]:
                 p_has_data = any(p_stats[rk][p][s_name]["mos_count"] > 0 for rk in sorted_rk for s_name in fam_scenarios)
                 if not p_has_data:
@@ -975,12 +1025,34 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                             avg_m = st["mos_sum"] / st["mos_count"]
                             is_best = best_m and abs(avg_m - best_m) < 1e-6
                             p_bar = make_progress_bar(avg_m, 5.0)
-                            cell = f" **{avg_m:.3f}**{p_bar}" if is_best else f" {avg_m:.3f}{p_bar}"
+
+                            min_f = st.get("mos_min_file")
+                            gap = cell_peer_gap(clip_mos, rk, s_name, min_f)
+                            if gap is not None:
+                                issue_text = "Mono output (No PS)" if (p == "hev2" and mono_downmix_counts[rk] > 0) else "MOS quality gap vs peers"
+                                bug_flags.append((decoder_info[rk].name, p, s_name, min_f, gap[0], gap[1], issue_text))
+
+                            is_1ch = (p == "hev2" and mono_downmix_counts[rk] > 0)
+                            if is_1ch:
+                                table_used_1ch_note = True
+
+                            ch_tag = " (1ch)" if is_1ch else ""
+                            if is_best and is_1ch:
+                                cell = f" _**{avg_m:.3f}**_{ch_tag}{p_bar}"
+                            elif is_best:
+                                cell = f" **{avg_m:.3f}**{p_bar}"
+                            elif is_1ch:
+                                cell = f" _{avg_m:.3f}_{ch_tag}{p_bar}"
+                            else:
+                                cell = f" {avg_m:.3f}{p_bar}"
                             row_str += f"{cell} |"
                         else:
                             row_str += " N/A |"
                     f.write(row_str + "\n")
                 f.write("\n")
+
+            if table_used_1ch_note:
+                f.write("_Scores marked (1ch) indicate mono output on HE-v2 stereo bitstreams due to lack of Parametric Stereo decoding._\n\n")
 
             # 2. Spec Conformance (SNR)
             f.write(f"##### Spec Conformance (Mean SNR - {fam_label})\n\n")
@@ -1009,6 +1081,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 if not p_has_data:
                     continue
 
+                max_p_snr = max([p_stats[rk][p][s_name]["snr_sum"] / p_stats[rk][p][s_name]["snr_count"] for rk in sorted_rk for s_name in fam_scenarios if p_stats[rk][p][s_name]["snr_count"] > 0] + [1.0])
+
                 f.write(f"###### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
@@ -1021,7 +1095,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                         if st["snr_count"] > 0:
                             avg_snr = st["snr_sum"] / st["snr_count"]
                             is_best = best_snr and abs(avg_snr - best_snr) < 1e-6
-                            cell = f" **{avg_snr:.1f} dB**" if is_best else f" {avg_snr:.1f} dB"
+                            p_bar = make_progress_bar(avg_snr, max_p_snr)
+                            cell = f" **{avg_snr:.1f} dB**{p_bar}" if is_best else f" {avg_snr:.1f} dB{p_bar}"
                             row_str += f"{cell} |"
                         else:
                             row_str += " Bit-Exact / N/A |"
@@ -1035,6 +1110,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 if not p_has_data:
                     continue
 
+                max_p_delay = max([p_stats[rk][p][s_name]["delay_sum"] / p_stats[rk][p][s_name]["delay_count"] for rk in sorted_rk for s_name in fam_scenarios if p_stats[rk][p][s_name]["delay_count"] > 0] + [0.1])
+
                 f.write(f"###### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
@@ -1047,7 +1124,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                         if st["delay_count"] > 0:
                             avg_del = st["delay_sum"] / st["delay_count"]
                             is_best = best_del is not None and abs(avg_del - best_del) < 1e-6
-                            cell = f" **{avg_del:.2f} ms**" if is_best else f" {avg_del:.2f} ms"
+                            p_bar = make_progress_bar(avg_del, max_p_delay, lower_is_better=True)
+                            cell = f" **{avg_del:.2f} ms**{p_bar}" if is_best else f" {avg_del:.2f} ms{p_bar}"
                             row_str += f"{cell} |"
                         else:
                             row_str += " N/A |"
@@ -1117,5 +1195,19 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write("```\n\n")
 
         f.write("\n</details>\n\n")
+
+        if bug_flags:
+            f.write("<details><summary><b>🐛 View Quality Outliers (Issues Worth Investigating)</b></summary>\n\n")
+            f.write("### Decoder Quality Outliers (Issues Worth Investigating)\n\n")
+            f.write("> **Note**: Flags clips where this decoder scored **≥0.75 MOS lower** than the average of all other decoders on the exact same clip or produced mono output on stereo bitstreams.\n\n")
+
+            f.write("| Decoder | Profile | Scenario | Outlier Clip | Decoder MOS | Peer Avg MOS | Defect Gap | Issue / Cause |\n")
+            f.write("| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :--- |\n")
+
+            sorted_flags = sorted(bug_flags, key=lambda x: (x[5] - x[4]), reverse=True)
+            for tool_name, p, s_name, filename, this_mos, peer_avg, issue in sorted_flags:
+                gap = peer_avg - this_mos
+                f.write(f"| {tool_name} | {profile_label(p)} | {s_name} | `{filename}` | {this_mos:.2f} | {peer_avg:.2f} | **-{gap:.2f} MOS** | {issue} |\n")
+            f.write("\n</details>\n\n")
 
     print(f"\nDecoder leaderboard generated at: {output_path}")
