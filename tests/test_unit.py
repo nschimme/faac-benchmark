@@ -31,6 +31,34 @@ class TestDecodeValidate(unittest.TestCase):
             self.assertTrue(err)
 
 
+class TestSanitizeM4aEncoderTag(unittest.TestCase):
+    def test_sanitize_m4a_encoder_tag_normalizes_git_hash(self):
+        from utils import sanitize_m4a_encoder_tag, get_file_hash
+        import hashlib
+
+        data1 = b"\x00\x00\x00\x28\xa9too\x00\x00\x00\x20data\x00\x00\x00\x00FAAC 2.1.0 (faac-2.1-51-gc3c8f22)\x00\x00"
+        data2 = b"\x00\x00\x00\x28\xa9too\x00\x00\x00\x20data\x00\x00\x00\x00FAAC 2.1.0 (faac-2.1-52-g8aebaa3)\x00\x00"
+
+        s1 = sanitize_m4a_encoder_tag(data1)
+        s2 = sanitize_m4a_encoder_tag(data2)
+
+        self.assertEqual(len(s1), len(data1))
+        self.assertEqual(len(s2), len(data2))
+        self.assertEqual(hashlib.md5(s1).hexdigest(), hashlib.md5(s2).hexdigest())
+
+        with tempfile.TemporaryDirectory() as td:
+            f1 = os.path.join(td, "a.m4a")
+            f2 = os.path.join(td, "b.m4a")
+            with open(f1, "wb") as f:
+                f.write(data1)
+            with open(f2, "wb") as f:
+                f.write(data2)
+
+            h1 = get_file_hash(f1)
+            h2 = get_file_hash(f2)
+            self.assertEqual(h1, h2)
+
+
 class TestProvenanceHash(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()

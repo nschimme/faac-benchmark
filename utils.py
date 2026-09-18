@@ -42,36 +42,42 @@ def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
                 print(f"STDERR: {e.stderr}")
         raise e
 
+def sanitize_m4a_encoder_tag(data):
+    """Normalizes variable FAAC version strings in MP4 metadata atoms while preserving exact container bytes and file length."""
+    if not isinstance(data, (bytes, bytearray)):
+        return data
+
+    def replace_fn(match):
+        s = match.group(0)
+        return b"FAAC " + b"0" * max(0, len(s) - 5)
+
+    return re.sub(rb"FAAC [a-zA-Z0-9.\-_\s()/:=]+", replace_fn, data)
+
+
 def get_file_hash(path, algo="md5"):
-    """Calculates the hash of a file, stripping container metadata for audio bitstream files."""
+    """Calculates the hash of a file, normalizing dynamic FAAC encoder version tags for M4A containers."""
     if not os.path.exists(path):
         return ""
 
-    if algo == "md5" and path.lower().endswith((".m4a", ".mp4", ".aac", ".opus", ".mp3")):
-        ffmpeg_bin = shutil.which("ffmpeg")
-        if ffmpeg_bin:
-            fmt = "adts" if path.lower().endswith((".m4a", ".mp4", ".aac")) else ("opus" if path.lower().endswith(".opus") else "mp3")
-            cmd = [ffmpeg_bin, "-v", "error", "-i", path, "-c:a", "copy", "-f", fmt, "-"]
-            try:
-                res = subprocess.run(cmd, capture_output=True)
-                if res.returncode == 0 and res.stdout:
-                    hasher = hashlib.md5()
-                    hasher.update(res.stdout)
-                    return hasher.hexdigest()
-            except Exception:
-                pass
-
     if algo == "md5":
         hasher = hashlib.md5()
+        with open(path, "rb") as f:
+            data = f.read()
+
+        if path.lower().endswith((".m4a", ".mp4", ".aac")):
+            data = sanitize_m4a_encoder_tag(data)
+
+        hasher.update(data)
+        return hasher.hexdigest()
+
     elif algo == "sha256":
         hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
     else:
         raise ValueError(f"Unsupported algorithm: {algo}")
-
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 def get_binary_size(path):
     if os.path.exists(path):
