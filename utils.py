@@ -43,15 +43,17 @@ def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
         raise e
 
 def sanitize_m4a_encoder_tag(data):
-    """Normalizes variable FAAC version strings in MP4 metadata atoms while preserving exact container bytes and file length."""
+    """Normalizes variable FAAC version strings in the ©too MP4 metadata atom while preserving exact container bytes and file length."""
     if not isinstance(data, (bytes, bytearray)):
         return data
 
     def replace_fn(match):
-        s = match.group(0)
-        return b"FAAC " + b"0" * max(0, len(s) - 5)
+        s = match.group(2)
+        prefix = match.group(0)[:match.start(2) - match.start(0)]
+        return prefix + b"FAAC " + b"0" * max(0, len(s) - 5)
 
-    return re.sub(rb"FAAC [a-zA-Z0-9.\-_\s()/:=]+", replace_fn, data)
+    pattern = rb"(\x29too|\xa9too)[\s\S]{1,64}?(FAAC [a-zA-Z0-9.\-_\s()/:=]+)"
+    return re.sub(pattern, replace_fn, data)
 
 
 def get_file_hash(path, algo="md5"):
