@@ -461,12 +461,16 @@ _SPEECH_CLEAN_GATE = [
     "R_01_CHOP_MK.wav",
     "R_01_CHOP_ML.wav",
 ]
+_AUDIO_51_GATE = [
+    "6_Channel_ID.wav",
+]
 # Gate clips are a property of the corpus, not of the scenario: every scenario
 # reading the same directory gates on the same clips.
 CORPUS_GATE = {
     "audio_48k": _MUSIC_GATE,
     "audio_44k1": _MUSIC_GATE,
     "audio_32k": _MUSIC_GATE,
+    "audio_51": _AUDIO_51_GATE,
     "speech_clean_16k": _SPEECH_CLEAN_GATE,
     "speech_clean_24k": _SPEECH_CLEAN_GATE,
     "speech_voip_16k": _SPEECH_GATE,
