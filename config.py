@@ -100,11 +100,18 @@ CORPORA = {
         "source": "music",
         "family": "32k_stereo",
         "label": "32 kHz Stereo"},
+    "audio_51": {
+        "dir": "audio_51",
+        "rate": 44100,
+        "channels": 6,
+        "source": "ffmpeg",
+        "family": "44k1_51",
+        "label": "44.1 kHz 5.1 Surround"},
 }
 
 # Report ordering for families: mono speech first (ascending rate), then
-# stereo (ascending rate). Also drives the sort key in utils.
-FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo"]
+# stereo (ascending rate), then 5.1 surround. Also drives the sort key in utils.
+FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo", "44k1_51"]
 
 # vbr_q: FAAC's -q (quantizer quality, 1..5000) chosen so its VBR
 # output lands near this scenario's "bitrate" for representative content --
@@ -373,6 +380,43 @@ SCENARIOS = {
         "corpus": "audio_48k",
         "bitrate": 320,
         "vbr_q": 700,   # PROVISIONAL
+        "thresh": 4.3},  # PROVISIONAL
+    # -- 44.1 kHz 5.1 surround --------------------------------------------
+    "44k1_51_96k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 96,
+        "vbr_q": 50,     # PROVISIONAL
+        "thresh": 2.5},  # PROVISIONAL
+    "44k1_51_160k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 160,
+        "vbr_q": 100,    # PROVISIONAL
+        "thresh": 3.0},  # PROVISIONAL
+    "44k1_51_224k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 224,
+        "vbr_q": 180,    # PROVISIONAL
+        "thresh": 3.5},  # PROVISIONAL
+    "44k1_51_256k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 256,
+        "vbr_q": 220,    # PROVISIONAL
+        "thresh": 3.8},  # PROVISIONAL
+    "44k1_51_384k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 384,
+        "vbr_q": 350,    # PROVISIONAL
+        "thresh": 4.1},  # PROVISIONAL
+    "44k1_51_448k": {
+        "mode": "audio",
+        "corpus": "audio_51",
+        "bitrate": 448,
+        "vbr_q": 500,    # PROVISIONAL
         "thresh": 4.3}}  # PROVISIONAL
 
 # Scoring rates are a property of the METRIC ENGINE, not of the content:

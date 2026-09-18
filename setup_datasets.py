@@ -38,6 +38,10 @@ DATASETS = {
     "SoundExpert": {
         "url": "https://github.com/nschimme/SoundExpert/archive/refs/tags/SoundExpert.zip",
         "name": "SoundExpert Sound samples"
+    },
+    "FFmpeg51": {
+        "url": "https://samples.mplayerhq.hu/A-codecs/lossless/6_Channel_ID.wav",
+        "name": "FFmpeg 5.1 Surround Reference Sample",
     }
 }
 
@@ -244,6 +248,21 @@ def setup_tcd_ref(rate, dest_name):
                          rate, f"TCD-VoIP clean references @ {rate} Hz")
 
 
+def setup_audio_51():
+    """Download the 5.1 surround 6_Channel_ID.wav reference sample."""
+    dataset_info = DATASETS["FFmpeg51"]
+    dest_dir = os.path.join(BASE_DATA_DIR, "audio_51")
+    os.makedirs(dest_dir, exist_ok=True)
+    out_path = os.path.join(dest_dir, "6_Channel_ID.wav")
+    if not os.path.exists(out_path):
+        print(f"Downloading {dataset_info['name']}...")
+        req = urllib.request.Request(dataset_info["url"], headers={"User-Agent": "Mozilla/5.0"})
+        tmp_path = out_path + ".tmp"
+        with urllib.request.urlopen(req) as response, open(tmp_path, 'wb') as out:
+            shutil.copyfileobj(response, out)
+        shutil.move(tmp_path, out_path)
+
+
 def setup_derived_audio(dest_name, rate):
     """Build a music corpus by resampling the 48 kHz one already on disk.
 
@@ -386,11 +405,12 @@ CORPUS_BUILDERS = {
     # but "audio" must exist first, which build order below guarantees.
     "audio_44k1": ([], lambda: setup_derived_audio("audio_44k1", 44100)),
     "audio_32k": ([], lambda: setup_derived_audio("audio_32k", 32000)),
+    "audio_51": ([], setup_audio_51),
 }
 
 # Build order matters: the derived music corpora read data/external/audio.
 BUILD_ORDER = ["audio", "speech", "speech_clean_16k", "speech_clean_24k",
-               "audio_44k1", "audio_32k"]
+               "audio_44k1", "audio_32k", "audio_51"]
 
 
 def corpus_is_populated(dirname):

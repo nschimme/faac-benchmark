@@ -136,6 +136,19 @@ class TestScenarioMatrix(unittest.TestCase):
             self.assertIn(corpus["family"], self.FAMILY_ORDER,
                           f"{corpus_name}'s family is missing from FAMILY_ORDER")
 
+    def test_51_surround_corpus_and_scenarios(self):
+        self.assertIn("audio_51", self.CORPORA)
+        c51 = self.CORPORA["audio_51"]
+        self.assertEqual(c51["channels"], 6)
+        self.assertEqual(c51["rate"], 44100)
+        self.assertEqual(c51["family"], "44k1_51")
+        self.assertIn("44k1_51", self.FAMILY_ORDER)
+
+        scen_51 = [name for name, cfg in self.SCENARIOS.items() if cfg["corpus"] == "audio_51"]
+        self.assertEqual(len(scen_51), 6)
+        self.assertIn("44k1_51_96k", self.SCENARIOS)
+        self.assertIn("44k1_51_448k", self.SCENARIOS)
+
 
 class TestScenarioSortKey(unittest.TestCase):
     def setUp(self):
@@ -722,6 +735,19 @@ class TestZimtohrliScoring(unittest.TestCase):
             mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=48000)
             self.assertEqual(backend, "zimtohrli")
             self.assertIsNotNone(mos)
+
+    def test_multi_channel_51_surround_scoring(self):
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            deg = os.path.join(td, "deg.wav")
+            write_wav(ref, seconds=1, sr=44100, ch=6)
+            write_wav(deg, seconds=1, sr=44100, ch=6)
+
+            mos, backend = self.phase2_mos.score_wav_pair(ref, deg, mode_str="audio", sample_rate=44100)
+
+            self.assertEqual(backend, "zimtohrli")
+            self.assertIsNotNone(mos)
+            self.assertGreater(mos, 1.0)
 
     def test_score_wav_pair_empty_audio_files(self):
         with tempfile.TemporaryDirectory() as td:

@@ -230,8 +230,15 @@ try:
         )
         for ch in range(num_channels)
     ]
-    dist = math.sqrt(sum(d * d for d in per_channel_dist))
-    mos = float(zimtohrli.mos_from_zimtohrli(dist))
+    if num_channels > 2:
+        per_channel_mos = [
+            float(zimtohrli.mos_from_zimtohrli(d))
+            for d in per_channel_dist
+        ]
+        mos = float(np.mean(per_channel_mos))
+    else:
+        dist = math.sqrt(sum(d * d for d in per_channel_dist))
+        mos = float(zimtohrli.mos_from_zimtohrli(dist))
     print(json.dumps({"mos": mos, "backend": "zimtohrli"}))
 except Exception:
     sys.exit(1)
