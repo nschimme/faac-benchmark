@@ -43,9 +43,23 @@ def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
         raise e
 
 def get_file_hash(path, algo="md5"):
-    """Calculates the hash of a file."""
+    """Calculates the hash of a file, stripping container metadata for audio bitstream files."""
     if not os.path.exists(path):
         return ""
+
+    if algo == "md5" and path.lower().endswith((".m4a", ".mp4", ".aac", ".opus", ".mp3")):
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            fmt = "adts" if path.lower().endswith((".m4a", ".mp4", ".aac")) else ("opus" if path.lower().endswith(".opus") else "mp3")
+            cmd = [ffmpeg_bin, "-v", "error", "-i", path, "-c:a", "copy", "-f", fmt, "-"]
+            try:
+                res = subprocess.run(cmd, capture_output=True)
+                if res.returncode == 0 and res.stdout:
+                    hasher = hashlib.md5()
+                    hasher.update(res.stdout)
+                    return hasher.hexdigest()
+            except Exception:
+                pass
 
     if algo == "md5":
         hasher = hashlib.md5()
