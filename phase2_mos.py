@@ -235,7 +235,7 @@ try:
             float(zimtohrli.mos_from_zimtohrli(d))
             for d in per_channel_dist
         ]
-        mos = float(np.mean(per_channel_mos))
+        mos = float(sum(per_channel_mos) / len(per_channel_mos))
     else:
         dist = math.sqrt(sum(d * d for d in per_channel_dist))
         mos = float(zimtohrli.mos_from_zimtohrli(dist))
