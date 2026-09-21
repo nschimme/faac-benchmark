@@ -159,6 +159,22 @@ each bitstream again per tool under test:
 - Decoded WAVs are deleted once their metrics are computed; pass
   `--keep-decodes` to keep them on disk.
 
+**Gated stream variants.** PNS is the one AAC tool whose decoder output is
+non-normative (each decoder draws its own noise), so a sample-level
+conformance bar can only be held on PNS-free streams. Outside `--mode
+encoder` the harness therefore adds encoder rows that exist only to feed the
+decoder gate (`gate_check.py`): faac and ffmpeg "(PNS off)" rows
+(`--pns 0` / `-aac_pns 0`, row key `*_nopns_*`), plus fdkaac's HE/HE-v2
+rows, which never use PNS. Each of those is also emitted as an ADTS stream
+(`*_adts_*`), so the ADTS header/resync path is gated as well as the MP4
+container and AudioSpecificConfig path. When `--faam-bin` is given (or
+`faam` is on PATH), fdkaac's HE streams are additionally muxed by faam with
+the SBR/PS signalling forms no encoder here writes: implicit (no
+signalling, the decoder must detect SBR in the payload), explicit
+hierarchical SBR (AOT 5) and explicit hierarchical PS (AOT 29). Every other
+tool (TNS, M/S, IS, short blocks, SBR, PS) is normative, so those streams
+are wanted with the tools *on*; there are no "TNS off"-style variants.
+
 The separate **robustness pass** (corrupted-bitstream decode-only, no
 scoring) still exits/timeouts/**runaway**-classifies each decoder
 independently: a corrupted stream whose decode exceeds 4x the intact

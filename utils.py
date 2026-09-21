@@ -363,7 +363,11 @@ def compute_snr(ref_wav_path, cand_wav_path):
         c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
 
         if r_sr != c_sr:
-            return None
+            # A decoder may emit a different rate (e.g. FAAD2 upsamples low-rate
+            # LC on an implicit-SBR guess); compare at the reference rate.
+            from math import gcd
+            g = gcd(r_sr, c_sr)
+            c_data = scipy.signal.resample_poly(c_data, r_sr // g, c_sr // g, axis=0).astype('float32')
 
         # Cross-correlate mono downmix to align priming delay offsets
         r_mono = r_data.mean(axis=1)

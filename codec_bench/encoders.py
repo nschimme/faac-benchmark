@@ -89,6 +89,12 @@ class Encoder:
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         raise NotImplementedError
 
+    def get_mux_cmd(self, output_path):
+        """Optional second step: the encode command wrote an elementary stream
+        to output_path + ".es"; return a command that muxes it into
+        output_path, or None when the encoder writes the container itself."""
+        return None
+
     def get_run_env(self):
         if not self.lib_override:
             return {}
@@ -105,7 +111,7 @@ class Encoder:
 
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None, pns=True):
+    def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None, pns=True, adts=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
         self.legacy = is_faac_legacy(binary_path, lib_override=lib_override)
         # PNS noise is non-normative, so decoders cannot agree sample-for-sample
@@ -113,9 +119,16 @@ class FAACEncoder(Encoder):
         # conformance on streams every compliant decoder must reproduce alike.
         self.pns = pns
         self.pns_free = not pns
+        # ADTS rows gate the decoders' ADTS header/resync path; M4A rows
+        # gate the container and ASC path.
+        self.adts = adts
+        if adts:
+            self.file_ext = ".aac"
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "-o", output_path]
+        if self.adts:
+            cmd.append("-a")
         if not self.legacy:
             obj_type = "he-aac-v1" if self.profile == "he" else "lc"
             cmd.extend(["--object-type", obj_type])
@@ -126,29 +139,63 @@ class FAACEncoder(Encoder):
 
 
 class FFmpegEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id="ffmpeg_aac", profile="lc"):
+    def __init__(self, name, binary_path, tool_id="ffmpeg_aac", profile="lc", pns=True, adts=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr=None)
+        # Same role as FAACEncoder's pns=False: a PNS-free stream from a
+        # second muxer/encoder, so decoder conformance is gated on ffmpeg's
+        # container and ASC signalling too, not only faac's.
+        self.pns = pns
+        self.pns_free = not pns
+        self.adts = adts
+        if adts:
+            self.file_ext = ".aac"
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-y", "-i", input_path, "-c:a"]
         if self.profile == "lc":
             cmd.extend(["aac", "-b:a", f"{bitrate_kbps}k"])
+            if not self.pns:
+                cmd.extend(["-aac_pns", "0"])
         elif self.profile == "he":
             cmd.extend(["libfdk_aac", "-profile:a", "aac_he", "-b:a", f"{bitrate_kbps}k"])
         elif self.profile == "hev2":
             cmd.extend(["libfdk_aac", "-profile:a", "aac_he_v2", "-b:a", f"{bitrate_kbps}k"])
-        cmd.extend(["-ac", str(channels), output_path])
+        cmd.extend(["-ac", str(channels)])
+        if self.adts:
+            cmd.extend(["-f", "adts"])
+        cmd.append(output_path)
         return cmd
 
 
 class FDKAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id="fdkaac", profile="lc"):
+    # signaling: None writes fdkaac's own M4A; "adts" an ADTS stream; any
+    # other value is a faam mux --sbr-signaling mode applied to an ADTS
+    # stream, which is how the implicit and explicit hierarchical SBR/PS
+    # signalling forms (that no encoder here emits) get exercised.
+    def __init__(self, name, binary_path, tool_id="fdkaac", profile="lc", signaling=None, faam_bin=None):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfdk-aac")
+        self.signaling = signaling
+        self.faam_bin = faam_bin
+        if signaling == "adts":
+            self.file_ext = ".aac"
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         p_val = "29" if self.profile == "hev2" else ("5" if self.profile == "he" else "2")
         bps = bitrate_kbps * 1000
-        return [self.binary_path, "-p", p_val, "-b", str(bps), "-o", output_path, input_path]
+        cmd = [self.binary_path, "-p", p_val, "-b", str(bps)]
+        if self.signaling == "adts":
+            cmd.extend(["-f", "2"])
+        elif self.signaling:
+            cmd.extend(["-f", "2"])
+            output_path = output_path + ".es"
+        cmd.extend(["-o", output_path, input_path])
+        return cmd
+
+    def get_mux_cmd(self, output_path):
+        if not self.signaling or self.signaling == "adts":
+            return None
+        return [self.faam_bin, "mux", output_path + ".es", "-o", output_path,
+                "--sbr-signaling", self.signaling]
 
 
 class AACEncEncoder(Encoder):
@@ -261,7 +308,14 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
                 w.writeframes(b"\x00\x00" * sample_rate)
             cmd = encoder.get_encode_cmd(dummy_wav, out_file, bitrate_kbps, channels, sample_rate)
             res = safe_run(cmd, env=encoder.get_run_env() or None, capture_output=True, check=False)
-            return res.returncode == 0 and os.path.exists(out_file) and os.path.getsize(out_file) > 0
+            if res.returncode != 0:
+                return False
+            mux_cmd = encoder.get_mux_cmd(out_file)
+            if mux_cmd:
+                res = safe_run(mux_cmd, capture_output=True, check=False)
+                if res.returncode != 0:
+                    return False
+            return os.path.exists(out_file) and os.path.getsize(out_file) > 0
         except Exception:
             return False
 
@@ -306,6 +360,9 @@ def detect_encoders(args):
                     enc = FAACEncoder(name + " (PNS off)", f_bin, tool_id + "_nopns", p, lib_override=f_lib, pns=False)
                     if probe_encoder_capability(enc):
                         encoders.append(enc)
+                    enc = FAACEncoder(name + " (PNS off, ADTS)", f_bin, tool_id + "_nopns_adts", p, lib_override=f_lib, pns=False, adts=True)
+                    if probe_encoder_capability(enc):
+                        encoders.append(enc)
 
     fdkaac_bins = flatten_arg_list(getattr(args, "fdkaac_bin", None))
     if not fdkaac_bins:
@@ -321,6 +378,21 @@ def detect_encoders(args):
             enc = FDKAACEncoder(name, f_bin, tool_id, p)
             if probe_encoder_capability(enc):
                 encoders.append(enc)
+        if getattr(args, "mode", "both") != "encoder":
+            # fdkaac's HE profiles are PNS-free, so they are the streams that
+            # gate the ADTS path and the SBR/PS signalling forms.
+            for p in ("he", "hev2"):
+                enc = FDKAACEncoder(name + " (ADTS)", f_bin, tool_id + "_adts", p, signaling="adts")
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
+            faam_bin = getattr(args, "faam_bin", None) or shutil.which("faam")
+            if faam_bin:
+                for p, sig in (("he", "none"), ("he", "explicit"), ("hev2", "ps-explicit")):
+                    label = {"none": "implicit SBR", "explicit": "explicit SBR", "ps-explicit": "explicit PS"}[sig]
+                    enc = FDKAACEncoder(f"{name} (faam, {label})", f_bin, f"{tool_id}_faam_{sig.replace('-', '_')}", p,
+                                        signaling=sig, faam_bin=faam_bin)
+                    if probe_encoder_capability(enc):
+                        encoders.append(enc)
 
     aac_enc_bins = flatten_arg_list(getattr(args, "aac_enc_bin", None))
     if not aac_enc_bins:
@@ -369,6 +441,13 @@ def detect_encoders(args):
             enc_lc = FFmpegEncoder(name, ffmpeg_bin, tool_id, "lc")
             if probe_encoder_capability(enc_lc):
                 encoders.append(enc_lc)
+            if getattr(args, "mode", "both") != "encoder":
+                enc = FFmpegEncoder(name + " (PNS off)", ffmpeg_bin, tool_id + "_nopns", "lc", pns=False)
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
+                enc = FFmpegEncoder(name + " (PNS off, ADTS)", ffmpeg_bin, tool_id + "_nopns_adts", "lc", pns=False, adts=True)
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
 
         if has_libfdk:
             ver_label = hosted_codec_ver(ffmpeg_bin, "libfdk-aac", ffmpeg_ver)

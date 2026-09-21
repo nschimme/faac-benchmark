@@ -1247,32 +1247,68 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
     for r in decoder_results:
         by_tool[r["row_key"]].append(r)
 
+    decoder_order = {d.tool_id: i for i, d in enumerate(decoders)}
+    profile_order = [("lc", "LC"), ("he", "HE-v1"), ("hev2", "HE-v2")]
+    if not any(r.get("profile") == "hev2" for r in decoder_results):
+        profile_order = [p for p in profile_order if p[0] != "hev2"]
+
+    def _decoder_name(row_key, fallback_row=None):
+        return next((d.name for d in decoders if d.tool_id == row_key),
+                     fallback_row["tool"] if fallback_row else row_key)
+
+    ffmpeg_tool_id = next((d.tool_id for d in decoders if "ffmpeg" in d.tool_id.lower()), None)
+    ffmpeg_mos_by_key = {}
+    if ffmpeg_tool_id:
+        for r in by_tool.get(ffmpeg_tool_id, []):
+            if r.get("decode_valid") and isinstance(r.get("mos"), (int, float)):
+                ffmpeg_mos_by_key[(r.get("encoder_row_key"), r["scenario"], r["filename"])] = r["mos"]
+
     with open(output_path, "w") as f:
         f.write("# FAAD Decoder & Muxer Benchmark (measured)\n\n")
 
         # --- Section 1: overall comparison -----------------------------
         f.write("## 1. Overall Comparison\n\n")
-        f.write("| Decoder | .text | Peak RSS (median) | MOS range (LC) | MOS range (HE-AAC v1) | Conformance SNR (median, dB) | xRT (median) |\n")
-        f.write("| :--- | ---: | ---: | :---: | :---: | ---: | ---: |\n")
+        header = "| Decoder | .text | Peak RSS (median) |"
+        for _, label in profile_order:
+            header += f" Mean MOS ({label}) |"
+        header += " ΔMOS vs FFmpeg | Conformance SNR (median, dB) | Conformance SNR (min, dB) | xRT (median) |"
+        f.write(header + "\n")
+        f.write("| :--- | ---: | ---: |" + " ---: |" * len(profile_order) + " ---: | ---: | ---: | ---: |\n")
+
         for dec in decoders:
             rows = [r for r in by_tool.get(dec.tool_id, []) if r.get("decode_valid")]
             rss = [r["peak_ram_kb"] for r in rows if r.get("peak_ram_kb")]
-            lc_mos = [r["mos"] for r in rows if r.get("profile") == "lc" and isinstance(r.get("mos"), (int, float))]
-            he_mos = [r["mos"] for r in rows if r.get("profile") == "he" and isinstance(r.get("mos"), (int, float))]
             csnr = [r["conformance_snr_db"] for r in rows if isinstance(r.get("conformance_snr_db"), (int, float))]
             xrt = [r["speed_xrt"] for r in rows if r.get("speed_xrt")]
-            lc_range = f"{min(lc_mos):.2f} - {max(lc_mos):.2f}" if lc_mos else "n/a"
-            he_range = f"{min(he_mos):.2f} - {max(he_mos):.2f}" if he_mos else "n/a"
-            f.write(f"| {dec.name} | {_kb(dec.text_size)} | {_kb(statistics.median(rss)) if rss else 'n/a'} "
-                    f"| {lc_range} | {he_range} | {_fmt(statistics.median(csnr)) if csnr else 'n/a'} "
-                    f"| {_fmt(statistics.median(xrt), '{:.1f}x') if xrt else 'n/a'} |\n")
+
+            line = (f"| {dec.name} | {_kb(getattr(dec, 'text_size', None))} | "
+                    f"{(f'{statistics.median(rss) / 1024.0:.1f} MB' if rss else 'n/a')} |")
+            for prof_key, _ in profile_order:
+                mos_vals = [r["mos"] for r in rows if r.get("profile") == prof_key and isinstance(r.get("mos"), (int, float))]
+                line += f" {_fmt(statistics.mean(mos_vals)) if mos_vals else 'n/a'} |"
+
+            deltas = []
+            for r in rows:
+                if not isinstance(r.get("mos"), (int, float)):
+                    continue
+                ref_mos = ffmpeg_mos_by_key.get((r.get("encoder_row_key"), r["scenario"], r["filename"]))
+                if ref_mos is not None:
+                    deltas.append(r["mos"] - ref_mos)
+            line += f" {_fmt(statistics.mean(deltas), '{:+.2f}') if deltas else 'n/a'} |"
+
+            line += (f" {_fmt(statistics.median(csnr)) if csnr else 'n/a'} |"
+                      f" {_fmt(min(csnr)) if csnr else 'n/a'} |"
+                      f" {_fmt(statistics.median(xrt), '{:.1f}x') if xrt else 'n/a'} |")
+            f.write(line + "\n")
         f.write("\n")
 
         n_inherited = sum(1 for r in decoder_results if r.get("mos_source") == "inherited")
         n_scored = sum(1 for r in decoder_results if r.get("mos_source") == "scored")
-        if n_inherited or n_scored:
-            f.write(f"*MOS: {n_inherited} row(s) inherited the encoder phase's ffmpeg-decode score "
-                    f"(conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB vs that decode), {n_scored} scored directly.*\n\n")
+        n_total = n_inherited + n_scored
+        if n_total:
+            f.write(f"*MOS: {n_inherited} row(s) ({n_inherited / n_total * 100:.0f}%) inherited the encoder "
+                    f"phase's ffmpeg-decode score (conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB vs that "
+                    f"decode), {n_scored} row(s) ({n_scored / n_total * 100:.0f}%) scored directly.*\n\n")
 
         # --- Section 2: footprint --------------------------------------
         f.write("## 2. Binary Footprint\n\n")
@@ -1287,15 +1323,79 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
 
         # --- Section 3: latency -----------------------------------------
         f.write("## 3. Decoder Throughput & Execution Latency\n\n")
-        f.write("| Scenario | Clip | Profile | Decoder | Mean (ms) | Std Dev (ms) | xRT | MB/s |\n")
-        f.write("| :--- | :--- | :---: | :--- | ---: | ---: | ---: | ---: |\n")
+        f.write("| Profile | Decoder | Streams | Median Mean (ms) | Median xRT | Median MB/s | Median Peak RAM (MB) |\n")
+        f.write("| :---: | :--- | ---: | ---: | ---: | ---: | ---: |\n")
+
+        by_profile_decoder = defaultdict(list)
         for r in decoder_results:
             if r.get("speed_mean_ms") is None:
                 continue
-            f.write(f"| {r['scenario']} | `{r['filename']}` | {profile_label(r.get('profile', 'lc'))} | {r['tool']} "
-                    f"| {_fmt(r['speed_mean_ms'])} | {_fmt(r['speed_std_ms'])} "
-                    f"| {_fmt(r.get('speed_xrt'), '{:.1f}x')} | {_fmt(r.get('speed_mbps'))} |\n")
+            by_profile_decoder[(r.get("profile"), r["row_key"])].append(r)
+
+        for prof_key, prof_label in profile_order:
+            dec_ids = sorted({rk for (p, rk) in by_profile_decoder if p == prof_key},
+                              key=lambda rk: decoder_order.get(rk, 999))
+            for rk in dec_ids:
+                grp = by_profile_decoder[(prof_key, rk)]
+                mean_ms = [r["speed_mean_ms"] for r in grp]
+                xrt = [r["speed_xrt"] for r in grp if r.get("speed_xrt") is not None]
+                mbps = [r["speed_mbps"] for r in grp if r.get("speed_mbps") is not None]
+                ram = [r["peak_ram_kb"] for r in grp if r.get("peak_ram_kb")]
+                f.write(f"| {prof_label} | {_decoder_name(rk, grp[0])} | {len(grp)} | {_fmt(statistics.median(mean_ms))} "
+                        f"| {_fmt(statistics.median(xrt), '{:.1f}x') if xrt else 'n/a'} "
+                        f"| {_fmt(statistics.median(mbps)) if mbps else 'n/a'} "
+                        f"| {(f'{statistics.median(ram) / 1024.0:.1f}' if ram else 'n/a')} |\n")
         f.write("\n")
+        f.write("*Latency is measured inside the parallel worker pool, so per-stream std dev is inflated by "
+                "concurrent MOS scoring; the medians above are the comparable figure.*\n\n")
+
+        # --- Section 4: conformance vs ffmpeg reference ------------------
+        f.write("## 4. Conformance vs FFmpeg reference\n\n")
+        f.write("| Profile | Decoder | Streams | Median dB | Min dB | Count >= 60 dB | Count < 60 dB |\n")
+        f.write("| :---: | :--- | ---: | ---: | ---: | ---: | ---: |\n")
+
+        by_profile_decoder_csnr = defaultdict(list)
+        for r in decoder_results:
+            if not isinstance(r.get("conformance_snr_db"), (int, float)):
+                continue
+            by_profile_decoder_csnr[(r.get("profile"), r["row_key"])].append(r)
+
+        for prof_key, prof_label in profile_order:
+            dec_ids = sorted({rk for (p, rk) in by_profile_decoder_csnr if p == prof_key},
+                              key=lambda rk: decoder_order.get(rk, 999))
+            for rk in dec_ids:
+                grp = by_profile_decoder_csnr[(prof_key, rk)]
+                vals = [r["conformance_snr_db"] for r in grp]
+                n_ge = sum(1 for v in vals if v >= CONFORMANCE_SNR_FLOOR_DB)
+                n_lt = sum(1 for v in vals if v < CONFORMANCE_SNR_FLOOR_DB)
+                f.write(f"| {prof_label} | {_decoder_name(rk, grp[0])} | {len(grp)} | {_fmt(statistics.median(vals))} "
+                        f"| {_fmt(min(vals))} | {n_ge} | {n_lt} |\n")
+        f.write("\n")
+
+        def _is_pns_free(erk):
+            if not erk:
+                return False
+            if "_nopns" in erk:
+                return True
+            return erk.startswith("fdkaac") and (erk.endswith("_he") or erk.endswith("_hev2"))
+
+        defect_rows = [r for r in decoder_results
+                       if isinstance(r.get("conformance_snr_db"), (int, float))
+                       and r["conformance_snr_db"] < CONFORMANCE_SNR_FLOOR_DB
+                       and _is_pns_free(r.get("encoder_row_key"))]
+        if defect_rows:
+            f.write("### Conformance defects on PNS-free streams (< 60 dB)\n\n")
+            f.write("| Scenario | Clip | Profile | Decoder | Encoder | SNR (dB) |\n")
+            f.write("| :--- | :--- | :---: | :--- | :--- | ---: |\n")
+            for r in defect_rows[:40]:
+                f.write(f"| {r['scenario']} | `{r['filename']}` | {profile_label(r.get('profile', 'lc'))} "
+                        f"| {r['tool']} | {r.get('encoder_row_key', 'n/a')} | {_fmt(r['conformance_snr_db'])} |\n")
+            if len(defect_rows) > 40:
+                f.write(f"| … {len(defect_rows) - 40} more | | | | | |\n")
+            f.write("\n")
+
+        f.write("*Streams encoded with PNS are expected to diverge from the ffmpeg reference decode "
+                "(non-normative noise substitution); the leaderboard gates only PNS-free streams.*\n\n")
 
         # --- Section 5: muxer ---------------------------------------
         f.write("## 5. Container Manipulation Benchmark\n\n")
@@ -1311,17 +1411,45 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
         # --- Section 6: multichannel + robustness ------------------------
         f.write("## 6. Multichannel & Bitstream Robustness\n\n")
         f.write("### Gapless / alignment offset (vs source WAV)\n\n")
-        f.write("| Scenario | Clip | Container | Decoder | Offset (samples) | Length delta (samples) |\n")
-        f.write("| :--- | :--- | :---: | :--- | ---: | ---: |\n")
+        f.write("| Container | Decoder | Streams | Offset == 0 | \\|Offset\\| <= 2 | Max \\|Offset\\| | Length delta == 0 |\n")
+        f.write("| :---: | :--- | ---: | ---: | ---: | ---: | ---: |\n")
+
+        by_container_decoder = defaultdict(list)
         for r in decoder_results:
             if not r.get("decode_valid") or r.get("gapless_offset_samples") is None:
                 continue
-            f.write(f"| {r['scenario']} | `{r['filename']}` | {r.get('container', 'n/a')} | {r['tool']} "
-                    f"| {r['gapless_offset_samples']} | {_fmt(r.get('gapless_length_delta'), '{}')} |\n")
+            by_container_decoder[(r.get("container", "n/a"), r["row_key"])].append(r)
+
+        for (container, rk), grp in sorted(by_container_decoder.items(),
+                                            key=lambda kv: (kv[0][0], decoder_order.get(kv[0][1], 999))):
+            offsets = [r["gapless_offset_samples"] for r in grp]
+            n_zero = sum(1 for o in offsets if o == 0)
+            n_close = sum(1 for o in offsets if abs(o) <= 2)
+            max_abs = max(abs(o) for o in offsets)
+            n_len_ok = sum(1 for r in grp if r.get("gapless_length_delta") == 0)
+            f.write(f"| {container} | {_decoder_name(rk, grp[0])} | {len(grp)} | {n_zero} | {n_close} "
+                    f"| {max_abs} | {n_len_ok} |\n")
         f.write("\n")
 
+        bad_offset_rows = [r for r in decoder_results
+                           if r.get("decode_valid") and r.get("gapless_offset_samples") is not None
+                           and abs(r["gapless_offset_samples"]) > 2]
+        if bad_offset_rows:
+            f.write("#### Streams with |offset| > 2 samples\n\n")
+            f.write("| Scenario | Clip | Encoder | Decoder | Offset (samples) | Length delta |\n")
+            f.write("| :--- | :--- | :--- | :--- | ---: | ---: |\n")
+            for r in bad_offset_rows[:40]:
+                f.write(f"| {r['scenario']} | `{r['filename']}` | {r.get('encoder_row_key', 'n/a')} | {r['tool']} "
+                        f"| {r['gapless_offset_samples']} | {_fmt(r.get('gapless_length_delta'), '{}')} |\n")
+            if len(bad_offset_rows) > 40:
+                f.write(f"| … {len(bad_offset_rows) - 40} more | | | | | |\n")
+            f.write("\n")
+
+        f.write("*fdkaac HE/HE-v2 M4A priming assumes the SBR delay is removed by the decoder, so spec decoders "
+                "land 961 samples late on those streams by design.*\n\n")
+
         f.write("### Robustness under corrupted bitstreams (seed 42)\n\n")
-        f.write("| Decoder | Pass | Fail | Timeout | Runaway |\n")
+        f.write("| Decoder | Decoded to end (exit 0) | Exited with error | Timeout | Runaway (>4× intact output) |\n")
         f.write("| :--- | ---: | ---: | ---: | ---: |\n")
         rob_by_tool = defaultdict(list)
         for r in robustness_results:
@@ -1334,5 +1462,6 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
             n_fail = sum(1 for r in rows if not r.get("passed") and not r.get("timeout") and not r.get("runaway"))
             f.write(f"| {dec.name} | {n_pass} | {n_fail} | {n_timeout} | {n_runaway} |\n")
         f.write("\n")
+        f.write("*An error exit on a corrupted stream is acceptable; a timeout or runaway is not.*\n\n")
 
     print(f"Decoder report generated at: {output_path}")

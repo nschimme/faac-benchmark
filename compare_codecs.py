@@ -153,6 +153,24 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
                 "ref_path": input_path
             }
 
+        # A variant that muxes its elementary stream through a second tool
+        # (e.g. faam, to exercise a signalling form no encoder emits).
+        mux_cmd = encoder.get_mux_cmd(output_path)
+        if mux_cmd:
+            es_path = output_path + ".es"
+            res = subprocess.run(mux_cmd, capture_output=True)
+            if os.path.exists(es_path):
+                os.remove(es_path)
+            if res.returncode != 0 or not os.path.exists(output_path):
+                return {
+                    "tool": encoder.name, "row_key": encoder_row_key(encoder),
+                    "scenario": scenario_name, "filename": sample, "profile": encoder.profile,
+                    "duration": 0, "audio_duration": None, "peak_ram_kb": None, "size": 0,
+                    "actual_bitrate": None, "target_bitrate": bitrate_kbps, "decode_valid": False,
+                    "decode_error": f"Muxing failed: exit code {res.returncode}",
+                    "aac_path": None, "ref_path": input_path,
+                }
+
         audio_duration = ffmpeg_probe(input_path)
         mos_val = None
         ic_err_val = None
@@ -478,11 +496,24 @@ def main():
                            if r.get("aac_path") and os.path.exists(r["aac_path"])
                            and r["aac_path"].lower().endswith((".aac", ".adts"))]
         largest_adts = max(adts_candidates, key=os.path.getsize) if adts_candidates else None
+        faam_bin = args.faam_bin or shutil.which("faam")
+        ffmpeg_bin = args.ffmpeg_bin or shutil.which("ffmpeg")
+        if not largest_adts and ffmpeg_bin:
+            # An M4A-only run still has bitstreams: pull the largest one out
+            # as an ADTS elementary stream so the muxers have something to mux.
+            m4a_candidates = [r["aac_path"] for r in encoder_results
+                              if r.get("aac_path") and os.path.exists(r["aac_path"])
+                              and r["aac_path"].lower().endswith((".m4a", ".mp4"))]
+            if m4a_candidates:
+                src = max(m4a_candidates, key=os.path.getsize)
+                largest_adts = os.path.join(output_dir, "muxer_bench_src.aac")
+                res = subprocess.run([ffmpeg_bin, "-y", "-v", "error", "-i", src, "-c:a", "copy",
+                                      "-f", "adts", largest_adts], capture_output=True)
+                if res.returncode != 0:
+                    largest_adts = None
         if not largest_adts:
             print("==> --muxer-bench: no ADTS bitstream available in this run, skipping")
         else:
-            faam_bin = args.faam_bin or shutil.which("faam")
-            ffmpeg_bin = args.ffmpeg_bin or shutil.which("ffmpeg")
             print(f"\n>>> Running Muxer Benchmark on {os.path.basename(largest_adts)}...")
             muxer_results = run_muxer_bench(faam_bin, ffmpeg_bin, largest_adts, output_dir, iterations=args.iterations)
             for r in muxer_results:

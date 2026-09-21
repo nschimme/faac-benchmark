@@ -92,7 +92,7 @@ def evaluate_gate(decoder_results, decoder_robustness_results):
             lines.append(f"FAIL gapless offset: faad3 {r['scenario']}/{r['filename']}: "
                          f"{r['gapless_offset_samples']} samples (expected 0)")
     elif m4a_rows:
-        lines.append(f"PASS: faad3 gapless offset == 0 samples on all {len(m4a_rows)} M4A streams")
+        lines.append(f"PASS: faad3 gapless offset within 2 samples on all {len(m4a_rows)} M4A streams")
     else:
         lines.append("WARN: no M4A streams measured for gapless offset")
 
