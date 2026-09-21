@@ -432,7 +432,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
     bitstream_input = aac_path
 
     if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
-        temp_adts = os.path.join(output_dir, f"demux_{decoder_row_key(decoder)}_{scenario_name}_{sample}.aac".replace(" ", "_"))
+        temp_adts = os.path.join(output_dir, f"demux_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_"))
         cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
         try:
             res_demux = safe_run(cmd_demux, capture_output=True, check=False)
@@ -682,7 +682,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     bitstream_input = aac_path
 
     if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
-        temp_adts = os.path.join(output_dir, f"demux_rob_{decoder_row_key(decoder)}_{scenario_name}_{sample}.aac".replace(" ", "_"))
+        temp_adts = os.path.join(output_dir, f"demux_rob_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_"))
         cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
         try:
             res_demux = safe_run(cmd_demux, capture_output=True, check=False)
