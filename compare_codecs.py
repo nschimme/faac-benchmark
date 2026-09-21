@@ -418,6 +418,18 @@ def main():
         ref_cache_dir = os.path.join(output_dir, "ref_cache")
         os.makedirs(ref_cache_dir, exist_ok=True)
 
+        # Repeated timing and corruption of every bitrate/scenario of a clip
+        # add nothing over one scenario per clip and encoder row, and they
+        # dominate a full run; sample them. The gate is already one clip per
+        # scenario, so it keeps its own robustness sampling below.
+        sampled_ids = set()
+        seen_sample = set()
+        for item in sorted(valid_encoder_bitstreams, key=lambda r: r.get("scenario", "")):
+            key = (item.get("filename"), item.get("row_key"))
+            if key not in seen_sample:
+                seen_sample.add(key)
+                sampled_ids.add(id(item))
+
         if valid_encoder_bitstreams and decoders:
             total_dec_tasks = len(valid_encoder_bitstreams)
             print(f"\n>>> Running Decoder Benchmarks across {total_dec_tasks} bitstreams x {len(decoders)} decoders...")
@@ -425,7 +437,9 @@ def main():
                 print(f"  Decoding with {decoder.name}...")
                 completed_dec = 0
                 with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
-                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir, args.iterations, args.keep_decodes) for item in valid_encoder_bitstreams]
+                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir,
+                                               args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes)
+                               for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
                         completed_dec += 1
@@ -457,6 +471,8 @@ def main():
                         seen_scenarios.add(sc_key)
                         gate_robustness.append(item)
                 robustness_bitstreams = gate_robustness
+            else:
+                robustness_bitstreams = [r for r in valid_encoder_bitstreams if id(r) in sampled_ids]
 
             total_rob_tasks = len(robustness_bitstreams)
             for decoder in decoders:
