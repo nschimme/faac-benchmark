@@ -14,12 +14,29 @@ import subprocess
 import shutil
 import re
 
+import statistics
+
 from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    get_faad_path, ffmpeg_probe, decode_validate, find_linked_lib,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
-                   get_cached_ref_wav, scenario_channels, wav_conv, corpus_dir)
+                   get_cached_ref_wav, scenario_channels, scenario_rate, wav_conv, corpus_dir)
+
+# Robustness runaway threshold: a corrupted-bitstream decode whose output PCM
+# exceeds this multiple of the intact decode's size did not fail cleanly --
+# it kept synthesizing audio past where the real stream ended (typically a
+# desynced frame-length field read as huge). Left unbounded this has filled
+# the output directory with multi-gigabyte WAVs; see process_decoder_robustness_task.
+ROBUSTNESS_RUNAWAY_FACTOR = 4
+
+# A decoder's conformance SNR against the ffmpeg reference decode at or above
+# this floor means the two decodes are perceptually identical, so the
+# ffmpeg row's already-computed MOS is inherited instead of re-scoring
+# (mos_source: "inherited" vs "scored"). Must match gate_check's
+# CONFORMANCE_SNR_FLOOR_DB -- kept as a separate constant since gate_check
+# uses it as a pass/fail gate and this uses it as a scoring-reuse threshold.
+CONFORMANCE_SNR_FLOOR_DB = 60.0
 
 if sys.platform == "darwin":
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
@@ -175,14 +192,34 @@ def detect_decoders(args):
             faad_bins = [faad_path]
 
     for idx, f_bin in enumerate(faad_bins):
-        f_lib = faad_libs[idx] if idx < len(faad_libs) else (faad_libs[0] if faad_libs else None)
+        # Only apply a --faad-lib override to the bin at the same index; a
+        # single override must not silently leak onto other --faad-bin
+        # entries when multiple faad decoders are compared side by side.
+        f_lib = faad_libs[idx] if idx < len(faad_libs) else None
         ver = faad_vers[idx] if idx < len(faad_vers) else None
+
+        raw_text = ""
+        for flag in ["-h", "--help", "-v"]:
+            try:
+                res = subprocess.run([f_bin, flag], capture_output=True, text=True, timeout=5)
+                raw_text += (res.stdout or "") + (res.stderr or "")
+            except Exception:
+                pass
+        # Our libfaad (FAAD3) reports "Freeware Advanced Audio Decoder
+        # (vX.Y.Z)"; upstream FAAD2 reports "MPEG-4 AAC Decoder VX.Y.Z". Base
+        # the display name on which one actually responded rather than
+        # assuming every --faad-bin is FAAD2.
+        is_faad3 = bool(re.search(r"Freeware Advanced Audio Decoder|FAAD3", raw_text, re.IGNORECASE))
+        base_name = "FAAD3" if is_faad3 else "FAAD2"
+        base_id = "faad3" if is_faad3 else "faad2"
+
         if not ver:
             ver = probe_version(f_bin, ["-h", "--help", "-v"],
-                                [r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
+                                [r"Freeware Advanced Audio Decoder\s*\(v?(\d+\.\d+(?:\.\d+)*)\)",
+                                 r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id("FAAD", ver, "faad2", existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id(base_name, ver, base_id, existing_names, existing_ids)
         dec = FAADDecoder(name, f_bin, tool_id, lib_override=f_lib)
         if probe_decoder_capability(dec):
             decoders.append(dec)
@@ -245,11 +282,115 @@ def detect_decoders(args):
     return decoders
 
 
-def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None):
+def get_conformance_ref_wav(aac_path, cache_dir):
+    """FFmpeg's own decode of aac_path, cached by content hash so every
+    decoder under test in a run reuses the same one conformance reference
+    instead of re-decoding it once per decoder."""
+    if not cache_dir or not aac_path or not os.path.exists(aac_path):
+        return None
+    os.makedirs(cache_dir, exist_ok=True)
+    import hashlib
+    key = hashlib.sha1(os.path.abspath(aac_path).encode()).hexdigest()[:16]
+    cached = os.path.join(cache_dir, f"conformance_ref_{key}.wav")
+    if os.path.exists(cached):
+        return cached
+    # Must end in .wav: ffmpeg infers the muxer from the output extension,
+    # and a bare ".tmp<pid>" suffix makes it refuse to write anything.
+    tmp = os.path.join(cache_dir, f"conformance_ref_{key}.tmp{os.getpid()}.wav")
+    ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
+    try:
+        res = safe_run([ffmpeg_bin, "-y", "-i", aac_path, "-sample_fmt", "s16", tmp], capture_output=True, check=False)
+        if res.returncode == 0 and os.path.exists(tmp):
+            os.replace(tmp, cached)
+            return cached
+    except Exception:
+        pass
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return None
+
+
+def get_conformance_ref_offset(ref_path, ffmpeg_ref_wav, cache_dir):
+    """Sample offset of the cached ffmpeg reference decode vs the original
+    source WAV, disk-cached by (ref_path, ffmpeg_ref_wav) like
+    get_conformance_ref_wav so it is computed once per bitstream and every
+    decoder under test in a run reuses it, instead of each one
+    cross-correlating its own output against the original from scratch.
+    Returns (lag_samples, lag_ms), either possibly None on failure."""
+    if not cache_dir or not ref_path or not ffmpeg_ref_wav or not os.path.exists(ref_path) or not os.path.exists(ffmpeg_ref_wav):
+        return None, None
+    os.makedirs(cache_dir, exist_ok=True)
+    import hashlib
+    import json
+    key = hashlib.sha1(f"{os.path.abspath(ref_path)}|{os.path.abspath(ffmpeg_ref_wav)}".encode()).hexdigest()[:16]
+    cached = os.path.join(cache_dir, f"conformance_offset_{key}.json")
+    if os.path.exists(cached):
+        try:
+            with open(cached) as f:
+                data = json.load(f)
+            return data.get("lag_samples"), data.get("lag_ms")
+        except Exception:
+            pass
+
+    lag_samples, lag_ms = measure_delay_offset(ref_path, ffmpeg_ref_wav)
+    tmp = cached + f".tmp{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"lag_samples": lag_samples, "lag_ms": lag_ms}, f)
+        os.replace(tmp, cached)
+    except Exception:
+        pass
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return lag_samples, lag_ms
+
+
+def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio_duration):
+    """Repeats a decode `iterations` times with the output discarded after
+    each run, returning mean/std latency, x-realtime, and PCM throughput.
+    None when iterations <= 1 (the single timed decode already covers that
+    case) or when any repeat fails."""
+    if iterations <= 1:
+        return None
+    scratch = os.path.join(output_dir, f"speed_scratch_{os.getpid()}.wav")
+    latencies_ms = []
+    pcm_bytes = None
+    try:
+        for _ in range(iterations):
+            res, dur, _ram = measure_peak_ram(decoder.get_decode_cmd(bitstream_input, scratch), env=decoder.get_run_env() or None)
+            if res.returncode != 0 or not os.path.exists(scratch):
+                return None
+            latencies_ms.append(dur * 1000.0)
+            if pcm_bytes is None:
+                pcm_bytes = max(0, os.path.getsize(scratch) - 44)
+    finally:
+        if os.path.exists(scratch):
+            try:
+                os.remove(scratch)
+            except OSError:
+                pass
+
+    mean_ms = statistics.mean(latencies_ms)
+    std_ms = statistics.pstdev(latencies_ms) if len(latencies_ms) > 1 else 0.0
+    xrt = (audio_duration * 1000.0 / mean_ms) if (audio_duration and mean_ms > 0) else None
+    mbps = (pcm_bytes / (mean_ms / 1000.0) / (1024 * 1024)) if (pcm_bytes and mean_ms > 0) else None
+    return {"mean_ms": mean_ms, "std_ms": std_ms, "xrt": xrt, "mbps": mbps, "iterations": iterations}
+
+
+def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):
     aac_path = res_item.get("aac_path")
     ref_path = res_item.get("ref_path")
     scenario_name = res_item["scenario"]
     sample = res_item["filename"]
+    container = "ADTS" if aac_path and aac_path.lower().endswith((".aac", ".adts")) else "M4A"
 
     if not ref_path or not os.path.exists(ref_path):
         cfg = SCENARIOS.get(scenario_name, {})
@@ -273,7 +414,12 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "decode_valid": False,
             "decode_error": "Input bitstream missing",
             "snr_db": None,
+            "mos_source": None,
+            "conformance_snr_db": None,
             "alignment_delay_ms": None,
+            "gapless_offset_samples": None,
+            "gapless_length_delta": None,
+            "container": container,
             "peak_ram_kb": None,
             "decoded_wav": None
         }
@@ -327,17 +473,27 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 "decode_error": err_detail if is_timeout else f"Decode failed: {err_detail}",
                 "timeout": is_timeout,
                 "snr_db": None,
+                "mos_source": None,
+                "conformance_snr_db": None,
                 "alignment_delay_ms": None,
+                "gapless_offset_samples": None,
+                "gapless_length_delta": None,
+                "container": container,
                 "peak_ram_kb": None,
                 "decoded_wav": None
             }
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
+        conformance_snr_db = None
         alignment_delay_ms = None
+        gapless_offset_samples = None
+        gapless_length_delta = None
         mos_val = None
+        mos_source = None
         dec_channels = None
         mono_downmix = False
+        speed_stats = None
 
         if valid:
             try:
@@ -355,47 +511,120 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 mono_downmix = True
 
             if ref_path and os.path.exists(ref_path):
+                # Codec-quality SNR vs the uncompressed source (includes the
+                # encoder's own lossy error, not just decoder bugs).
                 snr_db = compute_snr(ref_path, output_path)
-                _lag_samples, alignment_delay_ms = measure_delay_offset(ref_path, output_path)
+                try:
+                    with wave.open(ref_path, "rb") as rw, wave.open(output_path, "rb") as dw:
+                        gapless_length_delta = dw.getnframes() - rw.getnframes()
+                except Exception:
+                    gapless_length_delta = None
 
-                if not skip_mos:
-                    try:
-                        with tempfile.TemporaryDirectory() as td:
-                            ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
-                            if not ref_wav:
-                                ref_wav = os.path.join(td, "ref_conv.wav")
-                                if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
-                                    ref_wav = ref_path
+                # FFmpeg decoding itself IS the conformance reference; every
+                # other decoder is measured against it, the same way as the
+                # codec-quality snr_db above but against the reference
+                # *decode* rather than the source WAV -- this isolates
+                # decoder bugs from encoder lossy-compression error. That
+                # reference decode is produced/cached once per bitstream (by
+                # the encoder phase, or here on first use) and reused by
+                # every decoder under test in this run rather than
+                # re-decoded per decoder.
+                ffmpeg_ref_wav = get_conformance_ref_wav(aac_path, ref_cache_dir)
+                base_lag, base_lag_ms = (None, None)
+                if ffmpeg_ref_wav:
+                    # The reference decode's own offset vs the original is
+                    # also computed once per bitstream and cached; every
+                    # decoder's alignment vs the original is then this base
+                    # offset plus its own (much cheaper, already-aligned)
+                    # offset vs the reference decode, instead of each decoder
+                    # re-correlating a full window against the original.
+                    base_lag, base_lag_ms = get_conformance_ref_offset(ref_path, ffmpeg_ref_wav, ref_cache_dir)
 
-                            dec_wav = os.path.join(td, "dec_conv.wav")
-                            if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
-                                dec_wav = output_path
+                if decoder.tool_id == "ffmpeg_aac":
+                    conformance_snr_db = "ref"
+                    gapless_offset_samples, alignment_delay_ms = base_lag, base_lag_ms
+                    if not skip_mos and res_item.get("mos") is not None:
+                        # This *is* the ffmpeg decode the encoder phase already
+                        # scored -- reuse that MOS instead of re-scoring it.
+                        mos_val, mos_source = res_item.get("mos"), "inherited"
+                else:
+                    rel_lag, rel_lag_ms = (None, None)
+                    if ffmpeg_ref_wav:
+                        conformance_snr_db = compute_snr(ffmpeg_ref_wav, output_path)
+                        rel_lag, rel_lag_ms = measure_delay_offset(ffmpeg_ref_wav, output_path)
 
-                            mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
-                    except Exception as e:
-                        print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")
+                    if base_lag is not None and rel_lag is not None:
+                        gapless_offset_samples = base_lag + rel_lag
+                        alignment_delay_ms = (base_lag_ms or 0.0) + (rel_lag_ms or 0.0)
+
+                    if not skip_mos:
+                        inherit_ok = (isinstance(conformance_snr_db, (int, float))
+                                      and conformance_snr_db >= CONFORMANCE_SNR_FLOOR_DB
+                                      and res_item.get("mos") is not None)
+                        if inherit_ok:
+                            # Perceptually identical to the ffmpeg decode
+                            # already scored in the encoder phase -- reuse
+                            # its MOS instead of launching a fresh scorer.
+                            mos_val, mos_source = res_item.get("mos"), "inherited"
+                        else:
+                            mos_source = "scored"
+                            try:
+                                with tempfile.TemporaryDirectory() as td:
+                                    ref_wav = get_cached_ref_wav(ref_cache_dir or td, ref_path, v_rate, v_channels) if ref_cache_dir else None
+                                    if not ref_wav:
+                                        ref_wav = os.path.join(td, "ref_conv.wav")
+                                        if not wav_conv(ref_path, ref_wav, rate=v_rate, channels=v_channels):
+                                            ref_wav = ref_path
+
+                                    dec_wav = os.path.join(td, "dec_conv.wav")
+                                    if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
+                                        dec_wav = output_path
+
+                                    mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
+                            except Exception as e:
+                                print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")
 
         audio_duration = ffmpeg_probe(ref_path) if ref_path else None
 
-        return {
+        if valid and iterations > 1:
+            speed_stats = measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio_duration)
+
+        result = {
             "tool": decoder.name,
             "row_key": decoder_row_key(decoder),
             "encoder_row_key": res_item["row_key"],
             "scenario": scenario_name,
             "filename": sample,
             "profile": res_item.get("profile", "lc"),
+            "container": container,
             "duration": duration,
             "audio_duration": audio_duration,
             "decode_valid": valid,
             "decode_error": decode_err,
             "mos": mos_val,
+            "mos_source": mos_source,
             "snr_db": snr_db,
+            "conformance_snr_db": conformance_snr_db,
             "alignment_delay_ms": alignment_delay_ms,
+            "gapless_offset_samples": gapless_offset_samples,
+            "gapless_length_delta": gapless_length_delta,
             "peak_ram_kb": peak_ram_kb,
-            "decoded_wav": output_path,
+            "decoded_wav": output_path if keep_decodes else None,
             "dec_channels": dec_channels,
-            "mono_downmix": mono_downmix
+            "mono_downmix": mono_downmix,
+            "speed_mean_ms": speed_stats["mean_ms"] if speed_stats else None,
+            "speed_std_ms": speed_stats["std_ms"] if speed_stats else None,
+            "speed_xrt": speed_stats["xrt"] if speed_stats else None,
+            "speed_mbps": speed_stats["mbps"] if speed_stats else None,
         }
+
+        if not keep_decodes and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+
+        return result
     except BaseException as e:
         detail = str(e)
         is_timeout = False
@@ -423,7 +652,12 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "decode_error": err_msg,
             "timeout": is_timeout,
             "snr_db": None,
+            "mos_source": None,
+            "conformance_snr_db": None,
             "alignment_delay_ms": None,
+            "gapless_offset_samples": None,
+            "gapless_length_delta": None,
+            "container": container,
             "peak_ram_kb": None,
             "decoded_wav": None
         }
@@ -467,10 +701,26 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         return None
 
     cmd = decoder.get_decode_cmd(corrupt_path, dec_corrupt_wav)
+    runaway = False
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
         passed = (res.returncode == 0)
         is_timeout = (res.returncode == -124) or ("timed out" in (res.stderr or "").lower())
+
+        if passed and os.path.exists(dec_corrupt_wav):
+            # A corrupted stream that decodes "successfully" but keeps
+            # synthesizing PCM well past where the intact stream would have
+            # ended (a desynced length field, usually) is not a clean pass --
+            # bound it against the intact source's expected PCM size rather
+            # than calling it a pass just because the exit code was 0.
+            cfg = SCENARIOS.get(scenario_name, {})
+            ref_path = res_item.get("ref_path")
+            duration_s = ffmpeg_probe(ref_path) if ref_path else None
+            if duration_s and cfg:
+                expected_bytes = duration_s * scenario_rate(cfg) * scenario_channels(cfg) * 2 + 44
+                if os.path.getsize(dec_corrupt_wav) > ROBUSTNESS_RUNAWAY_FACTOR * expected_bytes:
+                    runaway = True
+                    passed = False
     except BaseException as e:
         passed = False
         is_timeout = "timed out" in str(e).lower() or "timeout" in str(e).lower()
@@ -480,6 +730,16 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
                 os.remove(temp_adts)
             except OSError:
                 pass
+        # The corrupted bitstream and its decode are scratch: a runaway
+        # decode can be gigabytes, and even a normal one has no further use
+        # once pass/fail is recorded. Leaving these behind previously filled
+        # the output directory.
+        for scratch in (corrupt_path, dec_corrupt_wav):
+            if os.path.exists(scratch):
+                try:
+                    os.remove(scratch)
+                except OSError:
+                    pass
 
     return {
         "tool": decoder.name,
@@ -488,5 +748,6 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         "scenario": scenario_name,
         "filename": sample,
         "passed": passed,
-        "timeout": is_timeout
+        "timeout": is_timeout,
+        "runaway": runaway
     }

@@ -38,6 +38,17 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 def init_worker():
     """Initializes worker process with single-threaded constraints and CPU core affinity pinning."""
+    # Set explicitly in the initializer (not just relied on via fork
+    # inheriting the parent's already-mutated os.environ) so a pool worker
+    # is single-threaded regardless of process start method, and every BLAS
+    # call a worker makes -- or any subprocess it launches with env=None --
+    # picks these up rather than oversubscribing the CPU count with 16
+    # workers each spawning their own thread pool.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
     if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
         try:
             pid = os.getpid()
@@ -62,8 +73,11 @@ from codec_bench import (
     OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
     detect_encoders, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder,
     detect_decoders, process_decoder_task, process_decoder_robustness_task,
-    CLIP_PEER_BUG_GAP, cell_peer_gap, generate_leaderboard, generate_decoder_leaderboard
+    CLIP_PEER_BUG_GAP, cell_peer_gap, generate_leaderboard, generate_decoder_leaderboard,
+    generate_decoder_report, get_conformance_ref_wav, CONFORMANCE_SNR_FLOOR_DB
 )
+from muxer_bench import run_muxer_bench
+from gate_check import evaluate_gate
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -146,7 +160,16 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
 
         with tempfile.TemporaryDirectory() as td:
             decoded_wav = os.path.join(td, "decoded.wav")
-            decode_ok = wav_conv(output_path, decoded_wav, rate=sample_rate, channels=channels)
+            # Decode once, natively, into the same disk cache the decoder
+            # phase's conformance check reads later (keyed by output_path's
+            # hash) instead of decoding this bitstream again per decoder
+            # under test. The scenario-rate copy used for MOS/stereo/transient
+            # below is then a cheap WAV->WAV resample of that cached decode.
+            native_ref_wav = get_conformance_ref_wav(output_path, ref_cache_dir) if ref_cache_dir else None
+            if native_ref_wav:
+                decode_ok = wav_conv(native_ref_wav, decoded_wav, rate=sample_rate, channels=channels)
+            else:
+                decode_ok = wav_conv(output_path, decoded_wav, rate=sample_rate, channels=channels)
             if decode_ok:
                 valid, decode_err = decode_validate(output_path)
 
@@ -254,8 +277,19 @@ def main():
     parser.add_argument("--skip-transient", action="store_true", help="Skip attack centroid shift calculation")
     parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid xychart-beta plots")
     parser.add_argument("--resume", action="store_true", help="Reuse existing comparison_results.json if available")
+    parser.add_argument("--iterations", type=int, default=1,
+                        help="Repeat each decode this many times (output discarded) for mean/std latency, xRT, MB/s (default: 1 = single timed decode only)")
+    parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
+    parser.add_argument("--muxer-bench", action="store_true",
+                        help="Benchmark faam vs ffmpeg -c:a copy vs MP4Box on the largest ADTS stream from this run")
+    parser.add_argument("--decoder-report", help="Write a decoder/muxer Markdown report (see docs/) to this path")
+    parser.add_argument("--keep-decodes", action="store_true",
+                        help="Keep each decoder's decoded WAV on disk instead of deleting it once its metrics are computed")
 
     args = parser.parse_args()
+
+    if args.gate:
+        args.iterations = max(args.iterations, 3)
 
     run_encoders = args.mode in ("encoder", "both")
     run_decoders = args.mode in ("decoder", "both")
@@ -373,18 +407,26 @@ def main():
                 print(f"  Decoding with {decoder.name}...")
                 completed_dec = 0
                 with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
-                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir) for item in valid_encoder_bitstreams]
+                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir, args.iterations, args.keep_decodes) for item in valid_encoder_bitstreams]
                     for future in concurrent.futures.as_completed(futures):
                         res = future.result()
                         completed_dec += 1
                         if res:
                             decoder_results.append(res)
                             status_mark = "TIMEOUT" if res.get("timeout") else ("OK" if res["decode_valid"] else "FAIL")
-                            mos_str = f", MOS: {res['mos']:.2f}" if res.get("mos") is not None else ""
+                            mos_tag = {"inherited": " inh", "scored": ""}.get(res.get("mos_source"), "")
+                            mos_str = f", MOS: {res['mos']:.2f}{mos_tag}" if res.get("mos") is not None else ""
                             snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
                             ch_tag = " (1ch)" if res.get("mono_downmix") else ""
                             prof_str = profile_label(res.get('profile', 'lc'))
                             print(f"    [{completed_dec}/{total_dec_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
+
+            mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
+            if mos_scored:
+                n_inherited = sum(1 for r in decoder_results if r.get("mos_source") == "inherited")
+                n_scored = sum(1 for r in decoder_results if r.get("mos_source") == "scored")
+                print(f"\n>>> MOS: {n_inherited} inherited from the encoder phase's ffmpeg-decode score "
+                      f"(conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB), {n_scored} scored directly")
 
             print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
             robustness_bitstreams = valid_encoder_bitstreams
@@ -409,9 +451,43 @@ def main():
                         completed_rob += 1
                         if res:
                             decoder_robustness_results.append(res)
-                            status_mark = "TIMEOUT" if res.get("timeout") else ("PASS" if res.get("passed") else "FAIL")
+                            status_mark = "TIMEOUT" if res.get("timeout") else ("RUNAWAY" if res.get("runaway") else ("PASS" if res.get("passed") else "FAIL"))
                             prof_str = profile_label(res.get('profile', 'lc'))
                             print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
+
+    # Decoder results carry different fields (mos/snr_db/alignment/speed per
+    # decoder+profile) than encoder_results, and args.results_json is kept as
+    # a bare list for backward compatibility with the reload logic above and
+    # external consumers. Persist decoder data to a sibling file instead of
+    # reshaping args.results_json.
+    if run_decoders and decoders:
+        decoders_json_path = f"{args.results_json}.decoders.json"
+        with open(decoders_json_path, "w") as f:
+            json.dump({
+                "decoder_results": decoder_results,
+                "decoder_robustness_results": decoder_robustness_results,
+            }, f, indent=2)
+        print(f"==> Decoder results saved to {decoders_json_path}")
+
+    # Muxer benchmark: times faam vs ffmpeg vs MP4Box on the largest ADTS
+    # elementary stream this run produced. Independent of encoder/decoder
+    # mode since it only needs one bitstream to work with.
+    muxer_results = []
+    if args.muxer_bench:
+        adts_candidates = [r["aac_path"] for r in encoder_results
+                           if r.get("aac_path") and os.path.exists(r["aac_path"])
+                           and r["aac_path"].lower().endswith((".aac", ".adts"))]
+        largest_adts = max(adts_candidates, key=os.path.getsize) if adts_candidates else None
+        if not largest_adts:
+            print("==> --muxer-bench: no ADTS bitstream available in this run, skipping")
+        else:
+            faam_bin = args.faam_bin or shutil.which("faam")
+            ffmpeg_bin = args.ffmpeg_bin or shutil.which("ffmpeg")
+            print(f"\n>>> Running Muxer Benchmark on {os.path.basename(largest_adts)}...")
+            muxer_results = run_muxer_bench(faam_bin, ffmpeg_bin, largest_adts, output_dir, iterations=args.iterations)
+            for r in muxer_results:
+                status = r["note"] if r.get("note") else f"{r['mean_ms']:.2f} ms"
+                print(f"    {r['tool']:<10} {r['op']:<20} {status}")
 
     # Final Leaderboard Generation
     out_file = args.output
@@ -422,6 +498,19 @@ def main():
         generate_leaderboard(encoders, encoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs)
     elif run_decoders and decoders:
         generate_decoder_leaderboard(decoders, decoder_results, out_file, scenario_list, skip_graphs=args.skip_graphs, robustness_results=decoder_robustness_results)
+
+    if args.decoder_report and run_decoders and decoders:
+        generate_decoder_report(decoders, decoder_results, decoder_robustness_results, args.decoder_report,
+                                muxer_results=muxer_results)
+
+    if args.gate and run_decoders and decoders:
+        gate_ok, gate_lines = evaluate_gate(decoder_results, decoder_robustness_results)
+        print()
+        for line in gate_lines:
+            print(f"  {line}")
+        print(f"\nGATE: {'PASS' if gate_ok else 'FAIL'}")
+        if not gate_ok:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -10,13 +10,14 @@
 
 import os
 import re
+import statistics
 from collections import defaultdict
 
 from utils import (format_size, make_progress_bar, zoomed_y_range,
                    get_scenario_sort_key, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families)
 from codec_bench.encoders import PROFILE_LABELS, profile_label, encoder_row_key, FAACEncoder
-from codec_bench.decoders import decoder_row_key
+from codec_bench.decoders import decoder_row_key, CONFORMANCE_SNR_FLOOR_DB
 
 CLIP_PEER_BUG_GAP = 0.75
 
@@ -1159,6 +1160,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 if not p_has_data:
                     continue
 
+                max_p_dec_speed = max([p_stats[rk][p][s_name]["speed_sum"] / p_stats[rk][p][s_name]["speed_count"] for rk in sorted_rk for s_name in fam_scenarios if p_stats[rk][p][s_name]["speed_count"] > 0] + [1.0])
+
                 f.write(f"###### {profile_label(p)} Profile\n\n")
                 f.write("| Scenario | " + " | ".join(overall[rk]["tool"] for rk in sorted_rk) + " |\n")
                 f.write("| :--- | " + " | ".join([":---:"] * len(sorted_rk)) + " |\n")
@@ -1211,3 +1214,125 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write("\n</details>\n\n")
 
     print(f"\nDecoder leaderboard generated at: {output_path}")
+
+
+def _fmt(val, spec="{:.2f}"):
+    if val is None:
+        return "n/a"
+    if isinstance(val, str):
+        return val
+    try:
+        return spec.format(val)
+    except Exception:
+        return "n/a"
+
+
+def _kb(bytes_val):
+    if not bytes_val:
+        return "n/a"
+    return f"{bytes_val / 1024.0:.1f} KB"
+
+
+def generate_decoder_report(decoders, decoder_results, robustness_results, output_path,
+                             muxer_results=None, faam_footprint=None):
+    """Renders the measured-only decoder/muxer report matching the sections
+    of docs/DECODER_MUXER_BENCHMARK_ANALYSIS.md: overall comparison,
+    footprint, latency, muxer throughput, and multichannel/robustness
+    (including gapless offset). Every number here comes from decoder_results
+    / robustness_results / muxer_results -- nothing is fabricated, and a
+    cell reads "n/a" when the run didn't measure it (e.g. --skip-mos, or a
+    tool that wasn't found)."""
+    muxer_results = muxer_results or []
+    by_tool = defaultdict(list)
+    for r in decoder_results:
+        by_tool[r["row_key"]].append(r)
+
+    with open(output_path, "w") as f:
+        f.write("# FAAD Decoder & Muxer Benchmark (measured)\n\n")
+
+        # --- Section 1: overall comparison -----------------------------
+        f.write("## 1. Overall Comparison\n\n")
+        f.write("| Decoder | .text | Peak RSS (median) | MOS range (LC) | MOS range (HE-AAC v1) | Conformance SNR (median, dB) | xRT (median) |\n")
+        f.write("| :--- | ---: | ---: | :---: | :---: | ---: | ---: |\n")
+        for dec in decoders:
+            rows = [r for r in by_tool.get(dec.tool_id, []) if r.get("decode_valid")]
+            rss = [r["peak_ram_kb"] for r in rows if r.get("peak_ram_kb")]
+            lc_mos = [r["mos"] for r in rows if r.get("profile") == "lc" and isinstance(r.get("mos"), (int, float))]
+            he_mos = [r["mos"] for r in rows if r.get("profile") == "he" and isinstance(r.get("mos"), (int, float))]
+            csnr = [r["conformance_snr_db"] for r in rows if isinstance(r.get("conformance_snr_db"), (int, float))]
+            xrt = [r["speed_xrt"] for r in rows if r.get("speed_xrt")]
+            lc_range = f"{min(lc_mos):.2f} - {max(lc_mos):.2f}" if lc_mos else "n/a"
+            he_range = f"{min(he_mos):.2f} - {max(he_mos):.2f}" if he_mos else "n/a"
+            f.write(f"| {dec.name} | {_kb(dec.text_size)} | {_kb(statistics.median(rss)) if rss else 'n/a'} "
+                    f"| {lc_range} | {he_range} | {_fmt(statistics.median(csnr)) if csnr else 'n/a'} "
+                    f"| {_fmt(statistics.median(xrt), '{:.1f}x') if xrt else 'n/a'} |\n")
+        f.write("\n")
+
+        n_inherited = sum(1 for r in decoder_results if r.get("mos_source") == "inherited")
+        n_scored = sum(1 for r in decoder_results if r.get("mos_source") == "scored")
+        if n_inherited or n_scored:
+            f.write(f"*MOS: {n_inherited} row(s) inherited the encoder phase's ffmpeg-decode score "
+                    f"(conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB vs that decode), {n_scored} scored directly.*\n\n")
+
+        # --- Section 2: footprint --------------------------------------
+        f.write("## 2. Binary Footprint\n\n")
+        f.write("| Component | .text | .rodata | .bss | .data |\n")
+        f.write("| :--- | ---: | ---: | ---: | ---: |\n")
+        for dec in decoders:
+            f.write(f"| {dec.name} | {_kb(dec.text_size)} | {_kb(dec.rodata_size)} | {_kb(dec.bss_size)} | {_kb(dec.data_size)} |\n")
+        if faam_footprint:
+            f.write(f"| faam | {_kb(faam_footprint.get('text'))} | {_kb(faam_footprint.get('rodata'))} "
+                    f"| {_kb(faam_footprint.get('bss'))} | {_kb(faam_footprint.get('data'))} |\n")
+        f.write("\n")
+
+        # --- Section 3: latency -----------------------------------------
+        f.write("## 3. Decoder Throughput & Execution Latency\n\n")
+        f.write("| Scenario | Clip | Profile | Decoder | Mean (ms) | Std Dev (ms) | xRT | MB/s |\n")
+        f.write("| :--- | :--- | :---: | :--- | ---: | ---: | ---: | ---: |\n")
+        for r in decoder_results:
+            if r.get("speed_mean_ms") is None:
+                continue
+            f.write(f"| {r['scenario']} | `{r['filename']}` | {profile_label(r.get('profile', 'lc'))} | {r['tool']} "
+                    f"| {_fmt(r['speed_mean_ms'])} | {_fmt(r['speed_std_ms'])} "
+                    f"| {_fmt(r.get('speed_xrt'), '{:.1f}x')} | {_fmt(r.get('speed_mbps'))} |\n")
+        f.write("\n")
+
+        # --- Section 5: muxer ---------------------------------------
+        f.write("## 5. Container Manipulation Benchmark\n\n")
+        f.write("| Tool | Operation | Mean (ms) | Std Dev (ms) |\n")
+        f.write("| :--- | :--- | ---: | ---: |\n")
+        for r in muxer_results:
+            if r.get("note"):
+                f.write(f"| {r['tool']} | {r['op']} | n/a | n/a ({r['note']}) |\n")
+            else:
+                f.write(f"| {r['tool']} | {r['op']} | {_fmt(r['mean_ms'])} | {_fmt(r['std_ms'])} |\n")
+        f.write("\n")
+
+        # --- Section 6: multichannel + robustness ------------------------
+        f.write("## 6. Multichannel & Bitstream Robustness\n\n")
+        f.write("### Gapless / alignment offset (vs source WAV)\n\n")
+        f.write("| Scenario | Clip | Container | Decoder | Offset (samples) | Length delta (samples) |\n")
+        f.write("| :--- | :--- | :---: | :--- | ---: | ---: |\n")
+        for r in decoder_results:
+            if not r.get("decode_valid") or r.get("gapless_offset_samples") is None:
+                continue
+            f.write(f"| {r['scenario']} | `{r['filename']}` | {r.get('container', 'n/a')} | {r['tool']} "
+                    f"| {r['gapless_offset_samples']} | {_fmt(r.get('gapless_length_delta'), '{}')} |\n")
+        f.write("\n")
+
+        f.write("### Robustness under corrupted bitstreams (seed 42)\n\n")
+        f.write("| Decoder | Pass | Fail | Timeout | Runaway |\n")
+        f.write("| :--- | ---: | ---: | ---: | ---: |\n")
+        rob_by_tool = defaultdict(list)
+        for r in robustness_results:
+            rob_by_tool[r["row_key"]].append(r)
+        for dec in decoders:
+            rows = rob_by_tool.get(dec.tool_id, [])
+            n_pass = sum(1 for r in rows if r.get("passed") and not r.get("runaway"))
+            n_timeout = sum(1 for r in rows if r.get("timeout"))
+            n_runaway = sum(1 for r in rows if r.get("runaway"))
+            n_fail = sum(1 for r in rows if not r.get("passed") and not r.get("timeout") and not r.get("runaway"))
+            f.write(f"| {dec.name} | {n_pass} | {n_fail} | {n_timeout} | {n_runaway} |\n")
+        f.write("\n")
+
+    print(f"Decoder report generated at: {output_path}")

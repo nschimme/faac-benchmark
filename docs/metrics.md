@@ -77,6 +77,36 @@ $$\text{Actual Bitrate (kbps)} = \frac{\text{Elementary Stream Audio Bytes} \tim
 
 ---
 
+## Decoder Conformance SNR & MOS Inheritance
+
+Decoder correctness is measured against the **cached ffmpeg decode of the
+same bitstream** (the encoder phase's own conformance reference), not the
+original uncompressed source -- this isolates decoder-implementation bugs
+from the encoder's lossy-compression error, which `snr_db` (measured against
+the original) still captures separately.
+
+- **Conformance SNR (`conformance_snr_db`)**: SNR in dB between a decoder's
+  output and the ffmpeg decode of the same bitstream. `inf`/bit-exact is
+  ideal; the `--gate` FAAD3 check requires >= 60 dB.
+- **MOS inheritance**: at conformance SNR >= 60 dB, a decoder's output is
+  perceptually indistinguishable from the ffmpeg decode already scored in
+  the encoder phase, so it inherits that MOS (`mos_source: "inherited"`)
+  instead of a fresh scoring pass. Below 60 dB, or when no reference decode
+  is available, the decoder's own output is scored directly
+  (`mos_source: "scored"`).
+
+## Robustness: Pass / Fail / Timeout / Runaway
+
+Corrupted-bitstream decoding (a separate decode-only pass, not scored) is
+classified per decoder:
+- **Pass**: exits cleanly, output PCM size is consistent with the intact
+  stream.
+- **Fail**: nonzero exit / decode error.
+- **Timeout**: exceeded the decode time budget.
+- **Runaway**: exits 0 but its output PCM exceeds 4x the intact stream's
+  expected size -- it did not fail cleanly, it kept synthesizing audio past
+  a desynced frame/length field. Counted as a failure, not a pass.
+
 ## Per-Band Spectral Distortion
 
 A diagnostic metric analyzing RMS log-spectral error across 5 frequency bands (0–4 kHz, 4–8 kHz, 8–12 kHz, 12–18.4 kHz, 18.4–24 kHz). This pinpoints precisely where in the frequency spectrum high-frequency roll-off, spectral hole filling, or Bandwidth Extension (SBR) distortion occurs.

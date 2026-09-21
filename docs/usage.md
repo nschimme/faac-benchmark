@@ -131,6 +131,41 @@ The leaderboard evaluates key dimensions:
 
 **Winner Highlighting**: The best-performing encoder or decoder in each category is **bolded** in the leaderboard tables.
 
+### Decoder phase: an extension of the encoder phase, not a repeat
+
+The encoder phase already decodes every bitstream once with ffmpeg (to
+decode-validate it and score its MOS). The decoder phase reuses that same
+cached ffmpeg decode as its **conformance reference** instead of decoding
+each bitstream again per tool under test:
+
+- **Conformance SNR** (`conformance_snr_db`) is each decoder's output
+  compared against the cached ffmpeg decode of the same bitstream, in-process
+  with numpy/scipy -- not a fresh `ffmpeg`/decoder re-run per metric. This
+  isolates decoder-implementation bugs from the encoder's own lossy error
+  (which `snr_db`, measured against the original uncompressed WAV, still
+  captures).
+- **MOS inheritance**: a decoder output whose conformance SNR against the
+  ffmpeg decode is **>= 60 dB** is treated as perceptually identical to it,
+  so it inherits the MOS the encoder phase already computed for that
+  bitstream (`mos_source: "inherited"`) instead of paying for a fresh
+  Zimtohrli/ViSQOL scoring pass. Only a decoder whose output diverges from
+  the ffmpeg decode below that floor (or one with no cached reference) is
+  actually rescored (`mos_source: "scored"`).
+- **Alignment** (`alignment_delay_ms`, `gapless_offset_samples`) is derived
+  by adding the ffmpeg decode's own (once-per-bitstream, cached) offset vs
+  the original to each decoder's (much cheaper) offset vs that ffmpeg
+  decode, instead of every decoder cross-correlating a full window against
+  the original from scratch.
+- Decoded WAVs are deleted once their metrics are computed; pass
+  `--keep-decodes` to keep them on disk.
+
+The separate **robustness pass** (corrupted-bitstream decode-only, no
+scoring) still exits/timeouts/**runaway**-classifies each decoder
+independently: a corrupted stream whose decode exceeds 4x the intact
+stream's expected PCM size is flagged `runaway` (it didn't fail cleanly, it
+kept synthesizing audio past a desynced length field) rather than counted as
+a pass.
+
 ## Diagnostic and ad hoc tools
 
 `run_benchmark.py --compare`/`--sweep`/`--diff` cover the everyday A/B and

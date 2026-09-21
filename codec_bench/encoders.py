@@ -105,15 +105,22 @@ class Encoder:
 
 
 class FAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None):
+    def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None, pns=True):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
         self.legacy = is_faac_legacy(binary_path, lib_override=lib_override)
+        # PNS noise is non-normative, so decoders cannot agree sample-for-sample
+        # on PNS-coded bands; the pns=False variant exists to gate decoder
+        # conformance on streams every compliant decoder must reproduce alike.
+        self.pns = pns
+        self.pns_free = not pns
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         cmd = [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "-o", output_path]
         if not self.legacy:
             obj_type = "he-aac-v1" if self.profile == "he" else "lc"
             cmd.extend(["--object-type", obj_type])
+            if not self.pns:
+                cmd.extend(["--pns", "0"])
         cmd.append(input_path)
         return cmd
 
@@ -294,6 +301,11 @@ def detect_encoders(args):
             enc_he = FAACEncoder(name, f_bin, tool_id, "he", lib_override=f_lib)
             if probe_encoder_capability(enc_he):
                 encoders.append(enc_he)
+            if getattr(args, "mode", "both") != "encoder":
+                for p in ("lc", "he"):
+                    enc = FAACEncoder(name + " (PNS off)", f_bin, tool_id + "_nopns", p, lib_override=f_lib, pns=False)
+                    if probe_encoder_capability(enc):
+                        encoders.append(enc)
 
     fdkaac_bins = flatten_arg_list(getattr(args, "fdkaac_bin", None))
     if not fdkaac_bins:
