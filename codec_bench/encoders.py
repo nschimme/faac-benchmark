@@ -293,7 +293,12 @@ def probe_faac_version(faac_path, lib_override=None):
 
 def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
     if bitrate_kbps is None:
-        bitrate_kbps = 16 if encoder.profile in ("he", "hev2") else 64
+        if encoder.profile == "hev2":
+            bitrate_kbps = 24
+        elif encoder.profile == "he":
+            bitrate_kbps = 32
+        else:
+            bitrate_kbps = 64
     supported, reason = encoder.supports_scenario(bitrate_kbps, channels, sample_rate)
     if not supported:
         return False
