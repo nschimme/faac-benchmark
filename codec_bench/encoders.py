@@ -325,6 +325,11 @@ def detect_encoders(args):
     existing_names = set()
     existing_ids = set()
 
+    include_variations = getattr(args, "include_encoder_variations", False)
+    include_pns_off = getattr(args, "include_pns_off", False) or getattr(args, "pns_off", False) or include_variations
+    include_adts = getattr(args, "include_adts", False) or getattr(args, "adts_variations", False) or include_variations
+    include_faam = getattr(args, "include_faam_variations", False) or include_variations
+
     faac_bins = flatten_arg_list(getattr(args, "faac_bin", None))
     faac_libs = flatten_arg_list(getattr(args, "faac_lib", None))
     faac_vers = flatten_arg_list(getattr(args, "faac_bin_version", None))
@@ -355,14 +360,21 @@ def detect_encoders(args):
             enc_he = FAACEncoder(name, f_bin, tool_id, "he", lib_override=f_lib)
             if probe_encoder_capability(enc_he):
                 encoders.append(enc_he)
-            if getattr(args, "mode", "both") != "encoder":
-                for p in ("lc", "he"):
-                    enc = FAACEncoder(name + " (PNS off)", f_bin, tool_id + "_nopns", p, lib_override=f_lib, pns=False)
-                    if probe_encoder_capability(enc):
-                        encoders.append(enc)
+
+        if include_pns_off:
+            for p in (("lc", "he") if not legacy else ("lc",)):
+                enc = FAACEncoder(name + " (PNS off)", f_bin, tool_id + "_nopns", p, lib_override=f_lib, pns=False)
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
+
+        if include_adts:
+            for p in (("lc", "he") if not legacy else ("lc",)):
+                if include_pns_off:
                     enc = FAACEncoder(name + " (PNS off, ADTS)", f_bin, tool_id + "_nopns_adts", p, lib_override=f_lib, pns=False, adts=True)
-                    if probe_encoder_capability(enc):
-                        encoders.append(enc)
+                else:
+                    enc = FAACEncoder(name + " (ADTS)", f_bin, tool_id + "_adts", p, lib_override=f_lib, adts=True)
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
 
     fdkaac_bins = flatten_arg_list(getattr(args, "fdkaac_bin", None))
     if not fdkaac_bins:
@@ -378,13 +390,16 @@ def detect_encoders(args):
             enc = FDKAACEncoder(name, f_bin, tool_id, p)
             if probe_encoder_capability(enc):
                 encoders.append(enc)
-        if getattr(args, "mode", "both") != "encoder":
+
+        if include_adts:
             # fdkaac's HE profiles are PNS-free, so they are the streams that
-            # gate the ADTS path and the SBR/PS signalling forms.
+            # gate the ADTS path.
             for p in ("he", "hev2"):
                 enc = FDKAACEncoder(name + " (ADTS)", f_bin, tool_id + "_adts", p, signaling="adts")
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
+
+        if include_faam:
             faam_bin = getattr(args, "faam_bin", None) or shutil.which("faam")
             if faam_bin:
                 for p, sig in (("he", "none"), ("he", "explicit"), ("hev2", "ps-explicit")):
@@ -441,11 +456,17 @@ def detect_encoders(args):
             enc_lc = FFmpegEncoder(name, ffmpeg_bin, tool_id, "lc")
             if probe_encoder_capability(enc_lc):
                 encoders.append(enc_lc)
-            if getattr(args, "mode", "both") != "encoder":
+
+            if include_pns_off:
                 enc = FFmpegEncoder(name + " (PNS off)", ffmpeg_bin, tool_id + "_nopns", "lc", pns=False)
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
-                enc = FFmpegEncoder(name + " (PNS off, ADTS)", ffmpeg_bin, tool_id + "_nopns_adts", "lc", pns=False, adts=True)
+
+            if include_adts:
+                if include_pns_off:
+                    enc = FFmpegEncoder(name + " (PNS off, ADTS)", ffmpeg_bin, tool_id + "_nopns_adts", "lc", pns=False, adts=True)
+                else:
+                    enc = FFmpegEncoder(name + " (ADTS)", ffmpeg_bin, tool_id + "_adts", "lc", adts=True)
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
 

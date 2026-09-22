@@ -56,8 +56,8 @@ class TestCompareDecoders(unittest.TestCase):
         decoders = cd.detect_decoders(args)
         faad_decs = [d for d in decoders if isinstance(d, cd.FAADDecoder)]
         self.assertEqual(len(faad_decs), 2)
-        self.assertEqual(faad_decs[0].name, "FAAD 2.10.0")
-        self.assertEqual(faad_decs[1].name, "FAAD 2.11.1")
+        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0")
+        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1")
 
     def test_generate_decoder_leaderboard(self):
         with tempfile.TemporaryDirectory() as td:

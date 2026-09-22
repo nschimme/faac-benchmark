@@ -1224,7 +1224,7 @@ def main():
             summary_lines.append(f'    title "MOS Δ by Rate Family"')
             summary_lines.append(f"    x-axis [{', '.join(fam_labels)}]")
             summary_lines.append(f'    y-axis "MOS Δ" {-f_bound:.2f} --> {f_bound:.2f}')
-            summary_lines.append(f"    bar [{', '.join(fam_vals)}]")
+            summary_lines.append(f'    bar "MOS Δ" [{", ".join(fam_vals)}]')
             summary_lines.append("```\n")
 
         summary_lines.append(f"| Family | {mos_label} Δ | 95% Conf. Interval | Clips |")
@@ -1442,7 +1442,7 @@ def main():
                     report.append('    title "Object File .text Size Movers (Bytes)"')
                     report.append(f"    x-axis [{', '.join(objs)}]")
                     report.append(f'    y-axis "Byte Change" {-d_bound} --> {d_bound}')
-                    report.append(f"    bar [{', '.join(diffs)}]")
+                    report.append(f'    bar "Byte Change" [{", ".join(diffs)}]')
                     report.append("```\n")
                 report.append(", ".join(
                     f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))

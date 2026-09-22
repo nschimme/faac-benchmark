@@ -280,23 +280,35 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write(f"### {fam_label} Quality Across Bitrates\n\n")
             x_labels = [s.rsplit("_", 1)[-1] for s in fam_scenarios]
 
-            line_data = {}
-            for rk in all_row_keys:
-                vals = [stats[rk][s]["mos_sum"] / stats[rk][s]["mos_count"] if stats[rk][s]["mos_count"] > 0 else None for s in fam_scenarios]
+            tool_line_data = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["mos_count"] > 0:
+                        vals.append(stats[best_rk][s]["mos_sum"] / stats[best_rk][s]["mos_count"])
+                    else:
+                        vals.append(None)
                 if any(v is not None for v in vals):
-                    line_data[rk] = vals
+                    tool_line_data[tool_name] = vals
 
-            if not skip_graphs and line_data:
-                chart_vals = [v for vals in line_data.values() for v in vals if v is not None]
+            if not skip_graphs and tool_line_data:
+                chart_vals = [v for vals in tool_line_data.values() for v in vals if v is not None]
                 axis_lo, axis_hi = zoomed_y_range(chart_vals, "1.0 --> 5.0")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write(f'    title "{fam_label} Quality across Bitrates (Average MOS)"\n')
                 f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
                 f.write(f'    y-axis "MOS Score" {axis_lo:.4g} --> {axis_hi:.4g}\n')
-                for rk, vals in line_data.items():
-                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
+                for tool_name, vals in tool_line_data.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed {fam_label} Average & Worst MOS Tables</b></summary>\n\n")
@@ -401,23 +413,35 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 f.write(f"### Stereo Image Fidelity ({fam_label})\n\n")
                 f.write("> **Note**: Measured as 1.0 - |Coherence(Ref) - Coherence(Deg)|. **Higher is truer** (closer to reference stereo image).\n\n")
 
-                line_data_ic = {}
-                for rk in all_row_keys:
-                    vals = [1.0 - (stats[rk][s]["ic_sum"] / stats[rk][s]["ic_count"]) if stats[rk][s]["ic_count"] > 0 else None for s in fam_scenarios]
+                tool_line_data_ic = {}
+                for tool_name in sorted_tools:
+                    candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                    vals = []
+                    for s in fam_scenarios:
+                        best_rk = scenario_best_row_key(candidates, s)
+                        if best_rk and stats[best_rk][s]["ic_count"] > 0:
+                            vals.append(1.0 - (stats[best_rk][s]["ic_sum"] / stats[best_rk][s]["ic_count"]))
+                        else:
+                            vals.append(None)
                     if any(v is not None for v in vals):
-                        line_data_ic[rk] = vals
+                        tool_line_data_ic[tool_name] = vals
 
-                if not skip_graphs and line_data_ic:
-                    chart_vals_ic = [v for vals in line_data_ic.values() for v in vals if v is not None]
+                if not skip_graphs and tool_line_data_ic:
+                    chart_vals_ic = [v for vals in tool_line_data_ic.values() for v in vals if v is not None]
                     axis_lo_ic, axis_hi_ic = zoomed_y_range(chart_vals_ic, "0.0 --> 1.0")
                     f.write("```mermaid\n")
                     f.write("xychart-beta\n")
                     f.write(f'    title "Stereo Image Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
                     f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
                     f.write(f'    y-axis "Stereo Fidelity" {axis_lo_ic:.4g} --> {axis_hi_ic:.4g}\n')
-                    for rk, vals in line_data_ic.items():
-                        v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                        f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
+                    for tool_name, vals in tool_line_data_ic.items():
+                        last_v = next((v for v in vals if v is not None), 0.0)
+                        clean_v = []
+                        for v in vals:
+                            if v is not None:
+                                last_v = v
+                            clean_v.append(f"{last_v:.4f}")
+                        f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
                     f.write("```\n\n")
 
                 f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -459,23 +483,35 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write(f"### Transient Fidelity ({fam_label})\n\n")
             f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
 
-            line_data_cent = {}
-            for rk in all_row_keys:
-                vals = [1.0 / (1.0 + (stats[rk][s]["centroid_sum"] / stats[rk][s]["centroid_count"])) if stats[rk][s]["centroid_count"] > 0 else None for s in fam_scenarios]
+            tool_line_data_cent = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["centroid_count"] > 0:
+                        vals.append(1.0 / (1.0 + (stats[best_rk][s]["centroid_sum"] / stats[best_rk][s]["centroid_count"])))
+                    else:
+                        vals.append(None)
                 if any(v is not None for v in vals):
-                    line_data_cent[rk] = vals
+                    tool_line_data_cent[tool_name] = vals
 
-            if not skip_graphs and line_data_cent:
-                chart_vals_cent = [v for vals in line_data_cent.values() for v in vals if v is not None]
+            if not skip_graphs and tool_line_data_cent:
+                chart_vals_cent = [v for vals in tool_line_data_cent.values() for v in vals if v is not None]
                 axis_lo_c, axis_hi_c = zoomed_y_range(chart_vals_cent, "0.0 --> 1.0")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write(f'    title "Transient Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
                 f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
                 f.write(f'    y-axis "Transient Fidelity" {axis_lo_c:.4g} --> {axis_hi_c:.4g}\n')
-                for rk, vals in line_data_cent.items():
-                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
+                for tool_name, vals in tool_line_data_cent.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -517,23 +553,35 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write(f"### Bitrate Accuracy ({fam_label})\n\n")
             f.write("> **Note**: Deviation from target bitrate calculated from pure elementary stream audio bytes. **Lower is Better**.\n\n")
 
-            line_data_br = {}
-            for rk in all_row_keys:
-                vals = [stats[rk][s]["br_err_sum"] / stats[rk][s]["br_err_count"] if stats[rk][s]["br_err_count"] > 0 else None for s in fam_scenarios]
+            tool_line_data_br = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["br_err_count"] > 0:
+                        vals.append(stats[best_rk][s]["br_err_sum"] / stats[best_rk][s]["br_err_count"])
+                    else:
+                        vals.append(None)
                 if any(v is not None for v in vals):
-                    line_data_br[rk] = vals
+                    tool_line_data_br[tool_name] = vals
 
-            if not skip_graphs and line_data_br:
-                chart_vals_br = [v for vals in line_data_br.values() for v in vals if v is not None]
+            if not skip_graphs and tool_line_data_br:
+                chart_vals_br = [v for vals in tool_line_data_br.values() for v in vals if v is not None]
                 axis_lo_br, axis_hi_br = zoomed_y_range(chart_vals_br, "0.0 --> 20.0")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
                 f.write(f'    title "Bitrate Accuracy across Bitrates - {fam_label} (Lower is Better)"\n')
                 f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
                 f.write(f'    y-axis "Bitrate Error (%)" {axis_lo_br:.4g} --> {axis_hi_br:.4g}\n')
-                for rk, vals in line_data_br.items():
-                    v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{encoder_info[rk].name} ({encoder_info[rk].profile.upper()})" [{", ".join(v_str)}]\n')
+                for tool_name, vals in tool_line_data_br.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Bitrate Accuracy Table ({fam_label})</b></summary>\n\n")
@@ -683,7 +731,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write('    title "Average Encoding Speed (xRealtime, Higher is Better)"\n')
             f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
             f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_speed * 1.25) + 1}\n')
-            f.write(f"    bar [{', '.join(tool_speeds)}]\n")
+            f.write(f'    bar "Encoding Speed" [{", ".join(tool_speeds)}]\n')
             f.write("```\n\n")
 
             f.write("#### Codec ROM (Flash) Size\n\n")
@@ -692,7 +740,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             f.write('    title "Codec Code + Read-Only Data Size (KB, Lower is Better)"\n')
             f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
             f.write(f'    y-axis "ROM Size (KB)" 0 --> {int(max_rom * 1.25) + 1}\n')
-            f.write(f"    bar [{', '.join(tool_roms)}]\n")
+            f.write(f'    bar "ROM Size" [{", ".join(tool_roms)}]\n')
             f.write("```\n\n")
 
         f.write("<details><summary><b>View Detailed Per-Scenario Efficiency Table</b></summary>\n\n")
@@ -1194,7 +1242,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             f.write('    title "Average Decoding Throughput (xRealtime, Higher is Better)"\n')
             f.write(f"    x-axis [{', '.join(labels)}]\n")
             f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_s * 1.25) + 1}\n')
-            f.write(f"    bar [{', '.join(speeds)}]\n")
+            f.write(f'    bar "Decoding Speed" [{", ".join(speeds)}]\n')
             f.write("```\n\n")
 
         f.write("\n</details>\n\n")
