@@ -220,20 +220,24 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
         if sys.platform != "win32":
             # Spawn a clean sub-runner python process so RUSAGE_CHILDREN measures only this single process
             runner_script = (
-                "import subprocess, resource, sys\n"
+                "import subprocess, resource, sys, time\n"
                 "timeout_val = float(sys.argv[1]) if len(sys.argv) > 1 else None\n"
                 "cmd = sys.argv[2:]\n"
+                "t0 = time.perf_counter()\n"
                 "try:\n"
                 "    res = subprocess.run(cmd, capture_output=True, timeout=timeout_val)\n"
+                "    t1 = time.perf_counter()\n"
                 "    ret = res.returncode\n"
                 "    out, err = res.stdout, res.stderr\n"
                 "except subprocess.TimeoutExpired:\n"
+                "    t1 = time.perf_counter()\n"
                 "    ret = -124\n"
                 "    out, err = b'', b'Command timed out'\n"
                 "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
                 "if sys.platform == 'darwin':\n"
                 "    rss = int(rss / 1024)\n"
-                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n'.encode())\n"
+                "dur = t1 - t0\n"
+                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n__DUR__:{dur:.8f}\\n'.encode())\n"
                 "sys.stderr.buffer.flush()\n"
                 "sys.stdout.buffer.write(out)\n"
                 "sys.stderr.buffer.write(err)\n"
@@ -246,6 +250,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
             duration = t_end - t_start
 
             rss = None
+            proc_dur = None
             stderr_clean = []
             for line in proc.stderr.splitlines():
                 if line.startswith(b"__RSS__:"):
@@ -253,8 +258,16 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                         rss = int(line.split(b":", 1)[1].strip())
                     except Exception:
                         pass
+                elif line.startswith(b"__DUR__:"):
+                    try:
+                        proc_dur = float(line.split(b":", 1)[1].strip())
+                    except Exception:
+                        pass
                 else:
                     stderr_clean.append(line)
+
+            if proc_dur is not None:
+                duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
             res = subprocess.CompletedProcess(cmd, returncode=proc.returncode, stdout=proc.stdout, stderr=clean_stderr)
