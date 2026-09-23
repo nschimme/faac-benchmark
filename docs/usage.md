@@ -126,7 +126,7 @@ The leaderboard evaluates key dimensions:
 4. **Robustness (Decoders)**: Crash-free decoding success rate (%) on deterministically corrupted ADTS bitstreams.
 5. **Fidelity**: Stereo image fidelity via inter-channel coherence fidelity (higher is better).
 6. **Efficiency**: Average throughput as a multiple of real-time (higher is better).
-7. **RAM & Footprint**: Peak dynamic RAM (Max RSS in KB/MB) and compiled code section size (`.text` + `.rodata` in KB, lower is better).
+7. **RAM & Footprint**: Peak dynamic RAM (Max RSS in KB/MB) and compiled code section size (`.text` + `.rodata` + `.data` in KB, lower is better).
 8. **Accuracy**: Average bitrate error % relative to target (lower is better).
 
 **Winner Highlighting**: The best-performing encoder or decoder in each category is **bolded** in the leaderboard tables.

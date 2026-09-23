@@ -809,7 +809,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("- **Transient Fidelity**: How little attacks are smeared/delayed (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **ROM (Flash)**: Codec code + read-only data size (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Codec code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
