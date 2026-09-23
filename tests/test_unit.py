@@ -1081,6 +1081,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
                 self.tool_id = name.lower()
                 self.text_size = 1000
                 self.rodata_size = 500
+                self.data_size = 200
 
             def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
                 return ["echo"]

@@ -107,7 +107,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 "profile": profile,
                 "tool_id": rk,
                 "text_size": 0,
-                "rodata_size": 0
+                "rodata_size": 0,
+                "data_size": 0
             })()
 
     tools = sorted(list({encoder_info[rk].name for rk in all_row_keys if rk in encoder_info}))
@@ -189,8 +190,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
             "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
             "avg_ram_kb": sum(e_ram) / len(e_ram) if e_ram else 0,
-            "text_size": enc_obj.text_size if enc_obj else 0,
-            "rodata_size": enc_obj.rodata_size if enc_obj else 0,
+            "text_size": getattr(enc_obj, "text_size", 0) if enc_obj else 0,
+            "rodata_size": getattr(enc_obj, "rodata_size", 0) if enc_obj else 0,
+            "data_size": getattr(enc_obj, "data_size", 0) if enc_obj else 0,
             "valid_rate": (tool_valid / tool_total * 100) if tool_total > 0 else 0,
             "scenario_count": scenario_count,
             "scenario_total": len(scenario_list)
@@ -262,7 +264,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             s_str = f"**{o['avg_speed']:.1f}x**" if abs(o['avg_speed'] - best_speed) < 1e-6 and o['avg_speed'] > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if abs(o['avg_br_err'] - best_br) < 1e-6 and o['avg_br_err'] >= 0 else f"{o['avg_br_err']:.1f}%"
             ram_str = format_size(int(o['avg_ram_kb'] * 1024)) if o['avg_ram_kb'] > 0 else "N/A"
-            rom_str = format_size(o['text_size'] + o['rodata_size'])
+            rom_str = format_size(o['text_size'] + o['rodata_size'] + o.get('data_size', 0))
 
             f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {sc_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {ram_str} | {rom_str} |\n")
 
@@ -720,10 +722,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         if not skip_graphs and sorted_tools:
             tool_labels = [f'"{tool_overall[t]["tool"]}"' for t in sorted_tools if t in tool_overall]
             tool_speeds = [f"{tool_overall[t]['avg_speed']:.1f}" for t in sorted_tools if t in tool_overall]
-            tool_roms = [f"{(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0:.1f}" for t in sorted_tools if t in tool_overall]
+            tool_roms = [f"{(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size'] + tool_overall[t].get('data_size', 0)) / 1024.0:.1f}" for t in sorted_tools if t in tool_overall]
 
             max_speed = max([tool_overall[t]['avg_speed'] for t in sorted_tools if t in tool_overall] + [1.0])
-            max_rom = max([(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size']) / 1024.0 for t in sorted_tools if t in tool_overall] + [1.0])
+            max_rom = max([(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size'] + tool_overall[t].get('data_size', 0)) / 1024.0 for t in sorted_tools if t in tool_overall] + [1.0])
 
             f.write("#### Encoding Speed (xRT)\n\n")
             f.write("```mermaid\n")
@@ -807,7 +809,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("- **Transient Fidelity**: How little attacks are smeared/delayed (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
-        f.write("- **ROM (Flash)**: Codec code + read-only data size (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Codec code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
@@ -961,6 +963,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             "robustness_pct": robustness_pct,
             "text_size": dec_obj.text_size,
             "rodata_size": dec_obj.rodata_size,
+            "data_size": getattr(dec_obj, "data_size", 0),
             "valid_rate": (d_valid / d_total * 100) if d_total > 0 else 0,
             "scenario_count": scenario_count,
             "scenario_total": len(scenario_list)
@@ -1013,7 +1016,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
             s_str = f"**{o['avg_speed']:.1f}x**" if abs(o['avg_speed'] - best_speed) < 1e-6 and o['avg_speed'] > 0 else f"{o['avg_speed']:.1f}x"
             ram_str = format_size(int(o["avg_ram_kb"] * 1024)) if o["avg_ram_kb"] > 0 else "N/A"
-            rom_str = format_size(o["text_size"] + o["rodata_size"])
+            rom_str = format_size(o["text_size"] + o["rodata_size"] + o.get("data_size", 0))
 
             f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {delay_str} | {rob_str} | {s_str} | {ram_str} | {rom_str} |\n")
 

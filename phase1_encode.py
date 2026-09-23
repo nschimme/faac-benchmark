@@ -437,17 +437,21 @@ def run_benchmark(
                             overall_values.append(ir_count)
                         else:
                             # Warmup
-                            subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
+                            measure_peak_ram(list(tp_cmd), env=env, check=True)
 
                             durations = []
+                            peak_rams = []
                             for _ in range(TP_REPS):
-                                start_time = time.perf_counter()
-                                subprocess.run(list(tp_cmd), env=env, check=True, capture_output=True)
-                                durations.append(time.perf_counter() - start_time)
+                                proc, t_dur, ram_kb = measure_peak_ram(list(tp_cmd), env=env, check=True)
+                                durations.append(t_dur)
+                                if ram_kb is not None:
+                                    peak_rams.append(ram_kb)
 
                             best = min(durations)
                             results["throughput"][var_key] = best
                             results["throughput_samples"][var_key] = durations
+                            if peak_rams:
+                                results.setdefault("peak_ram", {})[var_key] = max(peak_rams)
                             overall_values.append(best)
                     except BaseException as e:
                         print(f"    Throughput benchmark failed for {var_key}: {e}")
@@ -456,6 +460,8 @@ def run_benchmark(
             if overall_values:
                 results["throughput"]["overall"] = sum(
                     overall_values) / len(overall_values)
+            if "peak_ram" in results and results["peak_ram"]:
+                results["peak_ram"]["overall"] = max(results["peak_ram"].values())
 
     return results
 

@@ -1,13 +1,15 @@
 # Footprint gate
 
-## Why a section sum, not the file size
+## Why a section sum (`.text + .rodata + .data`), not file size
 
 `lib_size` (whole-file `getsize`) was compared and printed but never gated, and
 it could not have been: whole-file size moves with symbol tables, `.eh_frame`,
-build IDs and section padding, none of which are code. `.text + .rodata` of the
-release shared library does not move for those reasons. `.rodata` is in the sum
-because the next footprint regression is as likely to be a lookup table as a
-loop.
+build IDs and section padding, none of which are code. `.text + .rodata + .data` of the
+release shared library does not move for those reasons. Including `.data` along
+with `.text` and `.rodata` reflects total non-volatile Flash/ROM code footprint
+for embedded targets: initialized data values in `.data` reside in Flash/ROM
+before boot, so moving static arrays to `const` (`.data` -> `.rodata`) evaluates
+as a net-zero Flash change while freeing up writable RAM.
 
 Per-object `.text` is recorded alongside it, ungated. It is what turns "the
 library grew" into "`frame.c.o` grew" without a bisection.

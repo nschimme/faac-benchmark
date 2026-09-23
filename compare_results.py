@@ -177,11 +177,14 @@ def check_bd_rate(suite_results, base, cand):
 
 
 def check_footprint(suite_results, base, cand):
-    """Gate .text + .rodata of the release shared library.
+    """Gate .text + .rodata + .data of the release shared library.
 
     Whole-file size moves with symbol tables, build IDs and section padding for
     reasons unrelated to code, which is why lib_size stayed display-only. The
     section sum does not move for those reasons, so it can carry a gate.
+    Including .data along with .text and .rodata reflects total Flash/ROM code
+    footprint in embedded targets, ensuring constant table relocations between
+    .data and .rodata evaluate as net-zero Flash change.
     """
     b_sec = base.get("lib_sections") or {}
     c_sec = cand.get("lib_sections") or {}
@@ -197,8 +200,8 @@ def check_footprint(suite_results, base, cand):
                  f"toolchain differs: base {b_fp or 'unknown'} vs cand {c_fp or 'unknown'}")
         return
 
-    b_code = b_sec.get("text", 0) + b_sec.get("rodata", 0)
-    c_code = c_sec.get("text", 0) + c_sec.get("rodata", 0)
+    b_code = b_sec.get("text", 0) + b_sec.get("rodata", 0) + b_sec.get("data", 0)
+    c_code = c_sec.get("text", 0) + c_sec.get("rodata", 0) + c_sec.get("data", 0)
     if b_code <= 0:
         add_gate(suite_results, "footprint", "skip", "baseline code size is zero")
         return
@@ -207,7 +210,7 @@ def check_footprint(suite_results, base, cand):
     frac = delta / b_code
     suite_results["footprint_delta"] = delta
     suite_results["footprint_frac"] = frac * 100
-    detail = (f".text+.rodata {b_code} -> {c_code} "
+    detail = (f".text+.rodata+.data {b_code} -> {c_code} "
               f"({delta:+d} bytes, {frac * 100:+.2f}%)")
 
     if delta > FOOTPRINT_FAIL_BYTES and frac > FOOTPRINT_FAIL_FRAC:
@@ -1055,7 +1058,7 @@ def main():
                              "(mos, footprint, throughput). Default: all. "
                              "Unselected gates are reported as skips.")
     parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
-                        help="Accept up to BYTES of .text+.rodata growth without failing. "
+                        help="Accept up to BYTES of .text+.rodata+.data growth without failing. "
                              "For changes whose size cost is intended and stated in the PR.")
     parser.add_argument("--skip-graphs", action="store_true",
                         help="Skip generating Mermaid.js charts in the report.")
