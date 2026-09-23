@@ -110,3 +110,13 @@ classified per decoder:
 ## Per-Band Spectral Distortion
 
 A diagnostic metric analyzing RMS log-spectral error across 5 frequency bands (0–4 kHz, 4–8 kHz, 8–12 kHz, 12–18.4 kHz, 18.4–24 kHz). This pinpoints precisely where in the frequency spectrum high-frequency roll-off, spectral hole filling, or Bandwidth Extension (SBR) distortion occurs.
+
+---
+
+## Code & Memory Footprint (Flash & RAM)
+
+Evaluating library memory requirements separates non-volatile code storage (Flash/ROM) from active process memory (SRAM):
+
+- **Flash / Code Footprint (ROM)**: Calculated as `.text + .rodata + .data`. Includes executable instructions (`.text`), read-only constants/tables (`.rodata`), and initial values for writable variables (`.data` stored in Flash before startup).
+- **Static Process RAM Footprint**: Calculated as `.data + .bss`. Initialized and uninitialized writable variables allocated in RAM when loaded into process memory. Converting mutable tables to `const` reduces `.data`, directly saving RAM.
+- **Peak Dynamic RAM (Max RSS)**: Measured in isolated single-process runs during throughput benchmark passes to track peak physical memory high-water marks (in KB/MB) free from parallel worker pool overhead.
