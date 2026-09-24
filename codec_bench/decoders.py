@@ -131,6 +131,19 @@ class HelixAACDecoder(Decoder):
         return [self.binary_path, input_path, output_path]
 
 
+class FDKDecoder(Decoder):
+    """Wraps scripts/fdkdec (Homebrew libfdk-aac): decodes MP4/M4A via
+    TT_MP4_RAW + FAAC's mp4read.c for gapless trim, or raw ADTS via
+    TT_MP4_ADTS. fdkdec writes the gapless-trimmed decode straight to
+    output_path (plus an untrimmed "<stem>_raw.wav" alongside, for
+    debugging), so no wrapper is needed."""
+    def __init__(self, name, binary_path, tool_id="fdk_aac_dec"):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="libfdk-aac")
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, input_path, output_path]
+
+
 import tempfile
 import wave
 
@@ -276,6 +289,30 @@ def detect_decoders(args):
             ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
             name, tool_id = make_unique_name_and_id("Helix AAC", ver or "1.0", "helix_aac", existing_names, existing_ids)
             dec = HelixAACDecoder(name, h_bin, tool_id)
+            if probe_decoder_capability(dec):
+                decoders.append(dec)
+
+    fdkdec_bins = flatten_arg_list(getattr(args, "fdkdec_bin", None))
+    if not fdkdec_bins:
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_bin = os.path.join(script_root, "bin", "fdkdec")
+        if os.path.exists(default_bin):
+            fdkdec_bins = [default_bin]
+        else:
+            build_script = os.path.join(script_root, "scripts", "build_fdkdec.sh")
+            if os.path.exists(build_script):
+                try:
+                    res = safe_run([build_script], capture_output=True, check=False)
+                    if res.returncode == 0 and res.stdout.strip() and os.path.exists(res.stdout.strip()):
+                        fdkdec_bins = [res.stdout.strip()]
+                except Exception:
+                    pass
+
+    for f_bin in fdkdec_bins:
+        if os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-v", "--version"], [r"libfdk-aac\s+(\d+\.\d+(?:\.\d+)*)"])
+            name, tool_id = make_unique_name_and_id("FDK AAC", ver, "fdk_aac_dec", existing_names, existing_ids)
+            dec = FDKDecoder(name, f_bin, tool_id)
             if probe_decoder_capability(dec):
                 decoders.append(dec)
 

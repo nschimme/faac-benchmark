@@ -280,6 +280,7 @@ def main():
     parser.add_argument("--faad-lib", action="append", help="Path to libfaad library override")
     parser.add_argument("--faad-bin-version", action="append", help="Explicit version string for faad binary")
     parser.add_argument("--helix-bin", action="append", help="Path to Helix AAC decoder binary")
+    parser.add_argument("--fdkdec-bin", action="append", help="Path to fdkdec (libfdk-aac) decoder binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--afconvert-bin", help="Path to afconvert binary (macOS)")
     parser.add_argument("--opusenc-bin", help="Path to opusenc binary")
