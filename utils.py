@@ -1026,6 +1026,35 @@ def scenario_family(name_or_cfg):
     return f"{label}_{'mono' if channels == 1 else 'stereo'}"
 
 
+def scenario_axis_label(name, family):
+    """Chart x-axis label for a scenario: its name with the family prefix
+    stripped (e.g. "16k_mono_voip_24k" in family "16k_mono" -> "voip_24k").
+
+    Taking only the trailing "_"-token instead collapses "16k_mono_24k" and
+    "16k_mono_voip_24k" to the same "24k" label -- two indistinguishable
+    points on the same chart line.
+    """
+    prefix = family + "_"
+    if name.startswith(prefix):
+        return name[len(prefix):]
+    return name.rsplit("_", 1)[-1]
+
+
+def chart_line_label(name):
+    """Tool/decoder name for a mermaid xychart-beta `line "..."` legend entry.
+
+    Mermaid (confirmed against mermaid.live, v12.0.0) silently drops the
+    ENTIRE legend -- for every line, not just the long one -- if any single
+    line label is too wide, e.g. "FFmpeg AAC N-126229-gf101fce22d (NMR
+    experimental)" (52 chars). The identical chart regains its legend the
+    moment that one name is shortened. Strip a trailing parenthetical
+    qualifier (build hash, "(NMR experimental)", etc.) since it is
+    redundant with the detail tables right below the chart and is usually
+    what pushes a name over budget.
+    """
+    return re.sub(r"\s*\([^)]*\)\s*$", "", name)
+
+
 def family_label(family):
     """Human label for a family, taken from whichever corpus declares it."""
     from config import CORPORA

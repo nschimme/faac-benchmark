@@ -15,7 +15,8 @@ from collections import defaultdict
 
 from utils import (format_size, make_progress_bar, zoomed_y_range,
                    get_scenario_sort_key, scenario_channels, scenario_rate,
-                   scenario_family, family_label, scenario_families)
+                   scenario_family, family_label, scenario_families,
+                   scenario_axis_label, chart_line_label)
 from codec_bench.encoders import PROFILE_LABELS, profile_label, encoder_row_key, FAACEncoder
 from codec_bench.decoders import decoder_row_key, CONFORMANCE_SNR_FLOOR_DB
 
@@ -280,7 +281,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 continue
 
             f.write(f"### {fam_label} Quality Across Bitrates\n\n")
-            x_labels = [s.rsplit("_", 1)[-1] for s in fam_scenarios]
+            x_labels = [scenario_axis_label(s, fam) for s in fam_scenarios]
 
             tool_line_data = {}
             for tool_name in sorted_tools:
@@ -310,7 +311,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         if v is not None:
                             last_v = v
                         clean_v.append(f"{last_v:.4f}")
-                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed {fam_label} Average & Worst MOS Tables</b></summary>\n\n")
@@ -443,7 +444,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                             if v is not None:
                                 last_v = v
                             clean_v.append(f"{last_v:.4f}")
-                        f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
+                        f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
                     f.write("```\n\n")
 
                 f.write(f"<details><summary><b>View Detailed Stereo Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -513,7 +514,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         if v is not None:
                             last_v = v
                         clean_v.append(f"{last_v:.4f}")
-                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({fam_label})</b></summary>\n\n")
@@ -583,7 +584,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                         if v is not None:
                             last_v = v
                         clean_v.append(f"{last_v:.4f}")
-                    f.write(f'    line "{tool_name}" [{", ".join(clean_v)}]\n')
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
             f.write(f"<details><summary><b>View Detailed Bitrate Accuracy Table ({fam_label})</b></summary>\n\n")
@@ -1032,7 +1033,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 continue
 
             f.write(f"#### {fam_label}\n\n")
-            x_labels = [s.rsplit("_", 1)[-1] for s in fam_scenarios]
+            x_labels = [scenario_axis_label(s, fam) for s in fam_scenarios]
 
             # 1. Per-Scenario Average MOS
             f.write(f"##### Per-Scenario Average MOS ({fam_label})\n\n")
@@ -1053,7 +1054,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 f.write(f'    y-axis "MOS Score" {axis_lo_m:.4g} --> {axis_hi_m:.4g}\n')
                 for rk, vals in dec_line_data_mos.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{chart_line_label(overall[rk]["tool"])}" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             table_used_1ch_note = False
@@ -1125,7 +1126,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 f.write(f'    y-axis "SNR (dB)" {axis_lo_s:.4g} --> {axis_hi_s:.4g}\n')
                 for rk, vals in dec_line_data_snr.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{chart_line_label(overall[rk]["tool"])}" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             for p in ["lc", "he", "hev2"]:
@@ -1203,7 +1204,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 f.write(f'    y-axis "Speed (xRT)" {axis_lo_sp:.4g} --> {axis_hi_sp:.4g}\n')
                 for rk, vals in dec_line_data_speed.items():
                     v_str = [f"{v:.4f}" if v is not None else "0.0" for v in vals]
-                    f.write(f'    line "{overall[rk]["tool"]}" [{", ".join(v_str)}]\n')
+                    f.write(f'    line "{chart_line_label(overall[rk]["tool"])}" [{", ".join(v_str)}]\n')
                 f.write("```\n\n")
 
             for p in ["lc", "he", "hev2"]:
