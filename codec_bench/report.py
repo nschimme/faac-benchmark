@@ -946,13 +946,14 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 p_stats[rk][p][s]["speed_sum"] += spd
                 p_stats[rk][p][s]["speed_count"] += 1
 
-    rob_stats = defaultdict(lambda: {"passed": 0, "total": 0})
+    rob_stats = defaultdict(lambda: {"crash_free": 0, "total": 0})
     if robustness_results:
         for r_res in robustness_results:
             rk = r_res["row_key"]
             rob_stats[rk]["total"] += 1
-            if r_res.get("passed"):
-                rob_stats[rk]["passed"] += 1
+            is_cf = r_res.get("crash_free") if "crash_free" in r_res else (r_res.get("passed") or (not r_res.get("timeout") and not r_res.get("runaway")))
+            if is_cf:
+                rob_stats[rk]["crash_free"] += 1
 
     overall = {}
     for rk, dec_obj in decoder_info.items():
@@ -979,7 +980,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 d_speed.append(st["speed_sum"] / st["speed_count"])
 
         rob_info = rob_stats[rk]
-        robustness_pct = (rob_info["passed"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
+        robustness_pct = (rob_info["crash_free"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
 
         overall[rk] = {
             "tool": dec_obj.name,
@@ -1552,8 +1553,9 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
             n_pass = sum(1 for r in rows if r.get("passed") and not r.get("runaway"))
             n_timeout = sum(1 for r in rows if r.get("timeout"))
             n_runaway = sum(1 for r in rows if r.get("runaway"))
-            n_fail = sum(1 for r in rows if not r.get("passed") and not r.get("timeout") and not r.get("runaway"))
-            f.write(f"| {dec.name} | {n_pass} | {n_fail} | {n_timeout} | {n_runaway} |\n")
+            n_fail = sum(1 for r in rows if (r.get("crash") or (not r.get("passed") and not r.get("error_exit") and not r.get("timeout") and not r.get("runaway"))))
+            n_err_exit = sum(1 for r in rows if r.get("error_exit") and not r.get("crash") and not r.get("timeout") and not r.get("runaway"))
+            f.write(f"| {dec.name} | {n_pass} | {n_err_exit} | {n_timeout} | {n_runaway} |\n")
         f.write("\n")
         f.write("*An error exit on a corrupted stream is acceptable; a timeout or runaway is not.*\n\n")
 

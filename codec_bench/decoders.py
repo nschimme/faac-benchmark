@@ -836,44 +836,51 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
 
     cmd = decoder.get_decode_cmd(corrupt_path, dec_corrupt_wav)
     runaway = False
+    is_crash = False
+    is_timeout = False
+    is_error_exit = False
+    passed = False
+
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
-        passed = (res.returncode == 0)
-        is_timeout = (res.returncode == -124) or ("timed out" in (res.stderr or "").lower())
+        stderr_low = (res.stderr or "").lower()
+        is_timeout = (res.returncode == -124) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
+        is_crash = (res.returncode < 0) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
 
-        if passed and os.path.exists(dec_corrupt_wav):
-            # A corrupted stream that decodes "successfully" but keeps
-            # synthesizing PCM well past where the intact stream would have
-            # ended (a desynced length field, usually) is not a clean pass --
-            # bound it against the intact source's expected PCM size rather
-            # than calling it a pass just because the exit code was 0.
-            cfg = SCENARIOS.get(scenario_name, {})
-            ref_path = res_item.get("ref_path")
-            duration_s = ffmpeg_probe(ref_path) if ref_path else None
-            if duration_s and cfg:
-                expected_bytes = duration_s * scenario_rate(cfg) * scenario_channels(cfg) * 2 + 44
-                if os.path.getsize(dec_corrupt_wav) > ROBUSTNESS_RUNAWAY_FACTOR * expected_bytes:
-                    runaway = True
-                    passed = False
+        if not is_timeout and not is_crash:
+            if res.returncode == 0:
+                passed = True
+                if os.path.exists(dec_corrupt_wav):
+                    cfg = SCENARIOS.get(scenario_name, {})
+                    ref_path = res_item.get("ref_path")
+                    duration_s = ffmpeg_probe(ref_path) if ref_path else None
+                    if duration_s and cfg:
+                        expected_bytes = duration_s * scenario_rate(cfg) * scenario_channels(cfg) * 2 + 44
+                        if os.path.getsize(dec_corrupt_wav) > ROBUSTNESS_RUNAWAY_FACTOR * expected_bytes:
+                            runaway = True
+                            passed = False
+            else:
+                is_error_exit = True
     except BaseException as e:
-        passed = False
-        is_timeout = "timed out" in str(e).lower() or "timeout" in str(e).lower()
+        e_str = str(e).lower()
+        if "timed out" in e_str or "timeout" in e_str:
+            is_timeout = True
+        else:
+            is_crash = True
     finally:
         if temp_adts and os.path.exists(temp_adts):
             try:
                 os.remove(temp_adts)
             except OSError:
                 pass
-        # The corrupted bitstream and its decode are scratch: a runaway
-        # decode can be gigabytes, and even a normal one has no further use
-        # once pass/fail is recorded. Leaving these behind previously filled
-        # the output directory.
         for scratch in (corrupt_path, dec_corrupt_wav):
             if os.path.exists(scratch):
                 try:
                     os.remove(scratch)
                 except OSError:
                     pass
+
+    crash_free = (passed or is_error_exit) and not is_timeout and not runaway and not is_crash
 
     return {
         "tool": decoder.name,
@@ -882,6 +889,9 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
         "scenario": scenario_name,
         "filename": sample,
         "passed": passed,
+        "error_exit": is_error_exit,
+        "crash": is_crash,
         "timeout": is_timeout,
-        "runaway": runaway
+        "runaway": runaway,
+        "crash_free": crash_free
     }
