@@ -37,6 +37,7 @@ class TestReport(unittest.TestCase):
                 self.assertIn("25.5 dB", text)
                 self.assertIn("2.50 ms", text)
                 self.assertIn("█", text)
+                self.assertIn("Decoder Metric Legend", text)
 
     def test_decoder_quality_outliers_and_mono_downmix(self):
         with tempfile.TemporaryDirectory() as td:
@@ -86,6 +87,33 @@ class TestReport(unittest.TestCase):
                 text = f.read()
                 self.assertIn("1x timeout", text)
                 self.assertIn("Timeout expired", text)
+
+    def test_methodology_and_failure_diagnostics_sections(self):
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            e1 = enc.FAACEncoder("FAAC 2.1", "/bin/true", "faac", profile="lc")
+            results = [
+                {
+                    "tool": "FAAC 2.1", "row_key": "faac_lc", "scenario": "48k_stereo_64k",
+                    "filename": "clip1.wav", "profile": "lc", "duration": 0.01,
+                    "audio_duration": 5.0, "actual_bitrate": 64.0, "target_bitrate": 64,
+                    "mos": 4.5, "decode_valid": True, "decode_error": ""
+                },
+                {
+                    "tool": "FAAC 2.1", "row_key": "faac_lc", "scenario": "48k_stereo_64k",
+                    "filename": "clip2.wav", "profile": "lc", "duration": 0.0,
+                    "audio_duration": 5.0, "actual_bitrate": None, "target_bitrate": 64,
+                    "mos": None, "decode_valid": False, "decode_error": "Encoding failed: exit code 1"
+                }
+            ]
+
+            rep.generate_leaderboard([e1], results, out_md, ["48k_stereo_64k"], skip_graphs=True)
+            self.assertTrue(os.path.exists(out_md))
+            with open(out_md) as f:
+                text = f.read()
+                self.assertIn("Methodology & Ranking Note", text)
+                self.assertIn("Failure Analysis & Debugging Diagnostics", text)
+                self.assertIn("Encoding failed: exit code 1", text)
 
 if __name__ == "__main__":
     unittest.main()

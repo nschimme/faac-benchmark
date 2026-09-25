@@ -72,5 +72,35 @@ class TestDecoders(unittest.TestCase):
             self.assertTrue(res["decode_valid"])
             self.assertIsNotNone(res["mos"])
 
+    def test_decoder_robustness_task_error_exit_is_crash_free(self):
+        class ErrorExitDecoder(dec.Decoder):
+            def __init__(self):
+                super().__init__("ErrExitDecoder", "/bin/sh", "err_exit_dec")
+
+            def get_decode_cmd(self, input_path, output_path):
+                return ["sh", "-c", "exit 1"]
+
+        with tempfile.TemporaryDirectory() as td:
+            in_aac = os.path.join(td, "in.aac")
+            fake_adts = b"\xff\xf1\x50\x80\x01\x3f\xfc" + b"\x00" * 30
+            with open(in_aac, "wb") as f:
+                f.write(fake_adts * 10)
+
+            res_item = {
+                "row_key": "enc_row_1",
+                "scenario": "48k_stereo_128k",
+                "filename": "sample.wav",
+                "aac_path": in_aac,
+                "profile": "lc"
+            }
+
+            decoder = ErrorExitDecoder()
+            res = dec.process_decoder_robustness_task(decoder, res_item, td)
+            self.assertIsNotNone(res)
+            self.assertFalse(res["passed"])
+            self.assertTrue(res["error_exit"])
+            self.assertFalse(res["crash"])
+            self.assertTrue(res["crash_free"])
+
 if __name__ == "__main__":
     unittest.main()

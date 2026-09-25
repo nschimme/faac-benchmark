@@ -47,6 +47,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     }))
 
     error_counts = defaultdict(int)
+    error_details = defaultdict(list)
     clip_mos = defaultdict(dict)
     bug_flags = []
 
@@ -58,6 +59,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             err_msg = res.get("decode_error") or "Unknown error"
             short_err = err_msg.split("\n")[0].split(":")[0].strip()
             error_counts[(e, short_err)] += 1
+            error_details[e].append({
+                "scenario": s,
+                "profile": res.get("profile", "lc"),
+                "filename": res.get("filename", "n/a"),
+                "error": err_msg
+            })
 
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
@@ -222,9 +229,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("### Overall Encoder Rankings\n\n")
-        f.write("> **Note**: Overall MOS averages the scenario set listed below, so absolute "
-                "values are only comparable between leaderboards built from the same set of "
-                "scenarios. Relative ranking is unaffected.\n\n")
+        f.write("> **Methodology & Ranking Note**: Encoders are ranked primarily by **Worst MOS** "
+                "(minimum clip score across all scenarios) to penalize severe artifacts on killer clips, "
+                "with **Overall MOS** (averaging all scenarios) as tiebreaker. "
+                "Per-scenario curves (e.g., 48 kHz Average MOS) display average performance on specific subsets "
+                "and may show different relative standings than the overall worst-case resilience metric.\n\n")
         f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
@@ -785,7 +794,26 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("</details>\n\n")
 
-        # 9. Quality Outliers (Outlier clip bug flags)
+        # 9. Failure Analysis & Debugging Diagnostics
+        if error_details:
+            f.write("<details><summary><b>⚠️ View Failure Analysis & Debugging Diagnostics</b></summary>\n\n")
+            f.write("### Failure Analysis & Debugging Diagnostics\n\n")
+            f.write("> **Note**: Details process failures, execution errors, or unsupported profile/scenario mismatches encountered during evaluation.\n\n")
+
+            f.write("| Encoder | Profile | Scenario | File / Clip | Error Details |\n")
+            f.write("| :--- | :---: | :--- | :--- | :--- |\n")
+
+            for rk_err, err_list in error_details.items():
+                enc_name = encoder_info[rk_err].name if rk_err in encoder_info else rk_err
+                for err_item in err_list:
+                    p = profile_label(err_item['profile'])
+                    sc = err_item['scenario']
+                    fn = err_item['filename']
+                    msg = err_item['error'].replace("\n", " ")
+                    f.write(f"| {enc_name} | {p} | {sc} | `{fn}` | {msg} |\n")
+            f.write("\n</details>\n\n")
+
+        # 10. Quality Outliers (Outlier clip bug flags)
         if bug_flags:
             f.write("<details><summary><b>🐛 View Quality Outliers (Issues Worth Investigating)</b></summary>\n\n")
             f.write("### Quality Outliers (Issues Worth Investigating)\n\n")
@@ -918,13 +946,14 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 p_stats[rk][p][s]["speed_sum"] += spd
                 p_stats[rk][p][s]["speed_count"] += 1
 
-    rob_stats = defaultdict(lambda: {"passed": 0, "total": 0})
+    rob_stats = defaultdict(lambda: {"crash_free": 0, "total": 0})
     if robustness_results:
         for r_res in robustness_results:
             rk = r_res["row_key"]
             rob_stats[rk]["total"] += 1
-            if r_res.get("passed"):
-                rob_stats[rk]["passed"] += 1
+            is_cf = r_res.get("crash_free") if "crash_free" in r_res else (r_res.get("passed") or (not r_res.get("timeout") and not r_res.get("runaway")))
+            if is_cf:
+                rob_stats[rk]["crash_free"] += 1
 
     overall = {}
     for rk, dec_obj in decoder_info.items():
@@ -951,7 +980,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 d_speed.append(st["speed_sum"] / st["speed_count"])
 
         rob_info = rob_stats[rk]
-        robustness_pct = (rob_info["passed"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
+        robustness_pct = (rob_info["crash_free"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
 
         overall[rk] = {
             "tool": dec_obj.name,
@@ -1265,6 +1294,19 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 f.write(f"| {tool_name} | {profile_label(p)} | {s_name} | `{filename}` | {this_mos:.2f} | {peer_avg:.2f} | **-{gap:.2f} MOS** | {issue} |\n")
             f.write("\n</details>\n\n")
 
+        # Metric Legend & Footnotes for Decoders
+        f.write("\n---\n")
+        f.write("**Decoder Metric Legend**:\n")
+        f.write("- **Ranking**: by Worst MOS, then Overall MOS as tiebreaker.\n")
+        f.write("- **Worst MOS**: Minimum perceptual MOS score observed across any clip in any scenario (**Higher is Better**)\n")
+        f.write("- **Overall MOS**: Perceptual audio quality averaged across all scenarios (1-5, **Higher is Better**)\n")
+        f.write("- **Mean SNR**: Specification conformance signal-to-noise ratio in dB vs reference decode (**Higher is Better**)\n")
+        f.write("- **Timing Error**: Sample alignment offset delay in ms (**Lower is Better**)\n")
+        f.write("- **Robustness**: Crash-free decoding rate on corrupted ADTS bitstreams (**Higher is Better**)\n")
+        f.write("- **Speed**: Decoding throughput in xRealtime (**Higher is Better**)\n")
+        f.write("- **Peak RAM**: Peak dynamic memory allocation during decode (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Decoder binary code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
+
     print(f"\nDecoder leaderboard generated at: {output_path}")
 
 
@@ -1511,8 +1553,9 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
             n_pass = sum(1 for r in rows if r.get("passed") and not r.get("runaway"))
             n_timeout = sum(1 for r in rows if r.get("timeout"))
             n_runaway = sum(1 for r in rows if r.get("runaway"))
-            n_fail = sum(1 for r in rows if not r.get("passed") and not r.get("timeout") and not r.get("runaway"))
-            f.write(f"| {dec.name} | {n_pass} | {n_fail} | {n_timeout} | {n_runaway} |\n")
+            n_fail = sum(1 for r in rows if (r.get("crash") or (not r.get("passed") and not r.get("error_exit") and not r.get("timeout") and not r.get("runaway"))))
+            n_err_exit = sum(1 for r in rows if r.get("error_exit") and not r.get("crash") and not r.get("timeout") and not r.get("runaway"))
+            f.write(f"| {dec.name} | {n_pass} | {n_err_exit} | {n_timeout} | {n_runaway} |\n")
         f.write("\n")
         f.write("*An error exit on a corrupted stream is acceptable; a timeout or runaway is not.*\n\n")
 

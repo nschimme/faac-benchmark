@@ -45,6 +45,18 @@ class TestEncoders(unittest.TestCase):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")
 
+    def test_afconvert_supports_scenario(self):
+        af_lc = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
+        ok_lc_6ch, _ = af_lc.supports_scenario(256, 6, 44100)
+        self.assertTrue(ok_lc_6ch)
+
+        af_he = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
+        ok_he_2ch, _ = af_he.supports_scenario(64, 2, 44100)
+        self.assertTrue(ok_he_2ch)
+        ok_he_6ch, reason = af_he.supports_scenario(160, 6, 44100)
+        self.assertFalse(ok_he_6ch)
+        self.assertIn("max 2 channels", reason)
+
     def test_detect_encoders_optin_variations(self):
         import argparse
         # By default, variations like PNS-off and ADTS should be omitted.
