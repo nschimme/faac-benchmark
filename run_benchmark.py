@@ -10,6 +10,7 @@
 
 import os
 import sys
+import json
 import subprocess
 import argparse
 import platform
@@ -18,13 +19,18 @@ import shutil
 import copy
 
 from utils import calculate_provenance_hash, get_git_tag
+from codec_bench.decoders import get_decoder_instance
 
 def main():
     parser = argparse.ArgumentParser(description="FAAC Benchmark Suite")
-    parser.add_argument("faac_bin", help="Path to faac binary")
-    parser.add_argument("lib_path", help="Path to libfaac.so")
     parser.add_argument("name", help="Name for this run")
     parser.add_argument("output", help="Output JSON path")
+    parser.add_argument("--encoder", default="faac", help="Encoder type: faac, ffmpeg, fdkaac, aac_enc, falabaac, afconvert, opus, lame")
+    parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary")
+    parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library override")
+    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder-bin", help="Path to decoder binary")
+    parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
     parser.add_argument("--skip-encode", action="store_true",
@@ -45,10 +51,11 @@ def main():
                         help="Rate control mode: abr (-b), vbr (-q), or cbr (-b --cbr: bit reservoir, exact rate)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
-    parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
     parser.add_argument("--diff", nargs=2, help="Standalone diff of two result JSONs")
 
     args, unknown = parser.parse_known_args()
+
+    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
 
     # A bare filename (no directory component) is an ad hoc/manual run --
     # default it under results/ instead of littering the repo root. Callers
@@ -123,16 +130,20 @@ def main():
         run_env = os.environ.copy()
         run_env.update(run["env"])
         if args.faac_git_sha: run_env["FAAC_GIT_SHA"] = args.faac_git_sha
-        if args.faac_precision: run_env["FAAC_PRECISION"] = args.faac_precision
 
         # Phase 1: Encoding
         print(">>> Phase 1: Encoding and Basic Metrics")
         cmd_phase1 = [
             sys.executable, phase1_script,
-            args.faac_bin, args.lib_path, run["tag"], run["output"],
+            run["tag"], run["output"],
+            "--encoder", args.encoder,
             "--coverage", str(args.coverage),
             "--rate-control", args.rate_control
         ]
+        if args.encoder_bin:
+            cmd_phase1.extend(["--encoder-bin", args.encoder_bin])
+        if args.encoder_lib:
+            cmd_phase1.extend(["--encoder-lib", args.encoder_lib])
         if args.sha:
             cmd_phase1.extend(["--sha", args.sha])
         if args.scenarios:
@@ -165,37 +176,55 @@ def main():
         if args.skip_mos:
             print(">>> Skipping Phase 2 as requested.")
         else:
-            print(">>> Phase 2: Perceptual Quality (MOS)")
+            print(f">>> Phase 2: Perceptual Quality (MOS) using decoder: {decoder_inst.name}")
             cmd_phase2 = [
                 sys.executable, phase2_script,
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
-                "--faac-bin", args.faac_bin,
-                "--lib-path", args.lib_path
+                "--decoder", args.decoder
             ]
+            if args.encoder_bin and args.encoder_lib:
+                cmd_phase2.extend(["--encoder-bin", args.encoder_bin, "--encoder-lib", args.encoder_lib])
+            if args.decoder_bin:
+                cmd_phase2.extend(["--decoder-bin", args.decoder_bin])
+            if args.decoder_lib:
+                cmd_phase2.extend(["--decoder-lib", args.decoder_lib])
             if run["extra_args"]:
                 cmd_phase2.append(f"--extra-args={' '.join(run['extra_args'])}")
             subprocess.run(cmd_phase2, env=run_env, check=True)
 
-        # Phase 3: Stereo image fidelity + transient fidelity. Nothing to
-        # score without a matrix, and a throughput refresh deliberately has
-        # none. The two metrics share a decode pass (see phase3_stereo.py's
-        # module docstring), so they ride the same phase; each can still be
-        # skipped independently via --skip-stereo / --skip-transient.
+        # Phase 3: Stereo image fidelity + transient fidelity.
         if not args.skip_encode and not (args.skip_stereo and args.skip_transient):
-            print(">>> Phase 3: Stereo Image Fidelity + Transient Fidelity")
+            print(f">>> Phase 3: Stereo Image Fidelity + Transient Fidelity using decoder: {decoder_inst.name}")
             cmd_phase3 = [
                 sys.executable, phase3_script,
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
+                "--decoder", args.decoder
             ]
+            if args.decoder_bin:
+                cmd_phase3.extend(["--decoder-bin", args.decoder_bin])
+            if args.decoder_lib:
+                cmd_phase3.extend(["--decoder-lib", args.decoder_lib])
             if args.skip_stereo:
                 cmd_phase3.append("--skip-stereo")
             if args.skip_transient:
                 cmd_phase3.append("--skip-transient")
             subprocess.run(cmd_phase3, check=True)
+
+        # Update JSON with decoder metadata
+        if os.path.exists(run["output"]):
+            try:
+                with open(run["output"], "r") as f:
+                    res_data = json.load(f)
+                res_data["decoder_name"] = decoder_inst.name
+                res_data["decoder_version"] = getattr(decoder_inst, "tool_id", "unknown")
+                with open(run["output"], "w") as f:
+                    json.dump(res_data, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Failed to update decoder metadata in {run['output']}: {e}")
 
 
         print(f">>> Benchmark run {run['tag']} complete.")

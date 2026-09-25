@@ -29,7 +29,7 @@ python3 setup_datasets.py
 ## 3. Run a benchmark
 
 ```bash
-python3 run_benchmark.py <faac> <libfaac.so> <name> <output.json> [options]
+python3 run_benchmark.py <name> <output.json> [options]
 ```
 
 A bare `<output.json>` (no directory component, e.g. `test.json`) is written
@@ -41,6 +41,10 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
+| `--encoder faac\|ffmpeg\|fdkaac\|aac_enc\|falabaac\|afconvert\|opus\|lame` | Pluggable encoder choice for Phase 1 encoding (default: `faac`) |
+| `--encoder-bin <path>` / `--encoder-lib <path>` | Path overrides for pluggable encoder binary or library |
+| `--decoder ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Pluggable decoder choice for Phase 2 (MOS) and Phase 3 (Stereo/Transient) evaluation passes (default: `ffmpeg`) |
+| `--decoder-bin <path>` / `--decoder-lib <path>` | Path overrides for pluggable decoder binary or library |
 | `--rate-control abr\|vbr\|cbr` | Choose rate control mode (`abr` using `-b` bitrates, `vbr` using `-q` quality targets, or `cbr` using `-b --cbr`: the bit reservoir holds the rate exactly, so `bias_percent` is a hard target there) |
 | `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
@@ -80,7 +84,7 @@ only for the final check.
 Encode the same corpus two ways and get a ranked per-clip diff automatically:
 
 ```bash
-python3 run_benchmark.py <faac> <lib> ab out.json \
+python3 run_benchmark.py ab out.json \
     --gate --compare "lc:--object-type lc" "he:--object-type he-aac"
 ```
 
@@ -95,9 +99,9 @@ each auto-diffed against the first:
 
 ```bash
 # faac CLI flag:
-python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "--pns=0,2,4"
+python3 run_benchmark.py sw out.json --gate --sweep "--pns=0,2,4"
 # environment variable (for instrumented builds with tuning hooks):
-python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
+python3 run_benchmark.py sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
 ```
 
 Bitrate is **not** sweepable — it defines a scenario's identity (`48k_stereo_64k` is
@@ -109,11 +113,14 @@ a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 Benchmark `faac` and `faad` against other available AAC encoders (FDK-AAC, FFmpeg internal, Apple AudioToolbox, etc.) and decoders (FAAD2, FFmpeg, Apple AudioToolbox) to generate a competitive leaderboard. Encoders and decoders can be evaluated independently or together via `--mode encoder|decoder|both`.
 
 ```bash
-python3 compare_codecs.py [options]
+python3 compare_codecs.py [saved_results.json ...] [options]
 ```
+
+`compare_codecs.py` automatically detects and aggregates saved JSON runs from `results/` and the current working directory, reusing prior encoder/decoder evaluations to skip completed tasks, regenerate reports instantly, or run differential benchmarks when encoder or decoder binaries change.
 
 Options:
 - `--mode encoder|decoder|both`: Benchmarking mode (default: `both`).
+- `--resume`: Reuse cached comparison results when available.
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
 - `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--faad-bin`, `--afconvert-bin`: Manual paths to encoder/decoder binaries.

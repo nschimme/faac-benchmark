@@ -13,12 +13,12 @@ from codec_bench.encoders import (
     use_he_aac, use_he_v2_aac, Encoder, FAACEncoder, FFmpegEncoder,
     FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder,
     OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
-    detect_encoders
+    get_encoder_instance, detect_encoders
 )
 
 from codec_bench.decoders import (
     decoder_row_key, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder,
-    HelixAACDecoder, FDKDecoder, detect_decoders, process_decoder_task, process_decoder_robustness_task,
+    HelixAACDecoder, FDKDecoder, get_decoder_instance, detect_decoders, process_decoder_task, process_decoder_robustness_task,
     get_conformance_ref_wav, get_conformance_ref_offset, CONFORMANCE_SNR_FLOOR_DB
 )
 

@@ -46,7 +46,7 @@ jobs:
           fi
 
           mkdir -p results
-          python3 run_benchmark.py "/usr/bin/faac" "/usr/lib/x86_64-linux-gnu/libfaac.so.0" "faac_base" "results/faac_base.json" $GATE_FLAG
+          python3 run_benchmark.py "faac_base" "results/faac_base.json" --encoder-bin "/usr/bin/faac" --encoder-lib "/usr/lib/x86_64-linux-gnu/libfaac.so.0" $GATE_FLAG
 
       - name: Run Benchmark (Candidate - FAAC HEAD)
         run: |
@@ -58,7 +58,7 @@ jobs:
           FAAC_BIN="$(pwd)/../faac_src/build/frontend/faac"
           FAAC_LIB="$(pwd)/../faac_src/build/libfaac/libfaac.so"
 
-          python3 run_benchmark.py "$FAAC_BIN" "$FAAC_LIB" "faac_cand" "results/faac_cand.json" $GATE_FLAG
+          python3 run_benchmark.py "faac_cand" "results/faac_cand.json" --encoder-bin "$FAAC_BIN" --encoder-lib "$FAAC_LIB" $GATE_FLAG
 
       - name: Generate Consolidated Comparison Report
         run: |

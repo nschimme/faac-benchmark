@@ -32,6 +32,7 @@ import numpy as np
 
 from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
                    get_cached_ref_wav, corpus_dir, scenario_channels)
+from codec_bench.decoders import get_decoder_instance
 
 try:
     import ffmpeg
@@ -298,7 +299,38 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     return None, "none"
 
 
-def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac_files=None, ref_wav_cache_dir=None):
+def decode_bitstream(decoder, bitstream_path, output_wav_path, rate=None, channels=None):
+    """Decodes a bitstream using a pluggable decoder instance."""
+    if not decoder or decoder.tool_id == "ffmpeg_aac":
+        return wav_conv(bitstream_path, output_wav_path, rate=rate, channels=channels)
+
+    with tempfile.TemporaryDirectory() as td:
+        requires_adts = getattr(decoder, "requires_adts", False)
+        bitstream_input = bitstream_path
+
+        if requires_adts and bitstream_path.lower().endswith((".m4a", ".mp4")):
+            temp_adts = os.path.join(td, "demux.aac")
+            cmd_demux = ["ffmpeg", "-y", "-i", bitstream_path, "-c:a", "copy", temp_adts]
+            try:
+                res_demux = subprocess.run(cmd_demux, capture_output=True, text=True)
+                if res_demux.returncode == 0 and os.path.exists(temp_adts):
+                    bitstream_input = temp_adts
+            except Exception:
+                pass
+
+        raw_dec_wav = os.path.join(td, "raw_dec.wav")
+        cmd_dec = decoder.get_decode_cmd(bitstream_input, raw_dec_wav)
+        try:
+            res_dec = subprocess.run(cmd_dec, capture_output=True, text=True, env=decoder.get_run_env() or None)
+            if res_dec.returncode == 0 and os.path.exists(raw_dec_wav):
+                return wav_conv(raw_dec_wav, output_wav_path, rate=rate, channels=channels)
+        except Exception:
+            pass
+
+    return wav_conv(bitstream_path, output_wav_path, rate=rate, channels=channels)
+
+
+def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac_files=None, ref_wav_cache_dir=None, decoder=None):
     info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files=aac_files)
     if not info or not info["aac_path"]:
         return key, None, "none"
@@ -322,8 +354,8 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac
         if not v_ref:
             return key, None, "none"
 
-        if not wav_conv(aac_path, v_deg, v_rate, v_channels):
-            print(f"  FFmpeg decode gate failed for {key}")
+        if not decode_bitstream(decoder, aac_path, v_deg, v_rate, v_channels):
+            print(f"  Decode failed for {key}")
             return key, 1.0, "none"
 
         mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"))
@@ -336,11 +368,16 @@ def main():
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
-    parser.add_argument("--faac-bin", help="Path to faac binary for provenance verification")
-    parser.add_argument("--lib-path", help="Path to libfaac.so for provenance verification")
+    parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary for provenance verification")
+    parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
+    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder-bin", help="Path to decoder binary")
+    parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
 
     args = parser.parse_args()
+
+    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
 
     results_path = args.results_json
     aac_dir = args.aac_dir
@@ -364,7 +401,7 @@ def main():
     # stale .aac can never be silently re-scored. Mutating entry["mos"]=None
     # here makes the single `pending` comprehension below pick it up.
     stale_count = 0
-    verify_provenance = args.faac_bin and args.lib_path
+    verify_provenance = args.encoder_bin and args.encoder_lib
     if verify_provenance:
         for key, entry in matrix.items():
             if entry.get("mos") is None:
@@ -372,7 +409,7 @@ def main():
             info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files)
             if not info:
                 continue
-            expected_hash = calculate_provenance_hash(args.faac_bin, args.lib_path, args.extra_args, info["ref_input_path"])
+            expected_hash = calculate_provenance_hash(args.encoder_bin, args.encoder_lib, args.extra_args, info["ref_input_path"])
             if entry.get("prov_hash") != expected_hash:
                 print(f"!!! Provenance mismatch for {key}: expected {expected_hash}, "
                       f"found {entry.get('prov_hash')}. The encoded .aac is STALE; refusing its MOS.")
@@ -405,7 +442,7 @@ def main():
         with tempfile.TemporaryDirectory() as ref_wav_cache_dir, \
              concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
             futures = {
-                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, aac_files, ref_wav_cache_dir): key
+                executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, aac_files, ref_wav_cache_dir, decoder_inst): key
                 for key, entry in still_pending.items()
             }
 

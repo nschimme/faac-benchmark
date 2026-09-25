@@ -311,7 +311,7 @@ class TestExpandScenarioList(unittest.TestCase):
 class TestSweepRejectsBitrate(unittest.TestCase):
     def test_sweep_without_scenarios_fails(self):
         r = subprocess.run(
-            [sys.executable, "run_benchmark.py", "f", "l", "n", "out.json", "--sweep", "-b=40,48"],
+            [sys.executable, "run_benchmark.py", "n", "out.json", "--sweep", "-b=40,48"],
             cwd=REPO, capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("scenario", (r.stdout + r.stderr).lower())
@@ -542,7 +542,7 @@ class TestThroughputGate(unittest.TestCase):
 class TestAutoBackendSelection(unittest.TestCase):
     def test_run_benchmark_calls_phase2_mos(self):
         import run_benchmark
-        with patch.object(sys, "argv", ["run_benchmark.py", "bin", "lib", "name", "out.json", "--skip-encode", "--skip-stereo"]):
+        with patch.object(sys, "argv", ["run_benchmark.py", "name", "out.json", "--skip-encode", "--skip-stereo"]):
             with patch("subprocess.run") as mock_subproc:
                 try:
                     run_benchmark.main()
