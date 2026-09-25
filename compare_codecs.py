@@ -300,11 +300,31 @@ def load_all_saved_results(json_paths):
                     loaded_encoders.extend(data)
                 elif isinstance(data, dict):
                     if "matrix" in data and isinstance(data["matrix"], dict):
+                        enc_name = data.get("encoder_name") or data.get("name")
+                        dec_id = data.get("decoder_id") or "ffmpeg_aac"
+                        dec_name = data.get("decoder_name") or "FFmpeg AAC"
                         for k, v in data["matrix"].items():
                             if isinstance(v, dict):
-                                loaded_encoders.append(v)
+                                item = dict(v)
+                                if not item.get("tool") and enc_name:
+                                    item["tool"] = enc_name
+                                if not item.get("decoder_id"):
+                                    item["decoder_id"] = dec_id
+                                if not item.get("decoder_name"):
+                                    item["decoder_name"] = dec_name
+                                # Re-construct aac_path if missing or relative
+                                if not item.get("aac_path") and item.get("aac"):
+                                    cand = os.path.join(SCRIPT_DIR, "output", item["aac"])
+                                    if os.path.exists(cand):
+                                        item["aac_path"] = cand
+                                loaded_encoders.append(item)
                     elif "encoder_results" in data and isinstance(data["encoder_results"], list):
                         loaded_encoders.extend(data["encoder_results"])
+
+                    if "decoder_results" in data and isinstance(data["decoder_results"], list):
+                        loaded_decoders.extend(data["decoder_results"])
+                    if "decoder_robustness_results" in data and isinstance(data["decoder_robustness_results"], list):
+                        loaded_robustness.extend(data["decoder_robustness_results"])
 
             dec_jp = f"{jp}.decoders.json"
             if os.path.exists(dec_jp):
@@ -371,7 +391,7 @@ def main():
     run_decoders = args.mode in ("decoder", "both")
 
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
-    output_dir = os.path.join(SCRIPT_DIR, "output", "compare_codecs")
+    output_dir = os.path.join(SCRIPT_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
 
     if args.scenarios:
