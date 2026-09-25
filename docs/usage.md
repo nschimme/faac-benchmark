@@ -41,6 +41,8 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
+| `--decoder ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Pluggable decoder choice for Phase 2 (MOS) and Phase 3 (Stereo/Transient) evaluation passes (default: `ffmpeg`) |
+| `--decoder-bin <path>` / `--decoder-lib <path>` | Path overrides for pluggable decoder binary or library |
 | `--rate-control abr\|vbr\|cbr` | Choose rate control mode (`abr` using `-b` bitrates, `vbr` using `-q` quality targets, or `cbr` using `-b --cbr`: the bit reservoir holds the rate exactly, so `bias_percent` is a hard target there) |
 | `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
 | `--coverage N` | Sample N% of each scenario's clips (deterministic stride) |
@@ -109,11 +111,14 @@ a scenario at that rate in `config.py` (see [benchmarking.md](benchmarking.md)).
 Benchmark `faac` and `faad` against other available AAC encoders (FDK-AAC, FFmpeg internal, Apple AudioToolbox, etc.) and decoders (FAAD2, FFmpeg, Apple AudioToolbox) to generate a competitive leaderboard. Encoders and decoders can be evaluated independently or together via `--mode encoder|decoder|both`.
 
 ```bash
-python3 compare_codecs.py [options]
+python3 compare_codecs.py [saved_results.json ...] [options]
 ```
+
+`compare_codecs.py` automatically detects and aggregates saved JSON runs from `results/` and the current working directory, reusing prior encoder/decoder evaluations to skip completed tasks, regenerate reports instantly, or run differential benchmarks when encoder or decoder binaries change.
 
 Options:
 - `--mode encoder|decoder|both`: Benchmarking mode (default: `both`).
+- `--resume`: Reuse cached comparison results when available.
 - `--gate`: Use the small fixed gate subset (recommended for quick checks).
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
 - `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--faad-bin`, `--afconvert-bin`: Manual paths to encoder/decoder binaries.

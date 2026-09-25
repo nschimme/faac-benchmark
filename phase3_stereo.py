@@ -63,14 +63,42 @@ from scipy.signal import fftconvolve
 from config import SCENARIOS
 from utils import get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir
 from transient import attack_centroid_deltas
+from codec_bench.decoders import get_decoder_instance
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
 
 
-def decode_audio(path, tmpdir, tag, rate=48000, channels=2):
+def decode_audio(path, tmpdir, tag, rate=48000, channels=2, decoder=None):
     """Decode/transcode any audio file to 48 kHz 16-bit wav with specified channels."""
     out = os.path.join(tmpdir, f"{tag}.wav")
+    if not decoder or decoder.tool_id == "ffmpeg_aac" or tag == "ref":
+        if wav_conv(path, out, rate=rate, channels=channels):
+            return out
+        return None
+
+    requires_adts = getattr(decoder, "requires_adts", False)
+    bitstream_input = path
+    if requires_adts and path.lower().endswith((".m4a", ".mp4")):
+        temp_adts = os.path.join(tmpdir, f"{tag}_demux.aac")
+        cmd_demux = ["ffmpeg", "-y", "-i", path, "-c:a", "copy", temp_adts]
+        try:
+            res_demux = subprocess.run(cmd_demux, capture_output=True, text=True)
+            if res_demux.returncode == 0 and os.path.exists(temp_adts):
+                bitstream_input = temp_adts
+        except Exception:
+            pass
+
+    raw_dec_wav = os.path.join(tmpdir, f"{tag}_raw_dec.wav")
+    cmd_dec = decoder.get_decode_cmd(bitstream_input, raw_dec_wav)
+    try:
+        res_dec = subprocess.run(cmd_dec, capture_output=True, text=True, env=decoder.get_run_env() or None)
+        if res_dec.returncode == 0 and os.path.exists(raw_dec_wav):
+            if wav_conv(raw_dec_wav, out, rate=rate, channels=channels):
+                return out
+    except Exception:
+        pass
+
     if wav_conv(path, out, rate=rate, channels=channels):
         return out
     return None
@@ -190,7 +218,7 @@ def coherence_error(ref_path, deg_path):
 
 
 def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None,
-                    ref_cache_dir=None, want_ic=True, want_transient=True, channels=2):
+                    ref_cache_dir=None, want_ic=True, want_transient=True, channels=2, decoder=None):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
@@ -201,7 +229,7 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
                 return key, None, None
             ref_wav = decode_audio(ref_path, td, "ref", channels=channels)
 
-        deg_wav = decode_audio(aac_path, td, "deg", channels=channels)
+        deg_wav = decode_audio(aac_path, td, "deg", channels=channels, decoder=decoder)
         if not ref_wav or not deg_wav:
             return key, None, None
 
@@ -237,7 +265,12 @@ def main():
                         help="Skip inter-channel coherence (stereo image) scoring")
     parser.add_argument("--skip-transient", action="store_true",
                         help="Skip attack-centroid-shift (transient fidelity) scoring")
+    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder-bin", help="Path to decoder binary")
+    parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     args = parser.parse_args()
+
+    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
 
     want_ic = not args.skip_stereo
     want_transient = not args.skip_transient
@@ -326,6 +359,7 @@ def main():
                     want_ic and entry.get("ic_err") is None,
                     want_transient and entry.get("attack_centroid_ms") is None,
                     scenario_channels(SCENARIOS.get(entry.get("scenario"), {})),
+                    decoder_inst,
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }

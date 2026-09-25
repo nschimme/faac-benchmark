@@ -33,7 +33,7 @@ from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
                    decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
                    get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy,
-                   get_audio_es_bytes, ffmpeg_probe, measure_peak_ram)
+                   get_audio_es_bytes, ffmpeg_probe, measure_peak_ram, probe_version)
 
 # Ensure the current directory is in the path for config import
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -247,11 +247,17 @@ def run_benchmark(
     if exact_rom_size == 0:
         exact_rom_size = get_binary_size(lib_path)
 
+    faac_ver = probe_version(faac_bin_path, ["-H", "--help-advanced", "--help", "-h", "-v"],
+                             [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)",
+                              r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+
     results = {
         "name": precision,
         "sha": sha,
         "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
         "faac_precision": os.environ.get("FAAC_PRECISION"),
+        "encoder_name": f"FAAC {faac_ver}" if faac_ver else "FAAC",
+        "encoder_version": faac_ver or "unknown",
         "faac_args": " ".join(extra_args) if extra_args else "",
         "matrix": {},
         "throughput": {},

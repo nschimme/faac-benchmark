@@ -43,7 +43,6 @@ if sys.platform == "darwin":
 else:
     os.environ.setdefault("NUMBA_THREADING_LAYER", "omp")
 
-import phase2_mos
 from config import SCENARIOS
 
 def decoder_row_key(decoder):
@@ -191,6 +190,122 @@ def probe_decoder_capability(decoder):
             return True
 
 
+def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=None, version=None):
+    """Instantiates a Decoder instance for a given decoder type or binary path."""
+    decoder_type = (decoder_type or "ffmpeg").lower().strip()
+
+    if decoder_type in ("ffmpeg", "ffmpeg_aac"):
+        f_bin = binary_path or get_ffmpeg_path()
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            res = safe_run([f_bin, "-version"], capture_output=True, check=False)
+            stdout_str = res.stdout if isinstance(res.stdout, str) else str(res.stdout or "")
+            m = re.search(r"ffmpeg version (\S+)", stdout_str)
+            ver = m.group(1) if m else None
+        display_name = f"FFmpeg AAC {ver}" if ver else "FFmpeg AAC"
+        return FFmpegDecoder(display_name, f_bin, "ffmpeg_aac")
+
+    elif decoder_type in ("faad", "faad2", "faad3"):
+        f_bin = binary_path or get_faad_path()
+        raw_text = ""
+        if f_bin and os.path.exists(f_bin):
+            for flag in ["-h", "--help", "-v"]:
+                try:
+                    res = subprocess.run([f_bin, flag], capture_output=True, text=True, timeout=5)
+                    raw_text += (res.stdout or "") + (res.stderr or "")
+                except Exception:
+                    pass
+        is_faad3 = bool(re.search(r"Freeware Advanced Audio Decoder|FAAD3", raw_text, re.IGNORECASE))
+        base_name = "FAAD3" if is_faad3 else "FAAD2"
+        base_id = "faad3" if is_faad3 else "faad2"
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-h", "--help", "-v"],
+                                [r"Freeware Advanced Audio Decoder\s*\(v?(\d+\.\d+(?:\.\d+)*)\)",
+                                 r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
+                                 r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
+                                 r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"{base_name} {ver}" if ver else base_name
+        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override)
+
+    elif decoder_type in ("helix", "helix_aac", "helix-aac-dec"):
+        h_bin = binary_path
+        if not h_bin:
+            script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            default_bin = os.path.join(script_root, "bin", "helix-aac-dec")
+            if os.path.exists(default_bin):
+                h_bin = default_bin
+            else:
+                build_script = os.path.join(script_root, "scripts", "build_helix_aac.sh")
+                if os.path.exists(build_script):
+                    try:
+                        res = safe_run([build_script], capture_output=True, check=False)
+                        if res.returncode == 0 and res.stdout.strip() and os.path.exists(res.stdout.strip()):
+                            h_bin = res.stdout.strip()
+                    except Exception:
+                        pass
+        ver = version
+        if not ver and h_bin and os.path.exists(h_bin):
+            ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"Helix AAC {ver}" if ver else "Helix AAC"
+        return HelixAACDecoder(display_name, h_bin, "helix_aac")
+
+    elif decoder_type in ("fdkdec", "fdk", "fdk_aac", "fdk_aac_dec"):
+        f_bin = binary_path
+        if not f_bin:
+            script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            default_bin = os.path.join(script_root, "bin", "fdkdec")
+            if os.path.exists(default_bin):
+                f_bin = default_bin
+            else:
+                build_script = os.path.join(script_root, "scripts", "build_fdkdec.sh")
+                if os.path.exists(build_script):
+                    try:
+                        res = safe_run([build_script], capture_output=True, check=False)
+                        if res.returncode == 0 and res.stdout.strip() and os.path.exists(res.stdout.strip()):
+                            f_bin = res.stdout.strip()
+                    except Exception:
+                        pass
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-v", "--version"], [r"libfdk-aac\s+(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"FDK AAC {ver}" if ver else "FDK AAC"
+        return FDKDecoder(display_name, f_bin, "fdk_aac_dec")
+
+    elif decoder_type in ("afconvert", "apple"):
+        a_bin = binary_path or shutil.which("afconvert")
+        ver = version
+        if not ver and a_bin and os.path.exists(a_bin):
+            ver = probe_version(a_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+            if not ver and sys.platform == "darwin":
+                try:
+                    import platform
+                    mac_v = platform.mac_ver()[0]
+                    if mac_v:
+                        ver = mac_v
+                except Exception:
+                    pass
+        display_name = f"Apple AAC {ver}" if ver else "Apple AAC"
+        return AFConvertDecoder(display_name, a_bin, "afconvert")
+
+    else:
+        # If binary_path is provided directly or decoder_type is a file path
+        if os.path.exists(decoder_type):
+            # Infer type from binary filename
+            base = os.path.basename(decoder_type).lower()
+            if "faad" in base:
+                return get_decoder_instance("faad", binary_path=decoder_type, lib_override=lib_override, version=version)
+            elif "helix" in base:
+                return get_decoder_instance("helix", binary_path=decoder_type, version=version)
+            elif "fdk" in base:
+                return get_decoder_instance("fdkdec", binary_path=decoder_type, version=version)
+            elif "afconvert" in base:
+                return get_decoder_instance("afconvert", binary_path=decoder_type, version=version)
+            else:
+                return get_decoder_instance("ffmpeg", binary_path=decoder_type, version=version)
+        raise ValueError(f"Unknown decoder type or invalid binary path: {decoder_type}")
+
+
 def detect_decoders(args):
     decoders = []
     existing_names = set()
@@ -205,35 +320,14 @@ def detect_decoders(args):
             faad_bins = [faad_path]
 
     for idx, f_bin in enumerate(faad_bins):
-        # Only apply a --faad-lib override to the bin at the same index; a
-        # single override must not silently leak onto other --faad-bin
-        # entries when multiple faad decoders are compared side by side.
         f_lib = faad_libs[idx] if idx < len(faad_libs) else None
         ver = faad_vers[idx] if idx < len(faad_vers) else None
-
-        raw_text = ""
-        for flag in ["-h", "--help", "-v"]:
-            try:
-                res = subprocess.run([f_bin, flag], capture_output=True, text=True, timeout=5)
-                raw_text += (res.stdout or "") + (res.stderr or "")
-            except Exception:
-                pass
-        # Our libfaad (FAAD3) reports "Freeware Advanced Audio Decoder
-        # (vX.Y.Z)"; upstream FAAD2 reports "MPEG-4 AAC Decoder VX.Y.Z". Base
-        # the display name on which one actually responded rather than
-        # assuming every --faad-bin is FAAD2.
-        is_faad3 = bool(re.search(r"Freeware Advanced Audio Decoder|FAAD3", raw_text, re.IGNORECASE))
-        base_name = "FAAD3" if is_faad3 else "FAAD2"
-        base_id = "faad3" if is_faad3 else "faad2"
-
-        if not ver:
-            ver = probe_version(f_bin, ["-h", "--help", "-v"],
-                                [r"Freeware Advanced Audio Decoder\s*\(v?(\d+\.\d+(?:\.\d+)*)\)",
-                                 r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
-                                 r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
-                                 r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        name, tool_id = make_unique_name_and_id(base_name, ver, base_id, existing_names, existing_ids)
-        dec = FAADDecoder(name, f_bin, tool_id, lib_override=f_lib)
+        dec = get_decoder_instance("faad", binary_path=f_bin, lib_override=f_lib, version=ver)
+        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                dec.tool_id, existing_names, existing_ids)
+        dec.name = name
+        dec.tool_id = tool_id
         if probe_decoder_capability(dec):
             decoders.append(dec)
 
@@ -244,27 +338,23 @@ def detect_decoders(args):
         ffmpeg_bin = ffmpeg_raw or get_ffmpeg_path()
 
     if ffmpeg_bin and os.path.exists(ffmpeg_bin):
-        res = safe_run([ffmpeg_bin, "-version"], capture_output=True, check=False)
-        m = re.search(r"ffmpeg version (\S+)", res.stdout)
-        ffmpeg_ver = m.group(1) if m else None
-        name, tool_id = make_unique_name_and_id("FFmpeg AAC", ffmpeg_ver, "ffmpeg_aac", existing_names, existing_ids)
-        dec = FFmpegDecoder(name, ffmpeg_bin, tool_id)
+        dec = get_decoder_instance("ffmpeg", binary_path=ffmpeg_bin)
+        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                dec.tool_id, existing_names, existing_ids)
+        dec.name = name
+        dec.tool_id = tool_id
         if probe_decoder_capability(dec):
             decoders.append(dec)
 
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
-        ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        if not ver and sys.platform == "darwin":
-            try:
-                import platform
-                mac_v = platform.mac_ver()[0]
-                if mac_v:
-                    ver = mac_v
-            except Exception:
-                pass
-        name, tool_id = make_unique_name_and_id("Apple AAC", ver, "afconvert", existing_names, existing_ids)
-        dec = AFConvertDecoder(name, afconvert_bin, tool_id)
+        dec = get_decoder_instance("afconvert", binary_path=afconvert_bin)
+        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                dec.tool_id, existing_names, existing_ids)
+        dec.name = name
+        dec.tool_id = tool_id
         if probe_decoder_capability(dec):
             decoders.append(dec)
 
@@ -286,9 +376,12 @@ def detect_decoders(args):
 
     for h_bin in helix_bins:
         if os.path.exists(h_bin):
-            ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
-            name, tool_id = make_unique_name_and_id("Helix AAC", ver or "1.0", "helix_aac", existing_names, existing_ids)
-            dec = HelixAACDecoder(name, h_bin, tool_id)
+            dec = get_decoder_instance("helix", binary_path=h_bin)
+            name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                    dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                    dec.tool_id, existing_names, existing_ids)
+            dec.name = name
+            dec.tool_id = tool_id
             if probe_decoder_capability(dec):
                 decoders.append(dec)
 
@@ -310,9 +403,12 @@ def detect_decoders(args):
 
     for f_bin in fdkdec_bins:
         if os.path.exists(f_bin):
-            ver = probe_version(f_bin, ["-v", "--version"], [r"libfdk-aac\s+(\d+\.\d+(?:\.\d+)*)"])
-            name, tool_id = make_unique_name_and_id("FDK AAC", ver, "fdk_aac_dec", existing_names, existing_ids)
-            dec = FDKDecoder(name, f_bin, tool_id)
+            dec = get_decoder_instance("fdkdec", binary_path=f_bin)
+            name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                    dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                    dec.tool_id, existing_names, existing_ids)
+            dec.name = name
+            dec.tool_id = tool_id
             if probe_decoder_capability(dec):
                 decoders.append(dec)
 
@@ -617,6 +713,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                                     if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
                                         dec_wav = output_path
 
+                                    import phase2_mos
                                     mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
                             except Exception as e:
                                 print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")

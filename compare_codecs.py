@@ -267,8 +267,59 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
         }
 
 
+def auto_detect_saved_json_files(explicit_results_json):
+    """Auto-detects saved JSON result files in the current working directory and results/."""
+    json_paths = []
+    if explicit_results_json and os.path.exists(explicit_results_json):
+        json_paths.append(explicit_results_json)
+
+    search_dirs = [".", "results"]
+    for d in search_dirs:
+        if os.path.isdir(d):
+            for fname in os.listdir(d):
+                if fname.endswith(".json") and not fname.endswith(".decoders.json"):
+                    full_p = os.path.join(d, fname)
+                    if full_p not in json_paths:
+                        json_paths.append(full_p)
+    return json_paths
+
+
+def load_all_saved_results(json_paths):
+    """Loads and aggregates encoder, decoder, and robustness results from JSON files."""
+    loaded_encoders = []
+    loaded_decoders = []
+    loaded_robustness = []
+
+    for jp in json_paths:
+        try:
+            with open(jp, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    loaded_encoders.extend(data)
+                elif isinstance(data, dict):
+                    if "matrix" in data and isinstance(data["matrix"], dict):
+                        for k, v in data["matrix"].items():
+                            if isinstance(v, dict):
+                                loaded_encoders.append(v)
+                    elif "encoder_results" in data and isinstance(data["encoder_results"], list):
+                        loaded_encoders.extend(data["encoder_results"])
+
+            dec_jp = f"{jp}.decoders.json"
+            if os.path.exists(dec_jp):
+                with open(dec_jp, "r") as f:
+                    dec_data = json.load(f)
+                    if isinstance(dec_data, dict):
+                        loaded_decoders.extend(dec_data.get("decoder_results", []))
+                        loaded_robustness.extend(dec_data.get("decoder_robustness_results", []))
+        except Exception:
+            pass
+
+    return loaded_encoders, loaded_decoders, loaded_robustness
+
+
 def main():
     parser = argparse.ArgumentParser(description="FAAC Benchmark Suite - Codec Comparison & Leaderboard Generator")
+    parser.add_argument("saved_jsons", nargs="*", help="Optional positional path(s) to saved benchmark result JSON file(s)")
     parser.add_argument("--mode", choices=["encoder", "decoder", "both"], default="both", help="Benchmarking mode: encoder, decoder, or both (default: both)")
     parser.add_argument("--faac-bin", help="Path to faac binary (supports comma-separated list or multiple flags)")
     parser.add_argument("--faac-lib", help="Path to libfaac.so library override")
@@ -339,13 +390,64 @@ def main():
         else:
             print(f"Detected encoders ({len(encoders)} variants): {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
 
-        if os.path.exists(args.results_json):
-            print(f"==> Loading existing results from {args.results_json}")
-            try:
-                with open(args.results_json) as f:
-                    encoder_results = json.load(f)
-            except Exception:
-                pass
+        # Auto-detect and merge saved runs
+        candidate_jsons = args.saved_jsons if args.saved_jsons else auto_detect_saved_json_files(args.results_json)
+        loaded_enc, loaded_dec, loaded_rob = load_all_saved_results(candidate_jsons)
+        if loaded_enc:
+            print(f"==> Auto-detected and loaded {len(loaded_enc)} encoder entries from: {', '.join(candidate_jsons)}")
+            encoder_results = loaded_enc
+
+        # Identify missing encoder tasks using smart reuse (encoder_version, scenario, filename)
+        existing_keys = {(r.get("tool"), r.get("scenario"), r.get("filename")) for r in encoder_results if r.get("decode_valid") is not None}
+
+        total_tasks = 0
+        tasks = []
+        for s_name in scenario_list:
+            cfg = SCENARIOS[s_name]
+            d_dir = corpus_dir(cfg, external_data_dir)
+            if not os.path.exists(d_dir):
+                continue
+
+            corpus = CORPORA.get(cfg["corpus"])
+            samples = sorted([f for f in os.listdir(d_dir) if f.endswith(".wav")])
+
+            if args.coverage < 100 and not args.gate:
+                max_clips = max(1, int(len(samples) * (args.coverage / 100.0)))
+                samples = select_corpus_clips(samples, {"max_clips": max_clips, "strata": (corpus or {}).get("strata")})
+
+            if args.gate:
+                samples = gate_filter(s_name, samples)
+
+            for sample in samples:
+                for encoder in encoders:
+                    if (encoder.name, s_name, sample) not in existing_keys:
+                        tasks.append((encoder, s_name, cfg, sample, d_dir))
+
+        if tasks:
+            total_tasks = len(tasks)
+            print(f"\n>>> Running missing Encoder Scenarios across {total_tasks} tasks ({num_cpus} threads)...")
+
+            ref_cache_dir = os.path.join(output_dir, "ref_cache")
+            os.makedirs(ref_cache_dir, exist_ok=True)
+
+            completed = 0
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
+                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
+                           for enc, s_name, cfg, sample, d_dir in tasks]
+
+                for future in concurrent.futures.as_completed(futures):
+                    res = future.result()
+                    completed += 1
+                    if res:
+                        encoder_results.append(res)
+                        status_mark = "OK" if res["decode_valid"] else "FAIL"
+                        print(f"  [{completed}/{total_tasks}] {res['tool']} ({profile_label(res['profile'])}) | {res['scenario']} | {res['filename']} -> {status_mark}")
+
+            with open(args.results_json, "w") as f:
+                json.dump(encoder_results, f, indent=2)
+        elif encoders:
+            print("==> All encoder tasks satisfied from cached JSON runs!")
 
         if not encoder_results and encoders:
             total_tasks = 0
@@ -435,28 +537,85 @@ def main():
                 seen_sample.add(key)
                 sampled_ids.add(id(item))
 
+        # Load any existing decoder results
+        candidate_jsons = args.saved_jsons if args.saved_jsons else auto_detect_saved_json_files(args.results_json)
+        _enc_res, loaded_dec, loaded_rob = load_all_saved_results(candidate_jsons)
+        if loaded_dec:
+            decoder_results.extend(loaded_dec)
+        if loaded_rob:
+            decoder_robustness_results.extend(loaded_rob)
+
+        existing_dec_keys = {(r.get("tool"), r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) for r in decoder_results if r.get("decode_valid") is not None}
+        existing_rob_keys = {(r.get("tool"), r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) for r in decoder_robustness_results if r.get("passed") is not None}
+
         if valid_encoder_bitstreams and decoders:
             total_dec_tasks = len(valid_encoder_bitstreams)
             print(f"\n>>> Running Decoder Benchmarks across {total_dec_tasks} bitstreams x {len(decoders)} decoders...")
             for decoder in decoders:
-                print(f"  Decoding with {decoder.name}...")
-                completed_dec = 0
-                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
-                    futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir,
-                                               args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes)
-                               for item in valid_encoder_bitstreams]
-                    for future in concurrent.futures.as_completed(futures):
-                        res = future.result()
-                        completed_dec += 1
-                        if res:
-                            decoder_results.append(res)
-                            status_mark = "TIMEOUT" if res.get("timeout") else ("OK" if res["decode_valid"] else "FAIL")
-                            mos_tag = {"inherited": " inh", "scored": ""}.get(res.get("mos_source"), "")
-                            mos_str = f", MOS: {res['mos']:.2f}{mos_tag}" if res.get("mos") is not None else ""
-                            snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
-                            ch_tag = " (1ch)" if res.get("mono_downmix") else ""
-                            prof_str = profile_label(res.get('profile', 'lc'))
-                            print(f"    [{completed_dec}/{total_dec_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
+                # Fast path in --mode both: when evaluating any decoder matching the pass's decoder (e.g. FFmpeg, FAAD, FDK), directly reuse metrics!
+                dec_tasks = []
+                for item in valid_encoder_bitstreams:
+                    dec_key = (decoder.name, item.get("row_key"), item.get("scenario"), item.get("filename"))
+                    if dec_key in existing_dec_keys:
+                        continue
+
+                    item_dec_tool = item.get("decoder_id") or item.get("decoder_name") or ""
+                    is_matching_dec = (
+                        (decoder.tool_id in ("ffmpeg_aac", "ffmpeg")) or
+                        (item_dec_tool and (decoder.tool_id.lower() in item_dec_tool.lower() or decoder.name.lower() in item_dec_tool.lower()))
+                    )
+
+                    if is_matching_dec and item.get("mos") is not None:
+                        reused_res = {
+                            "tool": decoder.name,
+                            "row_key": decoder_row_key(decoder),
+                            "encoder_row_key": item["row_key"],
+                            "scenario": item["scenario"],
+                            "filename": item["filename"],
+                            "profile": item.get("profile", "lc"),
+                            "container": "ADTS" if item.get("aac_path", "").lower().endswith((".aac", ".adts")) else "M4A",
+                            "duration": item.get("duration", 0),
+                            "audio_duration": item.get("audio_duration"),
+                            "decode_valid": item.get("decode_valid", True),
+                            "decode_error": item.get("decode_error"),
+                            "mos": item.get("mos"),
+                            "mos_source": "inherited",
+                            "snr_db": float("inf"),
+                            "conformance_snr_db": "ref",
+                            "alignment_delay_ms": 0.0,
+                            "gapless_offset_samples": 0,
+                            "gapless_length_delta": 0,
+                            "peak_ram_kb": item.get("peak_ram_kb"),
+                            "decoded_wav": None,
+                            "dec_channels": None,
+                            "mono_downmix": False
+                        }
+                        decoder_results.append(reused_res)
+                        existing_dec_keys.add(dec_key)
+                    else:
+                        dec_tasks.append(item)
+
+                if dec_tasks:
+                    print(f"  Decoding with {decoder.name} ({len(dec_tasks)} pending bitstreams)...")
+                    completed_dec = 0
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                        futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir,
+                                                   args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes)
+                                   for item in dec_tasks]
+                        for future in concurrent.futures.as_completed(futures):
+                            res = future.result()
+                            completed_dec += 1
+                            if res:
+                                decoder_results.append(res)
+                                status_mark = "TIMEOUT" if res.get("timeout") else ("OK" if res["decode_valid"] else "FAIL")
+                                mos_tag = {"inherited": " inh", "scored": ""}.get(res.get("mos_source"), "")
+                                mos_str = f", MOS: {res['mos']:.2f}{mos_tag}" if res.get("mos") is not None else ""
+                                snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
+                                ch_tag = " (1ch)" if res.get("mono_downmix") else ""
+                                prof_str = profile_label(res.get('profile', 'lc'))
+                                print(f"    [{completed_dec}/{len(dec_tasks)}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
+                else:
+                    print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
             if mos_scored:
@@ -479,20 +638,23 @@ def main():
             else:
                 robustness_bitstreams = [r for r in valid_encoder_bitstreams if id(r) in sampled_ids]
 
-            total_rob_tasks = len(robustness_bitstreams)
             for decoder in decoders:
-                print(f"  Testing robustness for {decoder.name}...")
-                completed_rob = 0
-                with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
-                    futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in robustness_bitstreams]
-                    for future in concurrent.futures.as_completed(futures):
-                        res = future.result()
-                        completed_rob += 1
-                        if res:
-                            decoder_robustness_results.append(res)
-                            status_mark = "TIMEOUT" if res.get("timeout") else ("RUNAWAY" if res.get("runaway") else ("PASS" if res.get("passed") else "FAIL"))
-                            prof_str = profile_label(res.get('profile', 'lc'))
-                            print(f"    [{completed_rob}/{total_rob_tasks}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
+                rob_tasks = [item for item in robustness_bitstreams if (decoder.name, item.get("row_key"), item.get("scenario"), item.get("filename")) not in existing_rob_keys]
+                if rob_tasks:
+                    print(f"  Testing robustness for {decoder.name} ({len(rob_tasks)} pending bitstreams)...")
+                    completed_rob = 0
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                        futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in rob_tasks]
+                        for future in concurrent.futures.as_completed(futures):
+                            res = future.result()
+                            completed_rob += 1
+                            if res:
+                                decoder_robustness_results.append(res)
+                                status_mark = "TIMEOUT" if res.get("timeout") else ("RUNAWAY" if res.get("runaway") else ("PASS" if res.get("passed") else "FAIL"))
+                                prof_str = profile_label(res.get('profile', 'lc'))
+                                print(f"    [{completed_rob}/{len(rob_tasks)}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
+                else:
+                    print(f"  Robustness tasks for {decoder.name} satisfied from cache/reuse.")
 
     # Decoder results carry different fields (mos/snr_db/alignment/speed per
     # decoder+profile) than encoder_results, and args.results_json is kept as
