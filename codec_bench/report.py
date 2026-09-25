@@ -47,6 +47,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     }))
 
     error_counts = defaultdict(int)
+    error_details = defaultdict(list)
     clip_mos = defaultdict(dict)
     bug_flags = []
 
@@ -58,6 +59,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             err_msg = res.get("decode_error") or "Unknown error"
             short_err = err_msg.split("\n")[0].split(":")[0].strip()
             error_counts[(e, short_err)] += 1
+            error_details[e].append({
+                "scenario": s,
+                "profile": res.get("profile", "lc"),
+                "filename": res.get("filename", "n/a"),
+                "error": err_msg
+            })
 
         if res.get("mos") is not None:
             stats[e][s]["mos_sum"] += res["mos"]
@@ -222,9 +229,11 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("### Overall Encoder Rankings\n\n")
-        f.write("> **Note**: Overall MOS averages the scenario set listed below, so absolute "
-                "values are only comparable between leaderboards built from the same set of "
-                "scenarios. Relative ranking is unaffected.\n\n")
+        f.write("> **Methodology & Ranking Note**: Encoders are ranked primarily by **Worst MOS** "
+                "(minimum clip score across all scenarios) to penalize severe artifacts on killer clips, "
+                "with **Overall MOS** (averaging all scenarios) as tiebreaker. "
+                "Per-scenario curves (e.g., 48 kHz Average MOS) display average performance on specific subsets "
+                "and may show different relative standings than the overall worst-case resilience metric.\n\n")
         f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
@@ -785,7 +794,26 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("</details>\n\n")
 
-        # 9. Quality Outliers (Outlier clip bug flags)
+        # 9. Failure Analysis & Debugging Diagnostics
+        if error_details:
+            f.write("<details><summary><b>⚠️ View Failure Analysis & Debugging Diagnostics</b></summary>\n\n")
+            f.write("### Failure Analysis & Debugging Diagnostics\n\n")
+            f.write("> **Note**: Details process failures, execution errors, or unsupported profile/scenario mismatches encountered during evaluation.\n\n")
+
+            f.write("| Encoder | Profile | Scenario | File / Clip | Error Details |\n")
+            f.write("| :--- | :---: | :--- | :--- | :--- |\n")
+
+            for rk_err, err_list in error_details.items():
+                enc_name = encoder_info[rk_err].name if rk_err in encoder_info else rk_err
+                for err_item in err_list:
+                    p = profile_label(err_item['profile'])
+                    sc = err_item['scenario']
+                    fn = err_item['filename']
+                    msg = err_item['error'].replace("\n", " ")
+                    f.write(f"| {enc_name} | {p} | {sc} | `{fn}` | {msg} |\n")
+            f.write("\n</details>\n\n")
+
+        # 10. Quality Outliers (Outlier clip bug flags)
         if bug_flags:
             f.write("<details><summary><b>🐛 View Quality Outliers (Issues Worth Investigating)</b></summary>\n\n")
             f.write("### Quality Outliers (Issues Worth Investigating)\n\n")
