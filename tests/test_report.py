@@ -37,6 +37,7 @@ class TestReport(unittest.TestCase):
                 self.assertIn("25.5 dB", text)
                 self.assertIn("2.50 ms", text)
                 self.assertIn("█", text)
+                self.assertIn("Decoder Metric Legend", text)
 
     def test_decoder_quality_outliers_and_mono_downmix(self):
         with tempfile.TemporaryDirectory() as td:

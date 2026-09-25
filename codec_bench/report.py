@@ -1293,6 +1293,19 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 f.write(f"| {tool_name} | {profile_label(p)} | {s_name} | `{filename}` | {this_mos:.2f} | {peer_avg:.2f} | **-{gap:.2f} MOS** | {issue} |\n")
             f.write("\n</details>\n\n")
 
+        # Metric Legend & Footnotes for Decoders
+        f.write("\n---\n")
+        f.write("**Decoder Metric Legend**:\n")
+        f.write("- **Ranking**: by Worst MOS, then Overall MOS as tiebreaker.\n")
+        f.write("- **Worst MOS**: Minimum perceptual MOS score observed across any clip in any scenario (**Higher is Better**)\n")
+        f.write("- **Overall MOS**: Perceptual audio quality averaged across all scenarios (1-5, **Higher is Better**)\n")
+        f.write("- **Mean SNR**: Specification conformance signal-to-noise ratio in dB vs reference decode (**Higher is Better**)\n")
+        f.write("- **Timing Error**: Sample alignment offset delay in ms (**Lower is Better**)\n")
+        f.write("- **Robustness**: Crash-free decoding rate on corrupted ADTS bitstreams (**Higher is Better**)\n")
+        f.write("- **Speed**: Decoding throughput in xRealtime (**Higher is Better**)\n")
+        f.write("- **Peak RAM**: Peak dynamic memory allocation during decode (**Lower is Better**)\n")
+        f.write("- **ROM (Flash)**: Decoder binary code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
+
     print(f"\nDecoder leaderboard generated at: {output_path}")
 
 
