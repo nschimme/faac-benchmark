@@ -238,7 +238,9 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "ic_err": ic_err_val,
             "attack_centroid_ms": centroid_deltas,
             "aac_path": output_path if valid else None,
-            "ref_path": input_path
+            "ref_path": input_path,
+            "decoder_name": "FFmpeg AAC",
+            "decoder_id": "ffmpeg_aac"
         }
 
     except BaseException as e:
@@ -551,54 +553,56 @@ def main():
         if valid_encoder_bitstreams and decoders:
             total_dec_tasks = len(valid_encoder_bitstreams)
             print(f"\n>>> Running Decoder Benchmarks across {total_dec_tasks} bitstreams x {len(decoders)} decoders...")
-            for decoder in decoders:
-                # Fast path in --mode both: when evaluating any decoder matching the pass's decoder (e.g. FFmpeg, FAAD, FDK), directly reuse metrics!
-                dec_tasks = []
-                for item in valid_encoder_bitstreams:
-                    dec_key = (decoder.name, item.get("row_key"), item.get("scenario"), item.get("filename"))
-                    if dec_key in existing_dec_keys:
-                        continue
 
-                    item_dec_tool = item.get("decoder_id") or item.get("decoder_name") or ""
-                    is_matching_dec = (
-                        (decoder.tool_id in ("ffmpeg_aac", "ffmpeg")) or
-                        (item_dec_tool and (decoder.tool_id.lower() in item_dec_tool.lower() or decoder.name.lower() in item_dec_tool.lower()))
-                    )
+            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                for decoder in decoders:
+                    dec_tasks = []
+                    for item in valid_encoder_bitstreams:
+                        dec_key = (decoder.name, item.get("row_key"), item.get("scenario"), item.get("filename"))
+                        if dec_key in existing_dec_keys:
+                            continue
 
-                    if is_matching_dec and item.get("mos") is not None:
-                        reused_res = {
-                            "tool": decoder.name,
-                            "row_key": decoder_row_key(decoder),
-                            "encoder_row_key": item["row_key"],
-                            "scenario": item["scenario"],
-                            "filename": item["filename"],
-                            "profile": item.get("profile", "lc"),
-                            "container": "ADTS" if item.get("aac_path", "").lower().endswith((".aac", ".adts")) else "M4A",
-                            "duration": item.get("duration", 0),
-                            "audio_duration": item.get("audio_duration"),
-                            "decode_valid": item.get("decode_valid", True),
-                            "decode_error": item.get("decode_error"),
-                            "mos": item.get("mos"),
-                            "mos_source": "inherited",
-                            "snr_db": float("inf"),
-                            "conformance_snr_db": "ref",
-                            "alignment_delay_ms": 0.0,
-                            "gapless_offset_samples": 0,
-                            "gapless_length_delta": 0,
-                            "peak_ram_kb": item.get("peak_ram_kb"),
-                            "decoded_wav": None,
-                            "dec_channels": None,
-                            "mono_downmix": False
-                        }
-                        decoder_results.append(reused_res)
-                        existing_dec_keys.add(dec_key)
-                    else:
-                        dec_tasks.append(item)
+                        item_dec_id = item.get("decoder_id") or ""
+                        item_dec_name = item.get("decoder_name") or ""
+                        is_matching_dec = (
+                            (decoder.tool_id and item_dec_id and decoder.tool_id.lower() == item_dec_id.lower()) or
+                            (decoder.name and item_dec_name and decoder.name.lower() == item_dec_name.lower()) or
+                            (decoder.tool_id in ("ffmpeg_aac", "ffmpeg") and not item_dec_id)
+                        )
 
-                if dec_tasks:
-                    print(f"  Decoding with {decoder.name} ({len(dec_tasks)} pending bitstreams)...")
-                    completed_dec = 0
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                        if is_matching_dec and item.get("mos") is not None:
+                            reused_res = {
+                                "tool": decoder.name,
+                                "row_key": decoder_row_key(decoder),
+                                "encoder_row_key": item["row_key"],
+                                "scenario": item["scenario"],
+                                "filename": item["filename"],
+                                "profile": item.get("profile", "lc"),
+                                "container": "ADTS" if item.get("aac_path", "").lower().endswith((".aac", ".adts")) else "M4A",
+                                "duration": item.get("duration", 0),
+                                "audio_duration": item.get("audio_duration"),
+                                "decode_valid": item.get("decode_valid", True),
+                                "decode_error": item.get("decode_error"),
+                                "mos": item.get("mos"),
+                                "mos_source": "inherited",
+                                "snr_db": float("inf"),
+                                "conformance_snr_db": "ref",
+                                "alignment_delay_ms": 0.0,
+                                "gapless_offset_samples": 0,
+                                "gapless_length_delta": 0,
+                                "peak_ram_kb": item.get("peak_ram_kb"),
+                                "decoded_wav": None,
+                                "dec_channels": None,
+                                "mono_downmix": False
+                            }
+                            decoder_results.append(reused_res)
+                            existing_dec_keys.add(dec_key)
+                        else:
+                            dec_tasks.append(item)
+
+                    if dec_tasks:
+                        print(f"  Decoding with {decoder.name} ({len(dec_tasks)} pending bitstreams)...")
+                        completed_dec = 0
                         futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir,
                                                    args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes)
                                    for item in dec_tasks]
@@ -614,8 +618,8 @@ def main():
                                 ch_tag = " (1ch)" if res.get("mono_downmix") else ""
                                 prof_str = profile_label(res.get('profile', 'lc'))
                                 print(f"    [{completed_dec}/{len(dec_tasks)}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
-                else:
-                    print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
+                    else:
+                        print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
             if mos_scored:

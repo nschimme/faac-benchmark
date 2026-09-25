@@ -201,6 +201,5 @@ Go to **Actions** -> **Multi-Encoder Leaderboard** -> **Run workflow**.
 
 ## Provenance
 
-Pass `--faac-git-sha` and `--faac-precision` to `run_benchmark.py` to stamp the
-result JSON with build provenance (`faac_git_sha`, `faac_precision`,
-`faac_args`), so CI artifacts are self-describing and comparable across runs.
+Pass `--faac-git-sha` to `run_benchmark.py` to stamp the
+result JSON with build provenance (`faac_git_sha`, `faac_args`), so CI artifacts are self-describing and comparable across runs.

@@ -188,6 +188,11 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
         import soundfile as sf
         import scipy.signal
 
+        if os.path.exists(ref_wav_path) and os.path.exists(cand_wav_path):
+            if os.path.getsize(ref_wav_path) == os.path.getsize(cand_wav_path):
+                if get_file_hash(ref_wav_path) == get_file_hash(cand_wav_path):
+                    return 0, 0.0
+
         r_data, r_sr = sf.read(ref_wav_path, dtype='float32', always_2d=True)
         c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
 

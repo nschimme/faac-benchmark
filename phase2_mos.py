@@ -368,8 +368,8 @@ def main():
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
-    parser.add_argument("--faac-bin", help="Path to faac binary for provenance verification")
-    parser.add_argument("--lib-path", help="Path to libfaac.so for provenance verification")
+    parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary for provenance verification")
+    parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
     parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
@@ -401,7 +401,7 @@ def main():
     # stale .aac can never be silently re-scored. Mutating entry["mos"]=None
     # here makes the single `pending` comprehension below pick it up.
     stale_count = 0
-    verify_provenance = args.faac_bin and args.lib_path
+    verify_provenance = args.encoder_bin and args.encoder_lib
     if verify_provenance:
         for key, entry in matrix.items():
             if entry.get("mos") is None:
@@ -409,7 +409,7 @@ def main():
             info = get_sample_info(key, entry, aac_dir, external_data_dir, results_path, aac_files)
             if not info:
                 continue
-            expected_hash = calculate_provenance_hash(args.faac_bin, args.lib_path, args.extra_args, info["ref_input_path"])
+            expected_hash = calculate_provenance_hash(args.encoder_bin, args.encoder_lib, args.extra_args, info["ref_input_path"])
             if entry.get("prov_hash") != expected_hash:
                 print(f"!!! Provenance mismatch for {key}: expected {expected_hash}, "
                       f"found {entry.get('prov_hash')}. The encoded .aac is STALE; refusing its MOS.")
