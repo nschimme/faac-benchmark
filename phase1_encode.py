@@ -255,7 +255,6 @@ def run_benchmark(
         "name": precision,
         "sha": sha,
         "faac_git_sha": os.environ.get("FAAC_GIT_SHA"),
-        "faac_precision": os.environ.get("FAAC_PRECISION"),
         "encoder_name": f"FAAC {faac_ver}" if faac_ver else "FAAC",
         "encoder_version": faac_ver or "unknown",
         "faac_args": " ".join(extra_args) if extra_args else "",

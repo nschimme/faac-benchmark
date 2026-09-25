@@ -27,6 +27,8 @@ def main():
     parser.add_argument("lib_path", help="Path to libfaac.so")
     parser.add_argument("name", help="Name for this run")
     parser.add_argument("output", help="Output JSON path")
+    parser.add_argument("--decoder-bin", help="Path to decoder binary")
+    parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
     parser.add_argument("--skip-encode", action="store_true",
@@ -47,10 +49,7 @@ def main():
                         help="Rate control mode: abr (-b), vbr (-q), or cbr (-b --cbr: bit reservoir, exact rate)")
     parser.add_argument("--build-dir", help="Meson build directory, for per-object sizes and toolchain identity")
     parser.add_argument("--faac-git-sha", help="Provenance: FAAC Git SHA")
-    parser.add_argument("--faac-precision", help="Provenance: FAAC Build Precision")
     parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
-    parser.add_argument("--decoder-bin", help="Path to decoder binary")
-    parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     parser.add_argument("--diff", nargs=2, help="Standalone diff of two result JSONs")
 
     args, unknown = parser.parse_known_args()
@@ -130,7 +129,6 @@ def main():
         run_env = os.environ.copy()
         run_env.update(run["env"])
         if args.faac_git_sha: run_env["FAAC_GIT_SHA"] = args.faac_git_sha
-        if args.faac_precision: run_env["FAAC_PRECISION"] = args.faac_precision
 
         # Phase 1: Encoding
         print(">>> Phase 1: Encoding and Basic Metrics")
