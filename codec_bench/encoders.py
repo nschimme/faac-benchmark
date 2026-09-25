@@ -291,6 +291,105 @@ def probe_faac_version(faac_path, lib_override=None):
     return None
 
 
+def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=None, profile="lc", version=None):
+    """Instantiates an Encoder instance for a given encoder type or binary path."""
+    encoder_type = (encoder_type or "faac").lower().strip()
+
+    if encoder_type in ("faac", "libfaac"):
+        f_bin = binary_path or shutil.which("faac")
+        legacy = is_faac_legacy(f_bin, lib_override=lib_override)
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-H", "--help-advanced", "--help", "-h", "-v"],
+                                [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)",
+                                 r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_faac_version(f_bin, lib_override=lib_override)
+        if not ver and legacy:
+            ver = "1.x"
+        display_name = f"FAAC {ver}" if ver else "FAAC"
+        return FAACEncoder(display_name, f_bin, "faac", profile, lib_override=lib_override)
+
+    elif encoder_type in ("ffmpeg", "ffmpeg_aac"):
+        f_bin = binary_path or get_ffmpeg_path()
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            res = safe_run([f_bin, "-version"], capture_output=True, check=False)
+            m = re.search(r"ffmpeg version (\S+)", res.stdout or "")
+            ver = m.group(1) if m else None
+        display_name = f"FFmpeg AAC {ver}" if ver else "FFmpeg AAC"
+        return FFmpegEncoder(display_name, f_bin, "ffmpeg_aac", profile)
+
+    elif encoder_type in ("fdkaac", "fdk", "fdk_aac"):
+        f_bin = binary_path or shutil.which("fdkaac")
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-h", "--help"], [r"fdkaac\s+v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"fdkaac {ver}" if ver else "fdkaac"
+        return FDKAACEncoder(display_name, f_bin, "fdkaac", profile)
+
+    elif encoder_type in ("aac_enc", "aac-enc", "aacenc"):
+        a_bin = binary_path or shutil.which("aac-enc")
+        ver = version
+        if not ver and a_bin and os.path.exists(a_bin):
+            ver = probe_version(a_bin, ["-h", "--help", "-v"], [r"aac-enc\s+v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"aac-enc {ver}" if ver else "aac-enc"
+        return AACEncEncoder(display_name, a_bin, "aac_enc", profile)
+
+    elif encoder_type in ("falabaac", "fala"):
+        f_bin = binary_path or shutil.which("falabaac")
+        ver = version
+        if not ver and f_bin and os.path.exists(f_bin):
+            ver = probe_version(f_bin, ["-h", "--help", "-v"], [r"falabaac\s+v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"falabaac {ver}" if ver else "falabaac"
+        return FalabaacEncoder(display_name, f_bin, "falabaac", profile)
+
+    elif encoder_type in ("afconvert", "apple"):
+        a_bin = binary_path or shutil.which("afconvert")
+        ver = version
+        if not ver and a_bin and os.path.exists(a_bin):
+            ver = probe_version(a_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
+            if not ver and sys.platform == "darwin":
+                try:
+                    import platform
+                    mac_v = platform.mac_ver()[0]
+                    if mac_v:
+                        ver = mac_v
+                except Exception:
+                    pass
+        display_name = f"Apple AAC {ver}" if ver else "Apple AAC"
+        return AFConvertEncoder(display_name, a_bin, "afconvert", profile)
+
+    elif encoder_type in ("opus", "opusenc"):
+        o_bin = binary_path or shutil.which("opusenc") or get_ffmpeg_path()
+        ver = version
+        if not ver and o_bin and os.path.exists(o_bin):
+            ver = probe_version(o_bin, ["-V", "--version", "-version"], [r"opusenc\s+[\w\s.-]+\s+v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"Opus {ver}" if ver else "Opus"
+        return OpusEncoder(display_name, o_bin, "opus", "standard")
+
+    elif encoder_type in ("lame", "mp3"):
+        l_bin = binary_path or shutil.which("lame") or get_ffmpeg_path()
+        ver = version
+        if not ver and l_bin and os.path.exists(l_bin):
+            ver = probe_version(l_bin, ["--version", "-version"], [r"LAME\s+(?:64bits\s+)?version\s+(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"LAME MP3 {ver}" if ver else "LAME MP3"
+        return LameEncoder(display_name, l_bin, "lame", "standard")
+
+    else:
+        if os.path.exists(encoder_type):
+            base = os.path.basename(encoder_type).lower()
+            if "faac" in base:
+                return get_encoder_instance("faac", binary_path=encoder_type, lib_override=lib_override, profile=profile, version=version)
+            elif "fdk" in base:
+                return get_encoder_instance("fdkaac", binary_path=encoder_type, profile=profile, version=version)
+            elif "afconvert" in base:
+                return get_encoder_instance("afconvert", binary_path=encoder_type, profile=profile, version=version)
+            else:
+                return get_encoder_instance("ffmpeg", binary_path=encoder_type, profile=profile, version=version)
+        raise ValueError(f"Unknown encoder type or invalid binary path: {encoder_type}")
+
+
 def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
     if bitrate_kbps is None:
         if encoder.profile == "hev2":

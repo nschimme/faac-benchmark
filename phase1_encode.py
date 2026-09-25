@@ -131,28 +131,25 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precision, env, extra_args=None, rate_control="abr"):
+from codec_bench.encoders import get_encoder_instance, encoder_row_key
+
+from codec_bench.encoders import get_encoder_instance, encoder_row_key
+
+def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_args=None, rate_control="abr"):
     input_path = os.path.join(data_dir, sample)
     key = f"{name}_{sample}"
-    output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}.m4a")
+    output_path = os.path.join(OUTPUT_DIR, f"{key}_{precision}{encoder.file_ext}")
 
-    # Determine encoding parameters
-    cmd = [faac_bin_path]
-    if is_faac_legacy(faac_bin_path, lib_override=lib_path):
-        cmd.append("-w")
-    cmd.extend(["--overwrite", "-o", output_path, input_path])
-    if rate_control == "vbr":
-        cmd.extend(["-q", str(cfg.get("vbr_q", 100))])
-    else:
-        cmd.extend(["-b", str(cfg["bitrate"])])
-        # CBR is ABR's target held by a bit reservoir: same scenarios, one flag.
-        if rate_control == "cbr":
-            cmd.append("--cbr")
+    sample_rate = cfg.get("rate", 44100)
+    channels = cfg.get("channels", 2)
+    bitrate_kbps = cfg.get("bitrate", 128)
+
+    cmd = encoder.get_encode_cmd(input_path, output_path, bitrate_kbps, channels, sample_rate)
     if extra_args:
         cmd.extend(extra_args)
 
     try:
-        proc, t_duration, peak_ram_kb = measure_peak_ram(list(cmd), env=env, check=True)
+        proc, t_duration, peak_ram_kb = measure_peak_ram(list(cmd), env=encoder.get_run_env() or env, check=True)
         object_type = parse_object_type(proc.stderr)
 
         mos = None
@@ -195,7 +192,7 @@ def process_sample(faac_bin_path, lib_path, name, cfg, sample, data_dir, precisi
                     bias_status = "Undershoot"
 
         # Provenance hash
-        prov_hash = calculate_provenance_hash(faac_bin_path, lib_path, extra_args, input_path)
+        prov_hash = calculate_provenance_hash(encoder.binary_path or "", encoder.lib_override or "", extra_args, input_path)
 
         return key, {
             "mos": mos,
@@ -238,7 +235,17 @@ def run_benchmark(
         gate=False,
         build_dir=None,
         throughput_only=False,
-        rate_control="abr"):
+        rate_control="abr",
+        encoder_type="faac",
+        encoder_bin=None,
+        encoder_lib=None):
+    env = os.environ.copy()
+
+    encoder_inst = get_encoder_instance(
+        encoder_type=encoder_type,
+        binary_path=encoder_bin or faac_bin_path,
+        lib_override=encoder_lib or lib_path
+    )
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -350,8 +357,7 @@ def run_benchmark(
                 futures = {
                     executor.submit(
                         process_sample,
-                        faac_bin_path,
-                        lib_path,
+                        encoder_inst,
                         name,
                         cfg,
                         sample,
@@ -473,10 +479,13 @@ def run_benchmark(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1: Encoding and Basic Metrics")
-    parser.add_argument("faac_bin", help="Path to faac binary")
-    parser.add_argument("lib_path", help="Path to libfaac.so")
-    parser.add_argument("precision", help="Precision name")
-    parser.add_argument("output", help="Output JSON path")
+    parser.add_argument("faac_bin", nargs="?", help="Path to faac binary")
+    parser.add_argument("lib_path", nargs="?", help="Path to libfaac.so")
+    parser.add_argument("precision", nargs="?", help="Precision name")
+    parser.add_argument("output", nargs="?", help="Output JSON path")
+    parser.add_argument("--encoder", default="faac", help="Encoder type")
+    parser.add_argument("--encoder-bin", help="Path to encoder binary")
+    parser.add_argument("--encoder-lib", help="Path to encoder shared library")
     # Phase 1 does not compute MOS -- phase 2 does -- so what this actually
     # controls is whether the corpus is encoded at all. --skip-encode says that;
     # --skip-mos is kept as an alias because callers already pass it.
@@ -512,9 +521,9 @@ if __name__ == "__main__":
 
     extra_args = extra_args_list if extra_args_list else None
     data = run_benchmark(
-        args.faac_bin,
-        args.lib_path,
-        args.precision,
+        args.faac_bin or "",
+        args.lib_path or "",
+        args.precision or "test",
         coverage=args.coverage,
         run_perceptual=not args.skip_encode,
         sha=args.sha,
@@ -525,7 +534,10 @@ if __name__ == "__main__":
         gate=args.gate,
         build_dir=args.build_dir,
         throughput_only=args.throughput_only,
-        rate_control=args.rate_control)
+        rate_control=args.rate_control,
+        encoder_type=args.encoder,
+        encoder_bin=args.encoder_bin,
+        encoder_lib=args.encoder_lib)
 
     # Ensure results directory exists
     output_json = os.path.abspath(args.output)

@@ -13,7 +13,7 @@ from codec_bench.encoders import (
     use_he_aac, use_he_v2_aac, Encoder, FAACEncoder, FFmpegEncoder,
     FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder,
     OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
-    detect_encoders
+    get_encoder_instance, detect_encoders
 )
 
 from codec_bench.decoders import (

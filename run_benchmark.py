@@ -23,10 +23,13 @@ from codec_bench.decoders import get_decoder_instance
 
 def main():
     parser = argparse.ArgumentParser(description="FAAC Benchmark Suite")
-    parser.add_argument("faac_bin", help="Path to faac binary")
-    parser.add_argument("lib_path", help="Path to libfaac.so")
-    parser.add_argument("name", help="Name for this run")
-    parser.add_argument("output", help="Output JSON path")
+    parser.add_argument("faac_bin", nargs="?", help="Path to faac binary (legacy positional argument)")
+    parser.add_argument("lib_path", nargs="?", help="Path to libfaac.so (legacy positional argument)")
+    parser.add_argument("name", nargs="?", help="Name for this run")
+    parser.add_argument("output", nargs="?", help="Output JSON path")
+    parser.add_argument("--encoder", default="faac", help="Encoder type: faac, ffmpeg, fdkaac, aac_enc, falabaac, afconvert, opus, lame")
+    parser.add_argument("--encoder-bin", help="Path to encoder binary")
+    parser.add_argument("--encoder-lib", help="Path to encoder shared library override")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
@@ -134,10 +137,15 @@ def main():
         print(">>> Phase 1: Encoding and Basic Metrics")
         cmd_phase1 = [
             sys.executable, phase1_script,
-            args.faac_bin, args.lib_path, run["tag"], run["output"],
+            args.faac_bin or "", args.lib_path or "", run["tag"], run["output"],
+            "--encoder", args.encoder,
             "--coverage", str(args.coverage),
             "--rate-control", args.rate_control
         ]
+        if args.encoder_bin or args.faac_bin:
+            cmd_phase1.extend(["--encoder-bin", args.encoder_bin or args.faac_bin])
+        if args.encoder_lib or args.lib_path:
+            cmd_phase1.extend(["--encoder-lib", args.encoder_lib or args.lib_path])
         if args.sha:
             cmd_phase1.extend(["--sha", args.sha])
         if args.scenarios:
@@ -176,10 +184,10 @@ def main():
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
-                "--faac-bin", args.faac_bin,
-                "--lib-path", args.lib_path,
                 "--decoder", args.decoder
             ]
+            if args.faac_bin and args.lib_path:
+                cmd_phase2.extend(["--faac-bin", args.faac_bin, "--lib-path", args.lib_path])
             if args.decoder_bin:
                 cmd_phase2.extend(["--decoder-bin", args.decoder_bin])
             if args.decoder_lib:
