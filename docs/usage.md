@@ -29,7 +29,7 @@ python3 setup_datasets.py
 ## 3. Run a benchmark
 
 ```bash
-python3 run_benchmark.py <faac> <libfaac.so> <name> <output.json> [options]
+python3 run_benchmark.py <name> <output.json> [options]
 ```
 
 A bare `<output.json>` (no directory component, e.g. `test.json`) is written
@@ -84,7 +84,7 @@ only for the final check.
 Encode the same corpus two ways and get a ranked per-clip diff automatically:
 
 ```bash
-python3 run_benchmark.py <faac> <lib> ab out.json \
+python3 run_benchmark.py ab out.json \
     --gate --compare "lc:--object-type lc" "he:--object-type he-aac"
 ```
 
@@ -99,9 +99,9 @@ each auto-diffed against the first:
 
 ```bash
 # faac CLI flag:
-python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "--pns=0,2,4"
+python3 run_benchmark.py sw out.json --gate --sweep "--pns=0,2,4"
 # environment variable (for instrumented builds with tuning hooks):
-python3 run_benchmark.py <faac> <lib> sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
+python3 run_benchmark.py sw out.json --gate --sweep "FAAC_SBR_Q=0,6"
 ```
 
 Bitrate is **not** sweepable — it defines a scenario's identity (`48k_stereo_64k` is

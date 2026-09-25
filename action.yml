@@ -165,10 +165,10 @@ runs:
         fi
 
         python3 ${{ github.action_path }}/run_benchmark.py \
-          "${{ inputs.faac-bin }}" \
-          "${{ inputs.libfaac-so }}" \
           "${{ inputs.run-name }}" \
           "${{ inputs.output-json }}" \
+          --encoder-bin "${{ inputs.faac-bin }}" \
+          --encoder-lib "${{ inputs.libfaac-so }}" \
           --coverage "${{ inputs.coverage }}" \
           $EXTRA_ARGS
 

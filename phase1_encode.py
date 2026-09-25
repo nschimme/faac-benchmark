@@ -222,8 +222,6 @@ def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_a
 
 
 def run_benchmark(
-        faac_bin_path,
-        lib_path,
         precision,
         coverage=100,
         run_perceptual=True,
@@ -243,20 +241,22 @@ def run_benchmark(
 
     encoder_inst = get_encoder_instance(
         encoder_type=encoder_type,
-        binary_path=encoder_bin or faac_bin_path,
-        lib_override=encoder_lib or lib_path
+        binary_path=encoder_bin,
+        lib_override=encoder_lib
     )
     env = os.environ.copy()
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    sec_sizes = get_elf_section_sizes(lib_path)
+    lib_path_target = encoder_lib or (encoder_inst.binary_path if encoder_inst else None)
+    sec_sizes = get_elf_section_sizes(lib_path_target) if lib_path_target else {"text": 0, "rodata": 0, "bss": 0, "data": 0}
     exact_rom_size = sec_sizes.get("text", 0) + sec_sizes.get("rodata", 0) + sec_sizes.get("data", 0)
-    if exact_rom_size == 0:
-        exact_rom_size = get_binary_size(lib_path)
+    if exact_rom_size == 0 and lib_path_target:
+        exact_rom_size = get_binary_size(lib_path_target)
 
-    faac_ver = probe_version(faac_bin_path, ["-H", "--help-advanced", "--help", "-h", "-v"],
+    bin_path_target = encoder_bin or (encoder_inst.binary_path if encoder_inst else None)
+    faac_ver = probe_version(bin_path_target, ["-H", "--help-advanced", "--help", "-h", "-v"],
                              [r"FAAC\s+v?(\d+\.\d+(?:\.\d+)*[a-z0-9.]*(?:\s+\([^)]+\))?)",
-                              r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"])
+                              r"version\s+(\d+\.\d+(?:\.\d+)*[a-z0-9.]*)"]) if bin_path_target else None
 
     results = {
         "name": precision,
@@ -276,8 +276,8 @@ def run_benchmark(
         # Gate inputs. get_section_sizes is the portable reader: on macOS
         # get_elf_section_sizes falls back to whole-file size as "text", which
         # is the very number a section sum exists to avoid.
-        "lib_sections": get_section_sizes(lib_path),
-        "frontend_size": get_binary_size(faac_bin_path),
+        "lib_sections": get_section_sizes(lib_path_target) if lib_path_target else {},
+        "frontend_size": get_binary_size(bin_path_target) if bin_path_target else 0,
         "object_text": get_object_sizes(build_dir) if build_dir else {},
         "toolchain_fp": get_toolchain_fp(build_dir),
         "host_fp": get_host_fp(),
@@ -395,7 +395,7 @@ def run_benchmark(
             overall_values = []
             vbr_q_128k = SCENARIOS.get("48k_stereo_128k", {}).get("vbr_q", 203)
             vbr_q_32k = SCENARIOS.get("48k_stereo_32k", {}).get("vbr_q", 50)
-            is_legacy = is_faac_legacy(faac_bin_path, lib_override=lib_path)
+            is_legacy = is_faac_legacy(bin_path_target, lib_override=lib_path_target) if bin_path_target else False
 
             variants = []
             # LC profile variant
@@ -426,9 +426,7 @@ def run_benchmark(
                     print(f"  Benchmarking throughput for {var_key}...")
                     try:
                         eff_input = get_short_throughput_wav(input_path) if valgrind_bin else input_path
-                        tp_cmd = [faac_bin_path]
-                        if is_legacy:
-                            tp_cmd.append("-w")
+                        tp_cmd = encoder_inst.get_encode_cmd(eff_input, output_path, 128, 2, 44100) if encoder_inst else [bin_path_target]
                         tp_cmd.extend(["--overwrite", "-o", output_path])
                         tp_cmd.extend(extra_flags)
                         if extra_args:
@@ -479,10 +477,8 @@ def run_benchmark(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1: Encoding and Basic Metrics")
-    parser.add_argument("faac_bin", nargs="?", help="Path to faac binary")
-    parser.add_argument("lib_path", nargs="?", help="Path to libfaac.so")
-    parser.add_argument("precision", nargs="?", help="Precision name")
-    parser.add_argument("output", nargs="?", help="Output JSON path")
+    parser.add_argument("precision", help="Precision name")
+    parser.add_argument("output", help="Output JSON path")
     parser.add_argument("--encoder", default="faac", help="Encoder type")
     parser.add_argument("--encoder-bin", help="Path to encoder binary")
     parser.add_argument("--encoder-lib", help="Path to encoder shared library")
@@ -521,9 +517,7 @@ if __name__ == "__main__":
 
     extra_args = extra_args_list if extra_args_list else None
     data = run_benchmark(
-        args.faac_bin or "",
-        args.lib_path or "",
-        args.precision or "test",
+        args.precision,
         coverage=args.coverage,
         run_perceptual=not args.skip_encode,
         sha=args.sha,

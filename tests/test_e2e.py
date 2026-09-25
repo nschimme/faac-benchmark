@@ -89,7 +89,8 @@ class TestE2EMock(unittest.TestCase):
         base_json = os.path.join(self.results_dir, "test_base.json")
         r = self._run([
             sys.executable, "run_benchmark.py",
-            self.faac_bin, self.lib_path, "test", base_json,
+            "test", base_json,
+            "--encoder-bin", self.faac_bin, "--encoder-lib", self.lib_path,
             "--scenarios", "16k_mono_20k", "--sha", "base_123", "--skip-mos",
         ], check=True)
         with open(base_json) as f:
@@ -106,7 +107,8 @@ class TestE2EMock(unittest.TestCase):
         cand_json = os.path.join(self.results_dir, "test_cand.json")
         self._run([
             sys.executable, "run_benchmark.py",
-            self.faac_bin, self.lib_path, "test", cand_json,
+            "test", cand_json,
+            "--encoder-bin", self.faac_bin, "--encoder-lib", self.lib_path,
             "--scenarios", "16k_mono_20k,24k_mono_32k,44k1_stereo_128k",
             "--include-tests", "sample_0.wav,sample_1.wav",
             "--sha", "cand_456", "--skip-mos",
