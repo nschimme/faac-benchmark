@@ -48,7 +48,7 @@ jobs:
           python3 compare_codecs.py $GATE_FLAG --mode both --output leaderboard_ci.md
 
       - name: Upload Leaderboard Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codec-leaderboard
           path: leaderboard_ci.md
