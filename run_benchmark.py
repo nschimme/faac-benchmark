@@ -185,7 +185,7 @@ def main():
                 "--decoder", args.decoder
             ]
             if args.encoder_bin and args.encoder_lib:
-                cmd_phase2.extend(["--faac-bin", args.encoder_bin, "--lib-path", args.encoder_lib])
+                cmd_phase2.extend(["--encoder-bin", args.encoder_bin, "--encoder-lib", args.encoder_lib])
             if args.decoder_bin:
                 cmd_phase2.extend(["--decoder-bin", args.decoder_bin])
             if args.decoder_lib:
