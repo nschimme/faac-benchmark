@@ -131,9 +131,7 @@ def worker_init(cpu_id_queue):
             print(f" Failed to pin process {os.getpid()} to CPU {cpu_id}: {e}")
 
 
-from codec_bench.encoders import get_encoder_instance, encoder_row_key
-
-from codec_bench.encoders import get_encoder_instance, encoder_row_key
+from codec_bench.encoders import FAACEncoder, get_encoder_instance, encoder_row_key
 
 def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_args=None, rate_control="abr"):
     input_path = os.path.join(data_dir, sample)
@@ -144,7 +142,12 @@ def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_a
     channels = cfg.get("channels", 2)
     bitrate_kbps = cfg.get("bitrate", 128)
 
-    cmd = encoder.get_encode_cmd(input_path, output_path, bitrate_kbps, channels, sample_rate)
+    if isinstance(encoder, FAACEncoder):
+        cmd = encoder.get_encode_cmd(
+            input_path, output_path, bitrate_kbps, channels, sample_rate,
+            rate_control=rate_control, vbr_q=cfg.get("vbr_q", 100))
+    else:
+        cmd = encoder.get_encode_cmd(input_path, output_path, bitrate_kbps, channels, sample_rate)
     if extra_args:
         cmd.extend(extra_args)
 
@@ -242,7 +245,8 @@ def run_benchmark(
     encoder_inst = get_encoder_instance(
         encoder_type=encoder_type,
         binary_path=encoder_bin,
-        lib_override=encoder_lib
+        lib_override=encoder_lib,
+        profile="auto"
     )
     env = os.environ.copy()
 
@@ -426,12 +430,18 @@ def run_benchmark(
                     print(f"  Benchmarking throughput for {var_key}...")
                     try:
                         eff_input = get_short_throughput_wav(input_path) if valgrind_bin else input_path
-                        tp_cmd = encoder_inst.get_encode_cmd(eff_input, output_path, 128, 2, 44100) if encoder_inst else [bin_path_target]
-                        tp_cmd.extend(["--overwrite", "-o", output_path])
-                        tp_cmd.extend(extra_flags)
+                        if isinstance(encoder_inst, FAACEncoder):
+                            bitrate = 32 if var_suffix == "_he" else 128
+                            vbr_q = vbr_q_32k if var_suffix == "_he" else vbr_q_128k
+                            tp_cmd = encoder_inst.get_encode_cmd(
+                                eff_input, output_path, bitrate, 2, 44100,
+                                rate_control=rate_control, vbr_q=vbr_q)
+                            tp_cmd[-1:-1] = extra_flags[-2:]
+                        else:
+                            tp_cmd = encoder_inst.get_encode_cmd(eff_input, output_path, 128, 2, 44100) if encoder_inst else [bin_path_target]
+                            tp_cmd.extend(extra_flags)
                         if extra_args:
                             tp_cmd.extend(extra_args)
-                        tp_cmd.append(eff_input)
 
                         if valgrind_bin:
                             vg_cmd = [valgrind_bin, "--tool=cachegrind", "--cachegrind-out-file=/dev/null"] + tp_cmd
