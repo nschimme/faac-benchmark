@@ -125,13 +125,25 @@ class FAACEncoder(Encoder):
         if adts:
             self.file_ext = ".aac"
 
-    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
-        cmd = [self.binary_path, "-b", str(bitrate_kbps), "--overwrite", "-o", output_path]
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate,
+                       rate_control="abr", vbr_q=None):
+        cmd = [self.binary_path]
+        if self.legacy:
+            cmd.append("-w")
+        if rate_control == "vbr":
+            cmd.extend(["-q", str(vbr_q if vbr_q is not None else bitrate_kbps)])
+        else:
+            cmd.extend(["-b", str(bitrate_kbps)])
+            if rate_control == "cbr":
+                cmd.append("--cbr")
+        cmd.extend(["--overwrite", "-o", output_path])
         if self.adts:
             cmd.append("-a")
         if not self.legacy:
-            obj_type = "he-aac-v1" if self.profile == "he" else "lc"
-            cmd.extend(["--object-type", obj_type])
+            if self.profile == "he":
+                cmd.extend(["--object-type", "he-aac-v1"])
+            elif self.profile == "lc":
+                cmd.extend(["--object-type", "lc"])
             if not self.pns:
                 cmd.extend(["--pns", "0"])
         cmd.append(input_path)
