@@ -1109,17 +1109,68 @@ def render_summary_table(metrics, mos_label, rc_mode):
     return lines
 
 
+def find_result_pairs(inputs):
+    """Find (base, cand) file pairs from positional CLI inputs or directories."""
+    if not inputs:
+        return {}
+
+    if len(inputs) == 2 and all(os.path.isfile(p) for p in inputs):
+        p1, p2 = inputs[0], inputs[1]
+        if "base" in os.path.basename(p2).lower() or "cand" in os.path.basename(p1).lower():
+            return {"pair": (p2, p1)}
+        return {"pair": (p1, p2)}
+
+    suites = {}
+    dirs_to_scan = []
+    for inp in inputs:
+        if os.path.isdir(inp):
+            dirs_to_scan.append(inp)
+        elif os.path.isfile(inp):
+            dirs_to_scan.append(os.path.dirname(inp) or ".")
+
+    replacements = [
+        ("_cand.json", "_base.json"),
+        ("-cand.json", "-base.json"),
+        (".cand.json", ".base.json"),
+        ("_candidate.json", "_baseline.json"),
+        ("-candidate.json", "-baseline.json"),
+        ("cand.json", "base.json"),
+        ("candidate.json", "baseline.json"),
+    ]
+
+    for results_dir in dirs_to_scan:
+        if not os.path.exists(results_dir):
+            continue
+        files = os.listdir(results_dir)
+        for f in sorted(files):
+            for cand_suf, base_suf in replacements:
+                if f.endswith(cand_suf):
+                    prefix = f[:-len(cand_suf)]
+                    base_f = prefix + base_suf
+                    if base_f in files:
+                        suite_name = prefix.rstrip("_-.") or "default"
+                        if suite_name not in suites:
+                            suites[suite_name] = (
+                                os.path.join(results_dir, base_f),
+                                os.path.join(results_dir, f)
+                            )
+                        break
+
+    return suites
+
+
 def main():
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
     parser = argparse.ArgumentParser(description="Consolidate FAAC benchmark results.")
-    parser.add_argument("results_dir", nargs="?", default=os.path.join(SCRIPT_DIR, "results"),
-                        help="Path to the directory containing result JSON files")
+    parser.add_argument("results_dir", nargs="*", default=None,
+                        help="Path to directory containing result JSON files, or explicit result JSON files")
     parser.add_argument("--base-sha", help="Baseline commit SHA")
     parser.add_argument("--cand-sha", help="Candidate commit SHA")
     parser.add_argument("--summary-only", action="store_true", help="Generate only the high-signal summary")
     parser.add_argument("--output", help="Path to write the Markdown report file")
     parser.add_argument("--summary-output", help="Path to write the Markdown summary file")
+    parser.add_argument("--cases-output", help="Path to write the individual test cases Markdown file")
     parser.add_argument("--strict-decode", action="store_true",
                         help="Treat candidate decode-validation failures as hard regressions "
                              "(default: report only, do not fail the run)")
@@ -1144,27 +1195,17 @@ def main():
     if args.gates:
         ENABLED_GATES = {g.strip() for g in args.gates.split(",") if g.strip()}
 
-    results_dir = args.results_dir
+    raw_inputs = args.results_dir
+    if not raw_inputs:
+        raw_inputs = [os.path.join(SCRIPT_DIR, "results")]
+    elif isinstance(raw_inputs, str):
+        raw_inputs = [raw_inputs]
+
     summary_only = args.summary_only
     base_sha = args.base_sha
     cand_sha = args.cand_sha
 
-    if not os.path.exists(results_dir):
-        sys.stderr.write(f"Error: Results directory '{results_dir}' does not exist.\n")
-        sys.exit(1)
-
-    files = os.listdir(results_dir)
-
-    suites = {}
-    for f in files:
-        if f.endswith("_cand.json"):
-            suite_name = f[:-10]
-            base_f = suite_name + "_base.json"
-            if base_f in files:
-                suites[suite_name] = (
-                    os.path.join(
-                        results_dir, base_f), os.path.join(
-                        results_dir, f))
+    suites = find_result_pairs(raw_inputs)
 
     if not suites:
         sys.stderr.write("No result pairs found in directory.\n")
@@ -1474,6 +1515,9 @@ def main():
         report.append(
             "\n<details><summary><b>View Additional Suite Details & Wins</b></summary>\n")
 
+        rendered_object_movers = False
+        seen_footprint_details = set()
+
         for name, data in sorted(all_suite_data.items()):
             status_icon = "✅"
             if data["has_regression"]:
@@ -1494,12 +1538,16 @@ def main():
             report.append(
                 f"- Bitstream Consistency: {suite_bit_exact_percent:.1f}%")
 
-            # Named gate decisions. A skipped gate is printed as loudly as a
-            # failing one: silence about a gate is not evidence it passed.
+            # Named gate decisions. Deduplicate footprint gate if identical across suites.
             if data.get("gates"):
                 icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
                 report.append("\n**Gates**")
                 for g in data["gates"]:
+                    if g["name"] == "footprint":
+                        fp_key = f"{g['status']}:{g['detail']}"
+                        if fp_key in seen_footprint_details and len(all_suite_data) > 1:
+                            continue
+                        seen_footprint_details.add(fp_key)
                     report.append(
                         f"- {icons.get(g['status'], '?')} `{g['name']}`: {g['detail']}")
 
@@ -1520,7 +1568,8 @@ def main():
                 for note in data.get("bd_rate_notes", []):
                     report.append(f"- {note}")
 
-            if data.get("object_movers"):
+            if data.get("object_movers") and not rendered_object_movers:
+                rendered_object_movers = True
                 report.append("\n**Object .text movers**")
                 if not skip_graphs and data["object_movers"]:
                     objs = [f'"{obj}"' for _, obj in data["object_movers"][:6]]
@@ -1561,20 +1610,29 @@ def main():
                 for o in data["opportunities"]:
                     report.append(o["line"])
 
-            if data["all_cases"]:
-                report.append(
-                    f"\n<details><summary>View all {len(data['all_cases'])} cases for {name}</summary>\n")
-                report.append(
-                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
-                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                for c in data["all_cases"]:
-                    report.append(c["line"])
-                report.append("\n</details>")
-
         report.append("\n</details>")
+
+    # Build individual test cases document
+    cases_lines = ["# Individual Test Cases Report\n"]
+    total_cases_count = sum(len(d["all_cases"]) for d in all_suite_data.values())
+    cases_filename = args.cases_output or "cases.md"
+
+    for name, data in sorted(all_suite_data.items()):
+        if data["all_cases"]:
+            cases_lines.append(f"### {name} ({len(data['all_cases'])} test cases)\n")
+            cases_lines.append(
+                f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+            cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+            for c in data["all_cases"]:
+                cases_lines.append(c["line"])
+            cases_lines.append("")
+
+    if total_cases_count > 0:
+        report.append(f"\n_Full per-clip test cases ({total_cases_count} total) exported to `{os.path.basename(cases_filename)}`._\n")
 
     # Prepare outputs
     full_output = "\n".join(report) + "\n"
+    cases_output = "\n".join(cases_lines) + "\n"
 
     # Add link to full report in summary if requested
     github_server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
@@ -1607,6 +1665,17 @@ def main():
                 f.write(summary_output)
         except Exception as e:
             sys.stderr.write(f"Error: Could not write summary to {args.summary_output}: {e}\n")
+
+    cases_target = args.cases_output
+    if not cases_target and args.output:
+        cases_target = "cases.md"
+
+    if cases_target:
+        try:
+            with open(cases_target, "w") as f:
+                f.write(cases_output)
+        except Exception as e:
+            sys.stderr.write(f"Error: Could not write test cases report to {cases_target}: {e}\n")
 
     # overall_missing means "a number we expected is absent". When --gates
     # narrows the run, absence of the unselected numbers is the point, not a

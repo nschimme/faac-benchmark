@@ -62,14 +62,14 @@ jobs:
 
       - name: Generate Consolidated Comparison Report
         run: |
-          python3 compare_results.py results/ --output faac_benchmark_report.md --summary-output summary.md || true
+          python3 compare_results.py results/ --output faac_benchmark_report.md --summary-output summary.md --cases-output cases.md || true
 
       - name: Render Job Summaries & Report
         run: |
-          if [ -f summary.md ]; then
-            cat summary.md >> $GITHUB_STEP_SUMMARY
-          elif [ -f faac_benchmark_report.md ]; then
+          if [ -f faac_benchmark_report.md ]; then
             cat faac_benchmark_report.md >> $GITHUB_STEP_SUMMARY
+          elif [ -f summary.md ]; then
+            cat summary.md >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload FAAC Benchmark Results Artifact
@@ -80,3 +80,4 @@ jobs:
             results/*.json
             faac_benchmark_report.md
             summary.md
+            cases.md
