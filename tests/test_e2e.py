@@ -128,17 +128,19 @@ class TestE2EMock(unittest.TestCase):
             self.assertIn("ic_err", data["matrix"][mk],
                           f"Phase 3 ic_err missing for stereo key {mk}")
 
-    def _run_report(self) -> tuple[str, str]:
+    def _run_report(self) -> tuple[str, str, str]:
         report_md = os.path.join(self.test_dir, "report.md")
         summary_md = os.path.join(self.test_dir, "summary.md")
+        cases_md = os.path.join(self.test_dir, "cases.md")
         # compare_results.py exits 1 when regressions exist — that's expected here.
         self._run([
             sys.executable, "compare_results.py",
             self.results_dir, "--output", report_md, "--summary-output", summary_md,
+            "--cases-output", cases_md,
         ])
-        return report_md, summary_md
+        return report_md, summary_md, cases_md
 
-    def _assert_report(self, report_md: str, summary_md: str):
+    def _assert_report(self, report_md: str, summary_md: str, cases_md: str):
         with open(report_md) as f:
             content = f.read()
         self.assertIn("base_123", content)
@@ -147,13 +149,17 @@ class TestE2EMock(unittest.TestCase):
         self.assertIn("Bit-Exact", content)
         self.assertIn("Speed Δ", content)
         self.assertIn("Stereo Fid.", content)
+        self.assertIn("cases.md", content)
 
         with open(summary_md) as f:
             summary = f.read()
         self.assertIn("Regressions", summary)
         self.assertTrue(any(x in summary for x in ("Throughput", "TP", "Performance")), "Throughput/TP/Performance missing in summary")
         self.assertIn("Executive 3-Pillar Balance", summary)
-        # self.assertIn("```mermaid", summary)
+
+        with open(cases_md) as f:
+            cases = f.read()
+        self.assertIn("Individual Test Cases Report", cases)
 
     # ------------------------------------------------------------------
     # Test
@@ -169,8 +175,8 @@ class TestE2EMock(unittest.TestCase):
             self._assert_cand_results(cand_data)
 
         with self.subTest(step="report generation"):
-            report_md, summary_md = self._run_report()
-            self._assert_report(report_md, summary_md)
+            report_md, summary_md, cases_md = self._run_report()
+            self._assert_report(report_md, summary_md, cases_md)
 
 
 if __name__ == "__main__":

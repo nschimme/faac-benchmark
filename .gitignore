@@ -21,6 +21,7 @@ output/
 data/external/
 report.md
 summary.md
+cases.md
 leaderboard*.md
 comparison_results.json
 test_results/

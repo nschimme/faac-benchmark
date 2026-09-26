@@ -1078,6 +1078,57 @@ class TestCompareResultsRendering(unittest.TestCase):
             self.assertNotIn("```mermaid", content_no_graphs)
             self.assertIn("Executive 3-Pillar Balance", content_no_graphs)
 
+    def test_find_result_pairs_flexible_naming_and_direct_args(self):
+        import compare_results as C
+        with tempfile.TemporaryDirectory() as td:
+            # 1. Test direct file arguments
+            f_base = os.path.join(td, "my_base.json")
+            f_cand = os.path.join(td, "my_cand.json")
+            with open(f_base, "w") as f: f.write("{}")
+            with open(f_cand, "w") as f: f.write("{}")
+
+            pairs = C.find_result_pairs([f_base, f_cand])
+            self.assertEqual(pairs, {"pair": (f_base, f_cand)})
+
+            # 2. Test flexible hyphen and no-prefix file patterns in directory
+            f_hyphen_base = os.path.join(td, "arch-base.json")
+            f_hyphen_cand = os.path.join(td, "arch-cand.json")
+            with open(f_hyphen_base, "w") as f: f.write("{}")
+            with open(f_hyphen_cand, "w") as f: f.write("{}")
+
+            pairs_dir = C.find_result_pairs([td])
+            self.assertIn("arch", pairs_dir)
+            self.assertEqual(pairs_dir["arch"], (f_hyphen_base, f_hyphen_cand))
+
+    def test_cases_output_and_report_reference(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            results_dir = os.path.join(td, "results")
+            os.makedirs(results_dir)
+            save_results(os.path.join(results_dir, "test_base.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+            save_results(os.path.join(results_dir, "test_cand.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0}
+            }})
+
+            out_file = os.path.join(td, "report.md")
+            summary_file = os.path.join(td, "summary.md")
+            cases_file = os.path.join(td, "cases.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file, "--summary-output", summary_file, "--cases-output", cases_file]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+
+            with open(out_file) as f:
+                report_content = f.read()
+            self.assertIn("cases.md", report_content)
+
+            with open(cases_file) as f:
+                cases_content = f.read()
+            self.assertIn("# Individual Test Cases Report", cases_content)
+            self.assertIn("c1.wav", cases_content)
+
 
 class TestAttackCentroidShift(unittest.TestCase):
     """Ground-truth checks for transient.py's attack-centroid-shift metric,
