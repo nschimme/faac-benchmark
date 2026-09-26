@@ -1513,7 +1513,7 @@ def main():
 
         # 2. Collapsible Additional Details
         report.append(
-            "\n<details><summary><b>View Additional Suite Details & Wins</b></summary>\n")
+            "\n<details><summary><b>View Additional Suite Details</b></summary>\n")
 
         rendered_object_movers = False
         seen_footprint_details = set()
@@ -1586,30 +1586,6 @@ def main():
                 report.append(", ".join(
                     f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))
 
-            if data["new_wins"]:
-                report.append("\n**🆕 New Wins**")
-                report.append(f"| Test Case | {mos_label} (Base) | Delta |")
-                report.append("| :--- | :---: | :---: |")
-                for w in data["new_wins"]:
-                    report.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
-                        w["display_name"], w["mos"], w["b_mos"], w["delta"]))
-
-            if data["significant_wins"]:
-                report.append("\n**🌟 Significant Wins**")
-                report.append(
-                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
-                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                for w in data["significant_wins"]:
-                    report.append(w["line"])
-
-            if data["opportunities"]:
-                report.append("\n**💡 Opportunities**")
-                report.append(
-                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
-                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                for o in data["opportunities"]:
-                    report.append(o["line"])
-
         report.append("\n</details>")
 
     # Build individual test cases document
@@ -1620,6 +1596,35 @@ def main():
     for name, data in sorted(all_suite_data.items()):
         if data["all_cases"]:
             cases_lines.append(f"### {name} ({len(data['all_cases'])} test cases)\n")
+
+            if data["new_wins"]:
+                cases_lines.append("**🆕 New Wins**")
+                cases_lines.append(f"| Test Case | {mos_label} (Base) | Delta |")
+                cases_lines.append("| :--- | :---: | :---: |")
+                for w in data["new_wins"]:
+                    cases_lines.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
+                        w["display_name"], w["mos"], w["b_mos"], w["delta"]))
+                cases_lines.append("")
+
+            if data["significant_wins"]:
+                cases_lines.append("**🌟 Significant Wins**")
+                cases_lines.append(
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                for w in data["significant_wins"]:
+                    cases_lines.append(w["line"])
+                cases_lines.append("")
+
+            if data["opportunities"]:
+                cases_lines.append("**💡 Opportunities**")
+                cases_lines.append(
+                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                for o in data["opportunities"]:
+                    cases_lines.append(o["line"])
+                cases_lines.append("")
+
+            cases_lines.append("**All Test Cases**")
             cases_lines.append(
                 f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
             cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")

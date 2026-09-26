@@ -1129,6 +1129,43 @@ class TestCompareResultsRendering(unittest.TestCase):
             self.assertIn("# Individual Test Cases Report", cases_content)
             self.assertIn("c1.wav", cases_content)
 
+    def test_wins_and_opportunities_in_cases_md(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            results_dir = os.path.join(td, "results")
+            os.makedirs(results_dir)
+            save_results(os.path.join(results_dir, "test_base.json"), {"matrix": {
+                "s1": {"mos": 1.0, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "win.wav", "bitrate": 64.0, "time": 1.0},
+                "s2": {"mos": 3.0, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "sigwin.wav", "bitrate": 64.0, "time": 1.0},
+                "s3": {"mos": 1.5, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "opp.wav", "bitrate": 64.0, "time": 1.0},
+            }})
+            save_results(os.path.join(results_dir, "test_cand.json"), {"matrix": {
+                "s1": {"mos": 3.0, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "win.wav", "bitrate": 64.0, "time": 1.0},
+                "s2": {"mos": 3.5, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "sigwin.wav", "bitrate": 64.0, "time": 1.0},
+                "s3": {"mos": 1.5, "thresh": 2.0, "scenario": "48k_stereo_64k", "filename": "opp.wav", "bitrate": 64.0, "time": 1.0},
+            }})
+
+            out_file = os.path.join(td, "report.md")
+            summary_file = os.path.join(td, "summary.md")
+            cases_file = os.path.join(td, "cases.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file, "--summary-output", summary_file, "--cases-output", cases_file]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+
+            with open(out_file) as f:
+                report_content = f.read()
+            self.assertNotIn("**🆕 New Wins**", report_content)
+            self.assertNotIn("**🌟 Significant Wins**", report_content)
+            self.assertNotIn("**💡 Opportunities**", report_content)
+
+            with open(cases_file) as f:
+                cases_content = f.read()
+            self.assertIn("**🆕 New Wins**", cases_content)
+            self.assertIn("**🌟 Significant Wins**", cases_content)
+            self.assertIn("**💡 Opportunities**", cases_content)
+            self.assertIn("**All Test Cases**", cases_content)
+
 
 class TestAttackCentroidShift(unittest.TestCase):
     """Ground-truth checks for transient.py's attack-centroid-shift metric,
