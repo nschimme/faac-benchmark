@@ -21,6 +21,7 @@ import json
 import sys
 import os
 import argparse
+import re
 from collections import defaultdict
 from utils import (get_scenario_sort_key, scenario_family, scenario_families,
                    family_label, format_scenario_rate)
@@ -75,6 +76,74 @@ BD_RATE_FAIL_PCT = 0.50
 # footprint-only job measures no MOS, and a run that cannot measure a gate must
 # not fail on it -- but the gate still appears in the report, as a skip.
 ENABLED_GATES = None
+
+
+def _suite_rate_control(name):
+    m = re.match(r"(.+)_(abr|vbr|cbr)(?:_|$)", name)
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def _cmd_matches_rate_control(cmd, rate_control):
+    has_b = "-b" in cmd
+    has_q = "-q" in cmd
+    has_cbr = "--cbr" in cmd
+    if rate_control == "vbr":
+        return has_q and not has_b
+    if rate_control == "abr":
+        return has_b and not has_q and not has_cbr
+    return has_b and has_cbr
+
+
+def _legacy_faac(results):
+    return str(results.get("encoder_version", "")).startswith("1.")
+
+
+def harness_sanity_errors(suites):
+    """Return result-layout errors that would otherwise make a green report meaningless."""
+    errors = []
+    candidate_runs = {}
+    for name, pair in suites.items():
+        arch, expected_rate = _suite_rate_control(name)
+        if not expected_rate:
+            continue
+        for side, results in zip(("base", "cand"), pair):
+            actual_rate = results.get("rate_control")
+            if actual_rate != expected_rate:
+                errors.append(
+                    f"{name} {side} rate_control is {actual_rate!r}, expected {expected_rate!r}")
+            matrix = results.get("matrix") or {}
+            for key, clip in matrix.items():
+                cmd = clip.get("cmd")
+                if not isinstance(cmd, list) or not _cmd_matches_rate_control(cmd, expected_rate):
+                    errors.append(f"{name} {side} {key} argv disagrees with {expected_rate}")
+                    break
+                if any(arg == "--object-type" or arg.startswith("--object-type=")
+                       for arg in cmd):
+                    errors.append(f"{name} {side} {key} scenario argv sets --object-type")
+                    break
+            if (not _legacy_faac(results) and
+                    any(c.get("scenario") == "48k_stereo_32k" for c in matrix.values()) and
+                    not any(str(c.get("object_type", "")).startswith("HE-AAC")
+                            for c in matrix.values())):
+                errors.append(f"{name} {side} 48k_stereo_32k has no HE-AAC result")
+            if side == "cand" and arch:
+                candidate_runs[(arch, expected_rate)] = matrix
+
+    for arch in sorted({a for a, _ in candidate_runs}):
+        modes = sorted(m for a, m in candidate_runs if a == arch)
+        for i, first in enumerate(modes):
+            for second in modes[i + 1:]:
+                a = candidate_runs[(arch, first)]
+                b = candidate_runs[(arch, second)]
+                shared = set(a) & set(b)
+                if shared:
+                    same = sum(a[k].get("md5") == b[k].get("md5")
+                               for k in shared if a[k].get("md5") and b[k].get("md5"))
+                    if same / len(shared) > 0.90:
+                        errors.append(
+                            f"{arch} {first}/{second} have identical md5 for "
+                            f"{same}/{len(shared)} shared clips")
+    return errors
 
 
 def bootstrap_mean_ci(values, n=2000, seed=0):
@@ -612,7 +681,8 @@ def analyze_pair(base_file, cand_file):
             if o_mos is None:
                 status = "❌"  # Missing MOS is a failure
                 suite_results["missing_mos_count"] += 1
-                suite_results["has_regression"] = True
+                if ENABLED_GATES is None or "mos" in ENABLED_GATES:
+                    suite_results["has_regression"] = True
                 suite_results["missing_data"] = True
                 delta = -10.0  # Force to top of regressions
 
@@ -1098,6 +1168,23 @@ def main():
 
     if not suites:
         sys.stderr.write("No result pairs found in directory.\n")
+        sys.exit(1)
+
+    sanity_inputs = {}
+    for name, (base_file, cand_file) in suites.items():
+        try:
+            with open(base_file) as f:
+                base = json.load(f)
+            with open(cand_file) as f:
+                cand = json.load(f)
+        except Exception as e:
+            sys.stderr.write(f"HARNESS ERROR: could not read {name}: {e}\n")
+            sys.exit(1)
+        sanity_inputs[name] = (base, cand)
+    sanity_errors = harness_sanity_errors(sanity_inputs)
+    for error in sanity_errors:
+        sys.stderr.write(f"HARNESS ERROR: {error}\n")
+    if sanity_errors:
         sys.exit(1)
 
     all_suite_data = {}

@@ -140,6 +140,10 @@ python3 compare_results.py <results_dir> \
 `compare_results.py` exits non-zero when it finds a regression or missing data,
 which fails the CI job.
 
+It also fails with `HARNESS ERROR:` if a suite's recorded argv disagrees with
+its rate-control name, rate-control suites produce the same streams, or AUTO
+mode fails to resolve HE-AAC for `48k_stereo_32k` (legacy faac is exempt).
+
 ## Decode-error gating (`--strict-decode`)
 
 Each candidate clip carries a `decode_error` field from phase 1's decode

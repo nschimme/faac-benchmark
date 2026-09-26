@@ -45,6 +45,42 @@ from config import SCENARIOS, CORPORA, GATE_CLIPS, GATE_FALLBACK_N
 _OBJECT_TYPE_RE = re.compile(rb"^Object type:\s*([^(]+?)\s*\(", re.MULTILINE)
 
 
+def _has_arg(cmd, flag):
+    return flag in cmd or any(arg.startswith(flag + "=") for arg in cmd)
+
+
+def validate_faac_cmd(cmd, rate_control, throughput_variant=None, legacy=False):
+    """Reject a benchmark argv that would measure a different mode."""
+    if throughput_variant is None and _has_arg(cmd, "--object-type"):
+        raise RuntimeError("scenario encode must not set --object-type")
+
+    if rate_control == "vbr":
+        if not _has_arg(cmd, "-q") or _has_arg(cmd, "-b"):
+            raise RuntimeError("VBR encode must use -q and not -b")
+    elif rate_control == "abr":
+        if (not _has_arg(cmd, "-b") or _has_arg(cmd, "--cbr") or
+                _has_arg(cmd, "-q")):
+            raise RuntimeError("ABR encode must use -b without --cbr or -q")
+    elif rate_control == "cbr":
+        if not _has_arg(cmd, "-b") or not _has_arg(cmd, "--cbr"):
+            raise RuntimeError("CBR encode must use -b and --cbr")
+
+    if throughput_variant and not legacy:
+        expected = "lc" if throughput_variant == "_lc" else "he-aac-v1"
+        try:
+            actual = cmd[cmd.index("--object-type") + 1]
+        except (ValueError, IndexError):
+            actual = None
+        if actual != expected:
+            raise RuntimeError(
+                f"throughput {throughput_variant} encode must use --object-type {expected}")
+
+
+def portable_cmd(cmd):
+    """Keep result JSON independent of the runner's directory layout."""
+    return [os.path.basename(arg) if os.path.isabs(arg) else arg for arg in cmd]
+
+
 def parse_object_type(stderr_bytes):
     """Which object type AUTO actually resolved to for this encode.
 
@@ -151,6 +187,9 @@ def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_a
     if extra_args:
         cmd.extend(extra_args)
 
+    if isinstance(encoder, FAACEncoder):
+        validate_faac_cmd(cmd, rate_control, legacy=encoder.legacy)
+
     try:
         proc, t_duration, peak_ram_kb = measure_peak_ram(list(cmd), env=encoder.get_run_env() or env, check=True)
         object_type = parse_object_type(proc.stderr)
@@ -214,6 +253,7 @@ def process_sample(encoder, name, cfg, sample, data_dir, precision, env, extra_a
             "thresh": cfg["thresh"],
             "scenario": name,
             "object_type": object_type,
+            "cmd": portable_cmd(cmd),
             "filename": sample,
             "aac": os.path.basename(output_path),
             "decode_error": decode_err if not valid else None,
@@ -269,6 +309,7 @@ def run_benchmark(
         "encoder_name": f"FAAC {faac_ver}" if faac_ver else "FAAC",
         "encoder_version": faac_ver or "unknown",
         "faac_args": " ".join(extra_args) if extra_args else "",
+        "rate_control": rate_control,
         "matrix": {},
         "throughput": {},
         "throughput_samples": {},
@@ -444,6 +485,10 @@ def run_benchmark(
                             tp_cmd.extend(extra_flags)
                         if extra_args:
                             tp_cmd.extend(extra_args)
+                        if isinstance(encoder_inst, FAACEncoder):
+                            validate_faac_cmd(
+                                tp_cmd, rate_control, var_suffix,
+                                legacy=encoder_inst.legacy)
 
                         if valgrind_bin:
                             vg_cmd = [valgrind_bin, "--tool=cachegrind", "--cachegrind-out-file=/dev/null"] + tp_cmd
