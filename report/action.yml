@@ -43,5 +43,8 @@ runs:
         if [ -f "report.md" ]; then
           cat report.md >> $GITHUB_STEP_SUMMARY
         fi
+        if [ -f "cases.md" ]; then
+          cat cases.md >> $GITHUB_STEP_SUMMARY
+        fi
 
         exit ${EXIT_CODE:-0}

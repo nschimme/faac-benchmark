@@ -72,6 +72,12 @@ jobs:
             cat summary.md >> $GITHUB_STEP_SUMMARY
           fi
 
+      - name: Render Test Cases Details
+        run: |
+          if [ -f cases.md ]; then
+            cat cases.md >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Upload FAAC Benchmark Results Artifact
         uses: actions/upload-artifact@v7
         with:
