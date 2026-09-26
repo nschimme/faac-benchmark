@@ -18,7 +18,7 @@ jobs:
     strategy:
       matrix:
         arch: [amd64]
-        rate_control: [abr, vbr]
+        rate_control: [abr, vbr, cbr]
     steps:
       - name: Checkout Candidate
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
           meson setup build_base --buildtype=release
           ninja -C build_base
       - name: Run Benchmark (Baseline)
-        uses: nschimme/faac-benchmark@v1
+        uses: nschimme/faac-benchmark@master
         with:
           faac-bin: ./baseline/build_base/frontend/faac
           libfaac-so: ./baseline/build_base/libfaac/libfaac.so
@@ -56,7 +56,7 @@ jobs:
           run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_base
           output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_base.json
       - name: Run Benchmark (Candidate)
-        uses: nschimme/faac-benchmark@v1
+        uses: nschimme/faac-benchmark@master
         with:
           faac-bin: ./candidate/build_cand/frontend/faac
           libfaac-so: ./candidate/build_cand/libfaac/libfaac.so
@@ -83,7 +83,7 @@ jobs:
           pattern: results-*
           merge-multiple: true
       - name: Generate Report
-        uses: nschimme/faac-benchmark/report@v1
+        uses: nschimme/faac-benchmark/report@master
         with:
           results-path: ./results
           base-sha: ${{ github.event.pull_request.base.sha }}
@@ -105,7 +105,7 @@ Runs the encoding benchmark and MOS computation for a single configuration. Each
 | `faac-bin` | Path to the `faac` binary. | Yes | |
 | `libfaac-so` | Path to the `libfaac.so` library. | Yes | |
 | `run-name` | Identifier for this run (e.g. `amd64_abr_base`). | Yes | |
-| `rate-control` | Rate control mode: `abr` or `vbr`. | No | `abr` |
+| `rate-control` | Rate control mode: `abr`, `vbr` (`-q` from each scenario's `vbr_q`) or `cbr` (`-b` plus `--cbr`). Scenarios pass no `--object-type`, so libfaac AUTO picks LC or HE per rung; the recorded `object_type` says which. | No | `abr` |
 | `output-json` | Path where the result JSON should be saved. | Yes | |
 | `coverage` | Percentage of dataset to cover (1-100). | No | `100` |
 | `skip-mos` | Skip perceptual quality (MOS) computation. | No | `false` |
@@ -113,6 +113,9 @@ Runs the encoding benchmark and MOS computation for a single configuration. Each
 | `scenarios` | Comma-separated scenarios or rate families (e.g. `16k_mono_20k,44k1_stereo`). | No | |
 | `include-tests` | Comma-separated include globs (e.g. `TCD_*`). | No | |
 | `exclude-tests` | Comma-separated exclude globs. | No | |
+| `gate` | Use the fixed gate clip subset (`config.GATE_CLIPS`). | No | `false` |
+| `build-dir` | Meson build directory, for per-object sizes and toolchain identity. | No | |
+| `throughput-only` | Re-measure only throughput and merge into an existing output JSON (refreshes a cached baseline on the candidate's runner). | No | `false` |
 
 ### Action: `nschimme/faac-benchmark/report`
 

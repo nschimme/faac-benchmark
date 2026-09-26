@@ -436,7 +436,9 @@ def run_benchmark(
                             tp_cmd = encoder_inst.get_encode_cmd(
                                 eff_input, output_path, bitrate, 2, 44100,
                                 rate_control=rate_control, vbr_q=vbr_q)
-                            tp_cmd[-1:-1] = extra_flags[-2:]
+                            if not encoder_inst.legacy:
+                                obj = "he-aac-v1" if var_suffix == "_he" else "lc"
+                                tp_cmd[-1:-1] = ["--object-type", obj]
                         else:
                             tp_cmd = encoder_inst.get_encode_cmd(eff_input, output_path, 128, 2, 44100) if encoder_inst else [bin_path_target]
                             tp_cmd.extend(extra_flags)
