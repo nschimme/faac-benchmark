@@ -125,6 +125,73 @@ class TestFAACEncodeCommands(unittest.TestCase):
         self.assertIn("-w", cmd)
 
 
+class TestEncodeCommandSanity(unittest.TestCase):
+    def test_scenario_rate_control_validates(self):
+        from phase1_encode import validate_faac_cmd
+        validate_faac_cmd(["faac", "-b", "64", "in.wav"], "abr")
+        validate_faac_cmd(["faac", "-q", "80", "in.wav"], "vbr")
+        validate_faac_cmd(["faac", "-b", "64", "--cbr", "in.wav"], "cbr")
+        with self.assertRaises(RuntimeError):
+            validate_faac_cmd(["faac", "-b", "64", "--object-type", "lc"], "abr")
+        with self.assertRaises(RuntimeError):
+            validate_faac_cmd(["faac", "-b", "64"], "vbr")
+        with self.assertRaises(RuntimeError):
+            validate_faac_cmd(["faac", "-q", "80"], "abr")
+        with self.assertRaises(RuntimeError):
+            validate_faac_cmd(["faac", "-b", "64"], "cbr")
+
+    def test_throughput_object_type_validates(self):
+        from phase1_encode import validate_faac_cmd
+        validate_faac_cmd(["faac", "-b", "128", "--object-type", "lc"],
+                          "abr", "_lc")
+        validate_faac_cmd(["faac", "-q", "50", "--object-type", "he-aac-v1"],
+                          "vbr", "_he")
+        with self.assertRaises(RuntimeError):
+            validate_faac_cmd(["faac", "-b", "32", "--object-type", "lc"],
+                              "abr", "_he")
+
+
+class TestHarnessSanity(unittest.TestCase):
+    def _result(self, rate, scenario="48k_stereo_32k", md5="a", object_type="HE-AAC"):
+        cmd = ["faac", "-q", "50"] if rate == "vbr" else ["faac", "-b", "32"]
+        if rate == "cbr":
+            cmd.append("--cbr")
+        return {"rate_control": rate, "encoder_version": "2.1.0", "matrix": {
+            "clip": {"scenario": scenario, "cmd": cmd, "md5": md5,
+                     "object_type": object_type}}}
+
+    def test_valid_suite_passes(self):
+        from compare_results import harness_sanity_errors
+        abr = self._result("abr", md5="abr")
+        vbr = self._result("vbr", md5="vbr")
+        self.assertEqual(harness_sanity_errors({
+            "amd64_abr_gate": (abr, abr), "amd64_vbr_gate": (vbr, vbr)}), [])
+
+    def test_rate_control_or_argv_mismatch_fails(self):
+        from compare_results import harness_sanity_errors
+        bad = self._result("abr")
+        bad["matrix"]["clip"]["cmd"] = ["faac", "-q", "50"]
+        errors = harness_sanity_errors({"amd64_abr_gate": (bad, bad)})
+        self.assertTrue(any("argv disagrees" in e for e in errors))
+
+    def test_identical_rate_control_streams_fail(self):
+        from compare_results import harness_sanity_errors
+        abr = self._result("abr", md5="same")
+        vbr = self._result("vbr", md5="same")
+        errors = harness_sanity_errors({
+            "amd64_abr_gate": (abr, abr), "amd64_vbr_gate": (vbr, vbr)})
+        self.assertTrue(any("identical md5" in e for e in errors))
+
+    def test_missing_he_result_fails_but_legacy_skips(self):
+        from compare_results import harness_sanity_errors
+        bad = self._result("abr", object_type=None)
+        self.assertTrue(any("no HE-AAC" in e for e in harness_sanity_errors(
+            {"amd64_abr_gate": (bad, bad)})))
+        bad["encoder_version"] = "1.28"
+        self.assertFalse(any("no HE-AAC" in e for e in harness_sanity_errors(
+            {"amd64_abr_gate": (bad, bad)})))
+
+
 class TestGateFilter(unittest.TestCase):
     def setUp(self):
         from phase1_encode import gate_filter
