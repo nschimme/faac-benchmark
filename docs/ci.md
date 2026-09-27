@@ -14,10 +14,9 @@ Run benchmarks in a matrix, then consolidate with the reporting action.
 ```yaml
 jobs:
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
-        arch: [amd64]
         rate_control: [abr, vbr, cbr]
     steps:
       - name: Checkout Candidate
@@ -71,7 +70,7 @@ jobs:
 
   report:
     needs: benchmark
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     if: always()
     permissions:
       pull-requests: write
@@ -128,6 +127,13 @@ Summary, and writes `summary.md` for a PR comment.
 | `base-sha` | Baseline commit SHA (else pulled from JSONs). | No | |
 | `cand-sha` | Candidate commit SHA (else pulled from JSONs). | No | |
 | `summary-only` | Generate only the high-signal summary. | No | `false` |
+| `report-output` | Output filename for the full Markdown report. | No | `report.md` |
+| `summary-output` | Output filename for the Markdown summary. | No | `summary.md` |
+| `cases-output` | Output filename for per-clip test cases details (optional). | No | |
+| `strict-decode` | Treat candidate decode validation failures as hard regressions. | No | `false` |
+| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`). | No | |
+| `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
+| `skip-graphs` | Skip generating Mermaid.js charts in the report. | No | `false` |
 
 ## Consolidating results
 

@@ -60,19 +60,23 @@ jobs:
           FAAC_LIB="$(pwd)/../faac_src/build/libfaac/libfaac.so"
           python3 run_benchmark.py "faac_${{ matrix.rate_control }}_cand" "results/faac_${{ matrix.rate_control }}_cand.json" --encoder-bin "$FAAC_BIN" --encoder-lib "$FAAC_LIB" --rate-control ${{ matrix.rate_control }} $GATE_FLAG
 
-      - name: Render Baseline Job Summary
-        run: |
-          python3 render_job_summary.py "results/faac_${{ matrix.rate_control }}_base.json" --name "FAAC ${{ matrix.rate_control }} Baseline" >> $GITHUB_STEP_SUMMARY
-
-      - name: Render Candidate Job Summary
-        run: |
-          python3 render_job_summary.py "results/faac_${{ matrix.rate_control }}_cand.json" --name "FAAC ${{ matrix.rate_control }} Candidate" >> $GITHUB_STEP_SUMMARY
+      - name: Generate Per-Rate Control Comparison Report
+        uses: ./report
+        with:
+          results-path: results
+          report-output: report_${{ matrix.rate_control }}.md
+          summary-output: summary_${{ matrix.rate_control }}.md
+          cases-output: cases_${{ matrix.rate_control }}.md
+          summary-only: false
 
       - name: Upload Results Artifact
         uses: actions/upload-artifact@v7
         with:
           name: results-${{ matrix.rate_control }}
-          path: results/faac_${{ matrix.rate_control }}_*.json
+          path: |
+            results/faac_${{ matrix.rate_control }}_*.json
+            report_${{ matrix.rate_control }}.md
+            cases_${{ matrix.rate_control }}.md
 
   consolidated-report:
     needs: benchmark
@@ -97,16 +101,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate Consolidated Comparison Report
-        run: |
-          python3 compare_results.py results/ --output faac_benchmark_report.md --summary-output summary.md || true
-
-      - name: Render Consolidated Step Summary
-        run: |
-          if [ -f faac_benchmark_report.md ]; then
-            cat faac_benchmark_report.md >> $GITHUB_STEP_SUMMARY
-          elif [ -f summary.md ]; then
-            cat summary.md >> $GITHUB_STEP_SUMMARY
-          fi
+        uses: ./report
+        with:
+          results-path: results
 
       - name: Upload Consolidated Report Artifact
         uses: actions/upload-artifact@v7
