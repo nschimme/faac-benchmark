@@ -246,7 +246,9 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 "sys.stderr.buffer.flush()\n"
                 "sys.stdout.buffer.write(out)\n"
                 "sys.stderr.buffer.write(err)\n"
-                "ret_code = ret if (ret >= 0 and ret <= 255) else (128 + abs(ret) if ret < 0 else ret % 256)\n"
+                "ret_code = ret if (ret >= 0 and ret <= 255) else (-abs(ret) if ret < 0 else ret % 256)\n"
+                "if ret_code < 0:\n"
+                "    sys.exit(256 + ret_code)\n"
                 "sys.exit(ret_code)\n"
             )
             runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
@@ -275,7 +277,11 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
-            res = subprocess.CompletedProcess(cmd, returncode=proc.returncode, stdout=proc.stdout, stderr=clean_stderr)
+            ret_code = proc.returncode
+            if ret_code > 128 and ret_code != 124 and ret_code != 252:
+                # Convert shell signal exit code (e.g. 134 for SIGABRT, 139 for SIGSEGV) to negative signal
+                ret_code = -(ret_code - 128)
+            res = subprocess.CompletedProcess(cmd, returncode=ret_code, stdout=proc.stdout, stderr=clean_stderr)
             if check and res.returncode != 0:
                 raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
             return res, duration, rss

@@ -587,14 +587,15 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
             stderr_clean = stderr_text.strip()
-            is_timeout = (res.returncode == -124) or ("timed out" in stderr_clean.lower()) or ("timeout" in stderr_clean.lower())
+            is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_clean.lower()) or ("timeout" in stderr_clean.lower())
             if is_timeout:
                 err_detail = "Timeout expired"
+            elif res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139):
+                sig_num = -res.returncode if res.returncode < 0 else (res.returncode - 128)
+                err_detail = f"Process terminated by signal {sig_num}"
             elif stderr_clean:
                 stderr_tail = next((l for l in reversed(stderr_clean.splitlines()) if l.strip()), "")
                 err_detail = f"exit code {res.returncode}: {stderr_tail}"
-            elif res.returncode < 0:
-                err_detail = f"Process terminated by signal {-res.returncode}"
             else:
                 err_detail = f"exit code {res.returncode}"
 
@@ -869,8 +870,8 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
         stderr_low = (res.stderr or "").lower()
-        is_timeout = (res.returncode == -124) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
-        is_crash = (res.returncode < 0) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
+        is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
+        is_crash = (res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139)) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
 
         if not is_timeout and not is_crash:
             if res.returncode == 0:

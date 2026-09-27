@@ -273,7 +273,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         for i, tool_name in enumerate(sorted_tools):
             o = tool_overall[tool_name]
-            rank_str = f"🏆 {i+1}" if i == 0 and o['p1_mos'] > 0 else f"{i+1}"
+            if i == 0 and o['p1_mos'] > 0:
+                rank_str = f"🥇 {i+1}"
+            elif i == 1 and o['p1_mos'] > 0:
+                rank_str = f"🥈 {i+1}"
+            elif i == 2 and o['p1_mos'] > 0:
+                rank_str = f"🥉 {i+1}"
+            else:
+                rank_str = f"{i+1}"
 
             if o['valid_rate'] == 100:
                 status_str = "OK"
@@ -807,8 +814,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             if tool_line_data_speed:
                 chart_vals_sp = [v for vals in tool_line_data_speed.values() for v in vals if v is not None]
-                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_sp, "0.0 --> 100.0")
-                sc_labels = [f'"{s}"' for s in scenario_list]
+                max_v = max(chart_vals_sp) if chart_vals_sp else 100.0
+                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_sp, f"0.0 --> {max_v * 1.15:.1f}")
+                sc_labels = [f'"{scenario_axis_label(s, scenario_family(s))}"' for s in scenario_list]
                 f.write("#### Encoding Speed (xRT)\n\n")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
@@ -1128,7 +1136,14 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
         for i, rk in enumerate(sorted_rk):
             o = overall[rk]
-            rank_str = f"🏆 {i+1}" if i == 0 and o["p1_mos"] > 0 else f"{i+1}"
+            if i == 0 and o["p1_mos"] > 0:
+                rank_str = f"🥇 {i+1}"
+            elif i == 1 and o["p1_mos"] > 0:
+                rank_str = f"🥈 {i+1}"
+            elif i == 2 and o["p1_mos"] > 0:
+                rank_str = f"🥉 {i+1}"
+            else:
+                rank_str = f"{i+1}"
 
             c_cnt = crash_counts[rk]
             t_cnt = timeout_counts[rk]
