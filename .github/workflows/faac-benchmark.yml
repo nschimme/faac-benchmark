@@ -8,8 +8,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  benchmark-abr:
-    runs-on: ubuntu-latest
+  benchmark:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        rate_control: [abr, vbr]
     steps:
       - uses: actions/checkout@v7
 
@@ -38,16 +41,16 @@ jobs:
           meson setup build --buildtype=release
           ninja -C build
 
-      - name: Run Benchmark ABR (Baseline - APT Legacy FAAC)
+      - name: Run Benchmark (Baseline - APT Legacy FAAC)
         run: |
           GATE_FLAG=""
           if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
             GATE_FLAG="--gate"
           fi
           mkdir -p results
-          python3 run_benchmark.py "faac_abr_base" "results/faac_abr_base.json" --encoder-bin "/usr/bin/faac" --encoder-lib "/usr/lib/x86_64-linux-gnu/libfaac.so.0" --rate-control abr $GATE_FLAG
+          python3 run_benchmark.py "faac_${{ matrix.rate_control }}_base" "results/faac_${{ matrix.rate_control }}_base.json" --encoder-bin "/usr/bin/faac" --encoder-lib "/usr/lib/x86_64-linux-gnu/libfaac.so.0" --rate-control ${{ matrix.rate_control }} $GATE_FLAG
 
-      - name: Run Benchmark ABR (Candidate - FAAC HEAD)
+      - name: Run Benchmark (Candidate - FAAC HEAD)
         run: |
           GATE_FLAG=""
           if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
@@ -55,88 +58,25 @@ jobs:
           fi
           FAAC_BIN="$(pwd)/../faac_src/build/frontend/faac"
           FAAC_LIB="$(pwd)/../faac_src/build/libfaac/libfaac.so"
-          python3 run_benchmark.py "faac_abr_cand" "results/faac_abr_cand.json" --encoder-bin "$FAAC_BIN" --encoder-lib "$FAAC_LIB" --rate-control abr $GATE_FLAG
+          python3 run_benchmark.py "faac_${{ matrix.rate_control }}_cand" "results/faac_${{ matrix.rate_control }}_cand.json" --encoder-bin "$FAAC_BIN" --encoder-lib "$FAAC_LIB" --rate-control ${{ matrix.rate_control }} $GATE_FLAG
 
-      - name: Render ABR Base Job Summary
+      - name: Render Baseline Job Summary
         run: |
-          python3 render_job_summary.py results/faac_abr_base.json --name "FAAC ABR Baseline" >> $GITHUB_STEP_SUMMARY
+          python3 render_job_summary.py "results/faac_${{ matrix.rate_control }}_base.json" --name "FAAC ${{ matrix.rate_control }} Baseline" >> $GITHUB_STEP_SUMMARY
 
-      - name: Render ABR Cand Job Summary
+      - name: Render Candidate Job Summary
         run: |
-          python3 render_job_summary.py results/faac_abr_cand.json --name "FAAC ABR Candidate" >> $GITHUB_STEP_SUMMARY
+          python3 render_job_summary.py "results/faac_${{ matrix.rate_control }}_cand.json" --name "FAAC ${{ matrix.rate_control }} Candidate" >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload ABR Results Artifact
+      - name: Upload Results Artifact
         uses: actions/upload-artifact@v7
         with:
-          name: abr-results
-          path: results/faac_abr_*.json
-
-  benchmark-vbr:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y faac faad fdkaac ffmpeg valgrind meson ninja-build
-
-      - name: Install Python dependencies
-        run: |
-          pip install -r requirements.txt
-
-      - name: Setup Datasets
-        run: |
-          python3 setup_datasets.py
-
-      - name: Build FAAC HEAD from Source
-        run: |
-          git clone https://github.com/knik0/faac.git ../faac_src
-          cd ../faac_src
-          meson setup build --buildtype=release
-          ninja -C build
-
-      - name: Run Benchmark VBR (Baseline - APT Legacy FAAC)
-        run: |
-          GATE_FLAG=""
-          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
-            GATE_FLAG="--gate"
-          fi
-          mkdir -p results
-          python3 run_benchmark.py "faac_vbr_base" "results/faac_vbr_base.json" --encoder-bin "/usr/bin/faac" --encoder-lib "/usr/lib/x86_64-linux-gnu/libfaac.so.0" --rate-control vbr $GATE_FLAG
-
-      - name: Run Benchmark VBR (Candidate - FAAC HEAD)
-        run: |
-          GATE_FLAG=""
-          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
-            GATE_FLAG="--gate"
-          fi
-          FAAC_BIN="$(pwd)/../faac_src/build/frontend/faac"
-          FAAC_LIB="$(pwd)/../faac_src/build/libfaac/libfaac.so"
-          python3 run_benchmark.py "faac_vbr_cand" "results/faac_vbr_cand.json" --encoder-bin "$FAAC_BIN" --encoder-lib "$FAAC_LIB" --rate-control vbr $GATE_FLAG
-
-      - name: Render VBR Base Job Summary
-        run: |
-          python3 render_job_summary.py results/faac_vbr_base.json --name "FAAC VBR Baseline" >> $GITHUB_STEP_SUMMARY
-
-      - name: Render VBR Cand Job Summary
-        run: |
-          python3 render_job_summary.py results/faac_vbr_cand.json --name "FAAC VBR Candidate" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload VBR Results Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: vbr-results
-          path: results/faac_vbr_*.json
+          name: results-${{ matrix.rate_control }}
+          path: results/faac_${{ matrix.rate_control }}_*.json
 
   consolidated-report:
-    needs: [benchmark-abr, benchmark-vbr]
-    runs-on: ubuntu-latest
+    needs: benchmark
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -149,17 +89,12 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Download ABR Results
+      - name: Download Benchmark Results
         uses: actions/download-artifact@v7
         with:
-          name: abr-results
+          pattern: results-*
           path: results
-
-      - name: Download VBR Results
-        uses: actions/download-artifact@v7
-        with:
-          name: vbr-results
-          path: results
+          merge-multiple: true
 
       - name: Generate Consolidated Comparison Report
         run: |
