@@ -608,7 +608,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 "duration": 0,
                 "audio_duration": None,
                 "decode_valid": False,
-                "decode_error": "TIMEOUT" if is_timeout else f"Decode failed: {err_detail}",
+                "decode_error": "Timeout expired" if is_timeout else f"Decode failed: {err_detail}",
                 "timeout": is_timeout,
                 "snr_db": None,
                 "mos_source": None,
@@ -777,7 +777,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         elif "timed out" in detail.lower() or "timeout" in detail.lower():
             is_timeout = True
 
-        err_msg = "TIMEOUT" if is_timeout else f"Decode failed: {detail}"
+        err_msg = "Timeout expired" if is_timeout else f"Decode failed: {detail}"
         return {
             "tool": decoder.name,
             "row_key": decoder_row_key(decoder),

@@ -631,7 +631,7 @@ def main():
                             completed_dec += 1
                             if res:
                                 decoder_results.append(res)
-                                status_mark = "TIMEOUT" if res.get("timeout") else ("OK" if res["decode_valid"] else "FAIL")
+                                status_mark = "Timeout" if res.get("timeout") else ("OK" if res["decode_valid"] else "Failed")
                                 mos_tag = {"inherited": " inh", "scored": ""}.get(res.get("mos_source"), "")
                                 mos_str = f", MOS: {res['mos']:.2f}{mos_tag}" if res.get("mos") is not None else ""
                                 snr_str = f", SNR: {res['snr_db']:.1f} dB" if res.get("snr_db") is not None else ""
@@ -674,7 +674,7 @@ def main():
                             completed_rob += 1
                             if res:
                                 decoder_robustness_results.append(res)
-                                status_mark = "TIMEOUT" if res.get("timeout") else ("RUNAWAY" if res.get("runaway") else ("PASS" if res.get("passed") else "FAIL"))
+                                status_mark = "Timeout" if res.get("timeout") else ("Runaway" if res.get("runaway") else ("Passed" if res.get("passed") else "Failed"))
                                 prof_str = profile_label(res.get('profile', 'lc'))
                                 print(f"    [{completed_rob}/{len(rob_tasks)}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}")
                 else:
