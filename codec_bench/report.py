@@ -1134,14 +1134,14 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             t_cnt = timeout_counts[rk]
             r_cnt = runaway_counts[rk]
 
-            if c_cnt > 0 or t_cnt > 0 or r_cnt > 0:
-                issues = []
-                if c_cnt > 0: issues.append(f"{c_cnt}x crash")
-                if t_cnt > 0: issues.append(f"{t_cnt}x timeout")
-                if r_cnt > 0: issues.append(f"{r_cnt}x runaway")
-                status_str = f"⚠️ ({', '.join(issues)})"
-            elif mono_downmix_counts[rk] > 0:
-                status_str = "No HE-v2 PS (1ch)"
+            issues = []
+            if c_cnt > 0: issues.append(f"{c_cnt}x crash")
+            if t_cnt > 0: issues.append(f"{t_cnt}x timeout")
+            if r_cnt > 0: issues.append(f"{r_cnt}x runaway")
+            if mono_downmix_counts[rk] > 0: issues.append("No HE-v2 PS (1ch)")
+
+            if issues:
+                status_str = f"⚠️ ({', '.join(issues)})" if (c_cnt > 0 or t_cnt > 0 or r_cnt > 0 or len(issues) > 1) else "No HE-v2 PS (1ch)"
             elif o["valid_rate"] == 100:
                 status_str = "OK"
             else:

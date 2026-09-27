@@ -1141,20 +1141,21 @@ def find_result_pairs(inputs):
     for results_dir in dirs_to_scan:
         if not os.path.exists(results_dir):
             continue
-        files = os.listdir(results_dir)
-        for f in sorted(files):
-            for cand_suf, base_suf in replacements:
-                if f.endswith(cand_suf):
-                    prefix = f[:-len(cand_suf)]
-                    base_f = prefix + base_suf
-                    if base_f in files:
-                        suite_name = prefix.rstrip("_-.") or "default"
-                        if suite_name not in suites:
-                            suites[suite_name] = (
-                                os.path.join(results_dir, base_f),
-                                os.path.join(results_dir, f)
-                            )
-                        break
+        for root, _, files in os.walk(results_dir):
+            file_set = set(files)
+            for f in sorted(files):
+                for cand_suf, base_suf in replacements:
+                    if f.endswith(cand_suf):
+                        prefix = f[:-len(cand_suf)]
+                        base_f = prefix + base_suf
+                        if base_f in file_set:
+                            suite_name = prefix.rstrip("_-.") or "default"
+                            if suite_name not in suites:
+                                suites[suite_name] = (
+                                    os.path.join(root, base_f),
+                                    os.path.join(root, f)
+                                )
+                            break
 
     return suites
 
