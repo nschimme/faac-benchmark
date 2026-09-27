@@ -236,20 +236,17 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 "    out, err = res.stdout, res.stderr\n"
                 "except subprocess.TimeoutExpired:\n"
                 "    t1 = time.perf_counter()\n"
-                "    ret = -124\n"
+                "    ret = 124\n"
                 "    out, err = b'', b'Command timed out'\n"
                 "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
                 "if sys.platform == 'darwin':\n"
                 "    rss = int(rss / 1024)\n"
                 "dur = t1 - t0\n"
-                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n__DUR__:{dur:.8f}\\n'.encode())\n"
+                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n__DUR__:{dur:.8f}\\n__RET__:{ret}\\n'.encode())\n"
                 "sys.stderr.buffer.flush()\n"
                 "sys.stdout.buffer.write(out)\n"
                 "sys.stderr.buffer.write(err)\n"
-                "ret_code = ret if (ret >= 0 and ret <= 255) else (-abs(ret) if ret < 0 else ret % 256)\n"
-                "if ret_code < 0:\n"
-                "    sys.exit(256 + ret_code)\n"
-                "sys.exit(ret_code)\n"
+                "sys.exit(0)\n"
             )
             runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
             proc = subprocess.run(runner_cmd, capture_output=True, env=env, timeout=timeout + 5)
@@ -258,6 +255,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
 
             rss = None
             proc_dur = None
+            proc_ret = 0
             stderr_clean = []
             for line in proc.stderr.splitlines():
                 if line.startswith(b"__RSS__:"):
@@ -270,6 +268,11 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                         proc_dur = float(line.split(b":", 1)[1].strip())
                     except Exception:
                         pass
+                elif line.startswith(b"__RET__:"):
+                    try:
+                        proc_ret = int(line.split(b":", 1)[1].strip())
+                    except Exception:
+                        pass
                 else:
                     stderr_clean.append(line)
 
@@ -277,11 +280,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
-            ret_code = proc.returncode
-            if ret_code > 128 and ret_code != 124 and ret_code != 252:
-                # Convert shell signal exit code (e.g. 134 for SIGABRT, 139 for SIGSEGV) to negative signal
-                ret_code = -(ret_code - 128)
-            res = subprocess.CompletedProcess(cmd, returncode=ret_code, stdout=proc.stdout, stderr=clean_stderr)
+            res = subprocess.CompletedProcess(cmd, returncode=proc_ret, stdout=proc.stdout, stderr=clean_stderr)
             if check and res.returncode != 0:
                 raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
             return res, duration, rss
