@@ -623,6 +623,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
+        ic_err_val = None
         conformance_snr_db = None
         alignment_delay_ms = None
         gapless_offset_samples = None
@@ -657,6 +658,24 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                         gapless_length_delta = dw.getnframes() - rw.getnframes()
                 except Exception:
                     gapless_length_delta = None
+
+                if v_channels >= 2:
+                    try:
+                        import phase3_stereo
+                        with tempfile.TemporaryDirectory() as td:
+                            ref_wav_stereo = get_cached_ref_wav(ref_cache_dir or td, ref_path, 48000, v_channels) if ref_cache_dir else None
+                            if not ref_wav_stereo:
+                                ref_wav_stereo = os.path.join(td, "ref_stereo.wav")
+                                if not wav_conv(ref_path, ref_wav_stereo, rate=48000, channels=v_channels):
+                                    ref_wav_stereo = ref_path
+
+                            dec_wav_stereo = os.path.join(td, "dec_stereo.wav")
+                            if not wav_conv(output_path, dec_wav_stereo, rate=48000, channels=v_channels):
+                                dec_wav_stereo = output_path
+
+                            ic_err_val = phase3_stereo.coherence_error(ref_wav_stereo, dec_wav_stereo)
+                    except Exception:
+                        ic_err_val = None
 
                 # FFmpeg decoding itself IS the conformance reference; every
                 # other decoder is measured against it, the same way as the
@@ -743,6 +762,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "mos": mos_val,
             "mos_source": mos_source,
             "snr_db": snr_db,
+            "ic_err": ic_err_val,
             "conformance_snr_db": conformance_snr_db,
             "alignment_delay_ms": alignment_delay_ms,
             "gapless_offset_samples": gapless_offset_samples,
