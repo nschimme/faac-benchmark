@@ -16,6 +16,7 @@ jobs:
   benchmark:
     runs-on: ubuntu-24.04-arm
     strategy:
+      fail-fast: false
       matrix:
         rate_control: [abr, vbr, cbr]
     steps:
@@ -62,11 +63,22 @@ jobs:
           rate-control: ${{ matrix.rate_control }}
           run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_cand
           output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_cand.json
+      - name: Generate Per-Rate Control Report
+        uses: nschimme/faac-benchmark/report@master
+        with:
+          results-path: ./results
+          report-output: report_${{ matrix.rate_control }}.md
+          summary-output: summary_${{ matrix.rate_control }}.md
+          cases-output: cases_${{ matrix.rate_control }}.md
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.arch }}-${{ matrix.rate_control }}
-          path: results/*.json
+          name: results-${{ matrix.rate_control }}
+          path: |
+            results/*.json
+            report_${{ matrix.rate_control }}.md
+            cases_${{ matrix.rate_control }}.md
 
   report:
     needs: benchmark
@@ -134,6 +146,7 @@ Summary, and writes `summary.md` for a PR comment.
 | `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`). | No | |
 | `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
 | `skip-graphs` | Skip generating Mermaid.js charts in the report. | No | `false` |
+| `fail-on-regression` | Fail job if compare_results detects regressions. | No | `true` |
 
 ## Consolidating results
 

@@ -11,6 +11,7 @@ jobs:
   benchmark:
     runs-on: ubuntu-24.04-arm
     strategy:
+      fail-fast: false
       matrix:
         rate_control: [abr, vbr]
     steps:
@@ -68,9 +69,11 @@ jobs:
           report-output: report_${{ matrix.rate_control }}.md
           summary-output: summary_${{ matrix.rate_control }}.md
           cases-output: cases_${{ matrix.rate_control }}.md
+          fail-on-regression: false
           summary-only: false
 
       - name: Upload Results Artifact
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: results-${{ matrix.rate_control }}
@@ -81,6 +84,7 @@ jobs:
 
   consolidated-report:
     needs: benchmark
+    if: always()
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
