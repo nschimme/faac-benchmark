@@ -1141,20 +1141,21 @@ def find_result_pairs(inputs):
     for results_dir in dirs_to_scan:
         if not os.path.exists(results_dir):
             continue
-        files = os.listdir(results_dir)
-        for f in sorted(files):
-            for cand_suf, base_suf in replacements:
-                if f.endswith(cand_suf):
-                    prefix = f[:-len(cand_suf)]
-                    base_f = prefix + base_suf
-                    if base_f in files:
-                        suite_name = prefix.rstrip("_-.") or "default"
-                        if suite_name not in suites:
-                            suites[suite_name] = (
-                                os.path.join(results_dir, base_f),
-                                os.path.join(results_dir, f)
-                            )
-                        break
+        for root, _, files in os.walk(results_dir):
+            file_set = set(files)
+            for f in sorted(files):
+                for cand_suf, base_suf in replacements:
+                    if f.endswith(cand_suf):
+                        prefix = f[:-len(cand_suf)]
+                        base_f = prefix + base_suf
+                        if base_f in file_set:
+                            suite_name = prefix.rstrip("_-.") or "default"
+                            if suite_name not in suites:
+                                suites[suite_name] = (
+                                    os.path.join(root, base_f),
+                                    os.path.join(root, f)
+                                )
+                            break
 
     return suites
 
@@ -1591,49 +1592,50 @@ def main():
     # Build individual test cases document
     cases_lines = ["# Individual Test Cases Report\n"]
     total_cases_count = sum(len(d["all_cases"]) for d in all_suite_data.values())
-    cases_filename = args.cases_output or "cases.md"
+    cases_filename = args.cases_output
 
-    for name, data in sorted(all_suite_data.items()):
-        if data["all_cases"]:
-            cases_lines.append(f"### {name} ({len(data['all_cases'])} test cases)\n")
+    if cases_filename:
+        for name, data in sorted(all_suite_data.items()):
+            if data["all_cases"]:
+                cases_lines.append(f"### {name} ({len(data['all_cases'])} test cases)\n")
 
-            if data["new_wins"]:
-                cases_lines.append("**🆕 New Wins**")
-                cases_lines.append(f"| Test Case | {mos_label} (Base) | Delta |")
-                cases_lines.append("| :--- | :---: | :---: |")
-                for w in data["new_wins"]:
-                    cases_lines.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
-                        w["display_name"], w["mos"], w["b_mos"], w["delta"]))
-                cases_lines.append("")
+                if data["new_wins"]:
+                    cases_lines.append("**🆕 New Wins**")
+                    cases_lines.append(f"| Test Case | {mos_label} (Base) | Delta |")
+                    cases_lines.append("| :--- | :---: | :---: |")
+                    for w in data["new_wins"]:
+                        cases_lines.append("| {} | {:.2f} ({:.2f}) | {:+.2f} |".format(
+                            w["display_name"], w["mos"], w["b_mos"], w["delta"]))
+                    cases_lines.append("")
 
-            if data["significant_wins"]:
-                cases_lines.append("**🌟 Significant Wins**")
+                if data["significant_wins"]:
+                    cases_lines.append("**🌟 Significant Wins**")
+                    cases_lines.append(
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                    for w in data["significant_wins"]:
+                        cases_lines.append(w["line"])
+                    cases_lines.append("")
+
+                if data["opportunities"]:
+                    cases_lines.append("**💡 Opportunities**")
+                    cases_lines.append(
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                    for o in data["opportunities"]:
+                        cases_lines.append(o["line"])
+                    cases_lines.append("")
+
+                cases_lines.append("**All Test Cases**")
                 cases_lines.append(
                     f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
                 cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                for w in data["significant_wins"]:
-                    cases_lines.append(w["line"])
+                for c in data["all_cases"]:
+                    cases_lines.append(c["line"])
                 cases_lines.append("")
 
-            if data["opportunities"]:
-                cases_lines.append("**💡 Opportunities**")
-                cases_lines.append(
-                    f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
-                cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-                for o in data["opportunities"]:
-                    cases_lines.append(o["line"])
-                cases_lines.append("")
-
-            cases_lines.append("**All Test Cases**")
-            cases_lines.append(
-                f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
-            cases_lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-            for c in data["all_cases"]:
-                cases_lines.append(c["line"])
-            cases_lines.append("")
-
-    if total_cases_count > 0:
-        report.append(f"\n_Full per-clip test cases ({total_cases_count} total) exported to `{os.path.basename(cases_filename)}`._\n")
+        if total_cases_count > 0:
+            report.append(f"\n_Full per-clip test cases ({total_cases_count} total) exported to `{os.path.basename(cases_filename)}`._\n")
 
     # Prepare outputs
     full_output = "\n".join(report) + "\n"
@@ -1671,16 +1673,12 @@ def main():
         except Exception as e:
             sys.stderr.write(f"Error: Could not write summary to {args.summary_output}: {e}\n")
 
-    cases_target = args.cases_output
-    if not cases_target and args.output:
-        cases_target = "cases.md"
-
-    if cases_target:
+    if args.cases_output:
         try:
-            with open(cases_target, "w") as f:
+            with open(args.cases_output, "w") as f:
                 f.write(cases_output)
         except Exception as e:
-            sys.stderr.write(f"Error: Could not write test cases report to {cases_target}: {e}\n")
+            sys.stderr.write(f"Error: Could not write test cases report to {args.cases_output}: {e}\n")
 
     # overall_missing means "a number we expected is absent". When --gates
     # narrows the run, absence of the unselected numbers is the point, not a

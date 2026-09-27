@@ -10,6 +10,10 @@ Perceptual quality is measured on a **1.0 to 5.0 Mean Opinion Score (MOS)** scal
 - **Speech Content**: Evaluated using **ViSQOL** (Virtual Speech Quality Objective Listener), optimized for speech intelligibility and telephony bandwidths.
 - **Music & Full-Band Audio**: Evaluated using **Zimtohrli**, a psychoacoustic model sensitive to temporal smearing, transient preservation, pre-echo, and high-frequency distortion.
 
+### Overall Ranking Floor: 1st Percentile MOS ($P_1$) / 99% Floor MOS
+- **1st Percentile MOS ($P_1$)**: The score threshold that **99% of tested audio clips equal or exceed**.
+- **Why $P_1$ beats Worst MOS**: Absolute Minimum/Worst MOS is a single-sample metric ($N=1$) vulnerable to anomalous test sample artifacts or single-file flukes. $P_1$ filters out single-file outliers while accurately measuring the encoder's true quality floor on difficult audio.
+
 ### Interpretation Guide
 - **Scale**: 1.0 (Bad) to 5.0 (Imperceptible / Transparent).
 - **Score Delta ($\Delta \text{MOS}$)**: $\text{Candidate Score} - \text{Baseline Score}$. Positive values indicate quality gains.

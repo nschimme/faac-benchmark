@@ -236,18 +236,17 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 "    out, err = res.stdout, res.stderr\n"
                 "except subprocess.TimeoutExpired:\n"
                 "    t1 = time.perf_counter()\n"
-                "    ret = -124\n"
+                "    ret = 124\n"
                 "    out, err = b'', b'Command timed out'\n"
                 "rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss\n"
                 "if sys.platform == 'darwin':\n"
                 "    rss = int(rss / 1024)\n"
                 "dur = t1 - t0\n"
-                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n__DUR__:{dur:.8f}\\n'.encode())\n"
+                "sys.stderr.buffer.write(f'__RSS__:{rss}\\n__DUR__:{dur:.8f}\\n__RET__:{ret}\\n'.encode())\n"
                 "sys.stderr.buffer.flush()\n"
                 "sys.stdout.buffer.write(out)\n"
                 "sys.stderr.buffer.write(err)\n"
-                "ret_code = ret if (ret >= 0 and ret <= 255) else (128 + abs(ret) if ret < 0 else ret % 256)\n"
-                "sys.exit(ret_code)\n"
+                "sys.exit(0)\n"
             )
             runner_cmd = [sys.executable, "-c", runner_script, str(timeout)] + cmd
             proc = subprocess.run(runner_cmd, capture_output=True, env=env, timeout=timeout + 5)
@@ -256,6 +255,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
 
             rss = None
             proc_dur = None
+            proc_ret = 0
             stderr_clean = []
             for line in proc.stderr.splitlines():
                 if line.startswith(b"__RSS__:"):
@@ -268,6 +268,11 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                         proc_dur = float(line.split(b":", 1)[1].strip())
                     except Exception:
                         pass
+                elif line.startswith(b"__RET__:"):
+                    try:
+                        proc_ret = int(line.split(b":", 1)[1].strip())
+                    except Exception:
+                        pass
                 else:
                     stderr_clean.append(line)
 
@@ -275,7 +280,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                 duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
-            res = subprocess.CompletedProcess(cmd, returncode=proc.returncode, stdout=proc.stdout, stderr=clean_stderr)
+            res = subprocess.CompletedProcess(cmd, returncode=proc_ret, stdout=proc.stdout, stderr=clean_stderr)
             if check and res.returncode != 0:
                 raise subprocess.CalledProcessError(res.returncode, cmd, output=res.stdout, stderr=res.stderr)
             return res, duration, rss
@@ -760,6 +765,20 @@ def get_git_tag():
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
+
+def get_git_version():
+    """Returns git tag/hash with UTC timestamp for report generation."""
+    import datetime
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    tag = get_git_tag()
+    ver = tag if tag else "unknown"
+    if not tag:
+        try:
+            res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True)
+            ver = res.stdout.strip()
+        except Exception:
+            ver = "unknown"
+    return f"{ver} ({timestamp})"
 
 def get_ffmpeg_path():
     return shutil.which("ffmpeg")

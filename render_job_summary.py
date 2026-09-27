@@ -112,6 +112,8 @@ def render_job_summary(data, name_override=None):
     total_actual_br = 0.0
     br_count = 0
 
+    all_test_cases = []
+
     sorted_scenarios = sorted(scenario_samples.keys(), key=get_scenario_sort_key)
 
     for sc_name in sorted_scenarios:
@@ -137,6 +139,22 @@ def render_job_summary(data, name_override=None):
             total_target_br += sum(target_brs)
             total_actual_br += sum(actual_brs)
             br_count += len(paired_samples)
+
+        for s in samples:
+            filename = s.get("filename", "clip")
+            display_name = f"{sc_name}: {filename}"
+            c_mos = s.get("mos")
+            c_br = s.get("bitrate")
+            c_target = s.get("expected_bitrate")
+            c_err = s.get("decode_error")
+            status_symbol = "❌ Err" if c_err else "✅ OK"
+            all_test_cases.append({
+                "display_name": display_name,
+                "mos": c_mos,
+                "bitrate": c_br,
+                "target_bitrate": c_target,
+                "status": status_symbol
+            })
 
         # Sc_errors
         sc_errs = sum(1 for s in samples if s.get("decode_error"))
@@ -209,6 +227,28 @@ def render_job_summary(data, name_override=None):
             lines.append(f"| `{r['name']}` | {r['clips']} | {actual_str} | {mos_str} | {r['status']} |")
 
     lines.append("")
+
+    # Per-clip Individual Test Cases Table
+    if all_test_cases:
+        lines.append("<details><summary><b>📋 View Individual Test Cases Breakdown</b></summary>\n")
+        lines.append("###### Individual Test Cases")
+        if "ABR" in rc_mode_str:
+            lines.append("| Test Case | Target Bitrate | Actual Bitrate | MOS | Status |")
+            lines.append("| :--- | :---: | :---: | :---: | :---: |")
+            for tc in all_test_cases:
+                t_br_str = f"{tc['target_bitrate']:.1f} kbps" if tc['target_bitrate'] else "N/A"
+                a_br_str = f"{tc['bitrate']:.1f} kbps" if tc['bitrate'] else "N/A"
+                m_str = f"{tc['mos']:.3f}" if tc['mos'] is not None else "N/A"
+                lines.append(f"| `{tc['display_name']}` | {t_br_str} | {a_br_str} | {m_str} | {tc['status']} |")
+        else:
+            lines.append("| Test Case | Actual Bitrate | MOS | Status |")
+            lines.append("| :--- | :---: | :---: | :---: |")
+            for tc in all_test_cases:
+                a_br_str = f"{tc['bitrate']:.1f} kbps" if tc['bitrate'] else "N/A"
+                m_str = f"{tc['mos']:.3f}" if tc['mos'] is not None else "N/A"
+                lines.append(f"| `{tc['display_name']}` | {a_br_str} | {m_str} | {tc['status']} |")
+        lines.append("\n</details>\n")
+
     lines.append("</details>")
 
     return "\n".join(lines)

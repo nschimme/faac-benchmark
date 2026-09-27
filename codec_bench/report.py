@@ -13,10 +13,22 @@ import re
 import statistics
 from collections import defaultdict
 
+import numpy as np
+
 from utils import (format_size, make_progress_bar, zoomed_y_range,
                    get_scenario_sort_key, scenario_channels, scenario_rate,
                    scenario_family, family_label, scenario_families,
-                   scenario_axis_label, chart_line_label)
+                   scenario_axis_label, chart_line_label, get_git_version)
+
+def compute_p1_mos(mos_scores):
+    if not mos_scores:
+        return 0.0
+    try:
+        return float(np.percentile(mos_scores, 1))
+    except Exception:
+        sorted_scores = sorted(mos_scores)
+        idx = max(0, int(len(sorted_scores) * 0.01))
+        return sorted_scores[idx]
 from codec_bench.encoders import PROFILE_LABELS, profile_label, encoder_row_key, FAACEncoder
 from codec_bench.decoders import decoder_row_key, CONFORMANCE_SNR_FLOOR_DB
 
@@ -138,9 +150,10 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         def key_fn(rk):
             st = stats[rk][s_name]
             avg_mos = st["mos_sum"] / st["mos_count"] if st["mos_count"] > 0 else 0
-            worst_mos = st["mos_min"] if st["mos_count"] > 0 else 0
+            sc_clips = [r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None]
+            p1_mos = compute_p1_mos(sc_clips) if sc_clips else (st["mos_min"] if st["mos_count"] > 0 else 0)
             p_order = {"lc": 3, "he": 2, "hev2": 1, "standard": 0}.get(encoder_info[rk].profile, 0)
-            return (avg_mos, worst_mos, p_order)
+            return (avg_mos, p1_mos, p_order)
 
         return max(valid_candidates, key=key_fn)
 
@@ -189,10 +202,21 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             continue
 
         enc_obj = next((e for e in encoders if e.name == tool_name), None)
+        tool_clip_mos = []
+        for s_name in scenario_list:
+            rk = scenario_best_row_key(candidates, s_name)
+            if rk is None:
+                continue
+            sc_clips = [r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None]
+            tool_clip_mos.extend(sc_clips)
+
+        tool_p1_mos = compute_p1_mos(tool_clip_mos) if tool_clip_mos else (e_mos_min if e_mos else 0)
+
         tool_overall[tool_name] = {
             "tool": tool_name,
             "overall_mos": sum(e_mos) / len(e_mos) if e_mos else 0,
             "worst_mos": e_mos_min if e_mos else 0,
+            "p1_mos": tool_p1_mos,
             "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
             "avg_centroid_ms": sum(e_centroid) / len(e_centroid) if e_centroid else 0,
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
@@ -207,7 +231,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         }
 
     has_mos = any(o["overall_mos"] > 0 for o in tool_overall.values())
-    sorted_tools = sorted(tool_overall.keys(), key=lambda x: (tool_overall[x]["worst_mos"], tool_overall[x]["overall_mos"]), reverse=True) if has_mos else sorted(tool_overall.keys())
+    sorted_tools = sorted(tool_overall.keys(), key=lambda x: (tool_overall[x]["p1_mos"], tool_overall[x]["overall_mos"]), reverse=True) if has_mos else sorted(tool_overall.keys())
 
     has_non_aac = any(e.profile == "standard" for e in encoders)
     title_str = "# Audio Encoder Leaderboard\n\n" if has_non_aac else "# AAC Encoder Leaderboard\n\n"
@@ -229,16 +253,16 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         f.write("Quality scores are objective proxy estimates (Zimtohrli/ViSQOL), not blind ABX listening test results.\n\n")
         f.write("### Overall Encoder Rankings\n\n")
-        f.write("> **Methodology & Ranking Note**: Encoders are ranked primarily by **Worst MOS** "
-                "(minimum clip score across all scenarios) to penalize severe artifacts on killer clips, "
+        f.write("> **Methodology & Ranking Note**: Encoders are ranked primarily by **1st Percentile MOS ($P_1$) / 99% Floor MOS** "
+                "(the score threshold that 99% of tested audio clips equal or exceed) to penalize systemic artifacts on difficult audio, "
                 "with **Overall MOS** (averaging all scenarios) as tiebreaker. "
                 "Per-scenario curves (e.g., 48 kHz Average MOS) display average performance on specific subsets "
-                "and may show different relative standings than the overall worst-case resilience metric.\n\n")
-        f.write("| Rank | Encoder | Status | Worst MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
+                "and may show different relative standings than the overall floor resilience metric.\n\n")
+        f.write("| Rank | Encoder | Status | 1st Percentile MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['overall_mos'] for o in tool_overall.values()) if tool_overall else 0
-        best_worst_mos = max(o['worst_mos'] for o in tool_overall.values()) if tool_overall else 0
+        best_p1_mos = max(o['p1_mos'] for o in tool_overall.values()) if tool_overall else 0
         best_speed = max(o['avg_speed'] for o in tool_overall.values()) if tool_overall else 0
         has_ic = any(o['avg_ic'] > 0 for o in tool_overall.values())
         best_ic = max(1.0 - o['avg_ic'] for o in tool_overall.values() if o['avg_ic'] > 0) if has_ic else None
@@ -249,7 +273,14 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
         for i, tool_name in enumerate(sorted_tools):
             o = tool_overall[tool_name]
-            rank_str = f"🏆 {i+1}" if i == 0 and o['worst_mos'] > 0 else f"{i+1}"
+            if i == 0 and o['p1_mos'] > 0:
+                rank_str = f"🥇 {i+1}"
+            elif i == 1 and o['p1_mos'] > 0:
+                rank_str = f"🥈 {i+1}"
+            elif i == 2 and o['p1_mos'] > 0:
+                rank_str = f"🥉 {i+1}"
+            else:
+                rank_str = f"{i+1}"
 
             if o['valid_rate'] == 100:
                 status_str = "OK"
@@ -261,7 +292,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 err_text = ", ".join(err_summaries) if err_summaries else "Errors"
                 status_str = f"⚠️ {err_text}"
 
-            w_str = f"**{o['worst_mos']:.3f}**" if abs(o['worst_mos'] - best_worst_mos) < 1e-6 and o['worst_mos'] > 0 else f"{o['worst_mos']:.3f}"
+            w_str = f"**{o['p1_mos']:.3f}**" if abs(o['p1_mos'] - best_p1_mos) < 1e-6 and o['p1_mos'] > 0 else f"{o['p1_mos']:.3f}"
             m_str = f"**{o['overall_mos']:.3f}**" if abs(o['overall_mos'] - best_mos) < 1e-6 and o['overall_mos'] > 0 else f"{o['overall_mos']:.3f}"
             sc_str = f"{o['scenario_count']}/{o['scenario_total']}"
 
@@ -368,8 +399,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(row_str + "\n")
                 f.write("\n")
 
-            f.write(f"#### Per-Scenario Worst MOS (Min Clip MOS - {fam_label})\n\n")
-            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. "
+            f.write(f"#### Per-Scenario 1st Percentile MOS ($P_1$) ({fam_label})\n\n")
+            f.write("> **Note**: 1st percentile MOS ($P_1$) score threshold observed across clips in the scenario. "
                     "Highlights edge-case clip degradation. "
                     "A 🐛 names the clip when every other encoder scored ≥0.75 MOS higher on that exact clip "
                     "-- likely a defect specific to this encoder; see Quality Outliers under Issues Worth Investigating below.\n\n")
@@ -388,26 +419,29 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 for s_name in fam_scenarios:
                     row_str = f"| {s_name} |"
-                    p_valid_min = [stats[rk][s_name]["mos_min"] for rk in p_rks if stats[rk][s_name]["mos_count"] > 0]
+                    p_valid_min = [compute_p1_mos([r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None])
+                                   if stats[rk][s_name]["mos_count"] > 0 else 0
+                                   for rk in p_rks]
                     best_p_min = max(p_valid_min) if p_valid_min else None
 
                     for rk in p_rks:
                         st = stats[rk][s_name]
                         if st["mos_count"] > 0:
-                            min_m = st["mos_min"]
+                            sc_clips = [r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None]
+                            p1_m = compute_p1_mos(sc_clips) if sc_clips else st["mos_min"]
                             min_f = st["mos_min_file"]
                             gap = cell_peer_gap(clip_mos, rk, s_name, min_f)
                             if gap is not None:
                                 bug_flags.append((encoder_info[rk].name, p, s_name, min_f, gap[0], gap[1]))
 
-                            is_best = best_p_min and abs(min_m - best_p_min) < 1e-6
+                            is_best = best_p_min and abs(p1_m - best_p_min) < 1e-6
                             bug_mark = " 🐛" if gap is not None else ""
-                            p_bar = make_progress_bar(min_m, 5.0)
+                            p_bar = make_progress_bar(p1_m, 5.0)
 
                             if is_best:
-                                cell = f" **{min_m:.3f}**{p_bar}{bug_mark}"
+                                cell = f" **{p1_m:.3f}**{p_bar}{bug_mark}"
                             else:
-                                cell = f" {min_m:.3f}{p_bar}{bug_mark}"
+                                cell = f" {p1_m:.3f}{p_bar}{bug_mark}"
                             row_str += f"{cell} |"
                         else:
                             row_str += " N/A |"
@@ -560,6 +594,41 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(row_str + "\n")
                 f.write("\n")
             f.write("</details>\n\n")
+
+            # 7. Encoding Speed per rate family
+            f.write(f"### Encoding Speed ({fam_label})\n\n")
+            f.write("> **Note**: Encoding throughput measured in xRealtime. **Higher is Better**.\n\n")
+
+            tool_line_data_sp = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["speed_count"] > 0:
+                        vals.append(stats[best_rk][s]["speed_sum"] / stats[best_rk][s]["speed_count"])
+                    else:
+                        vals.append(None)
+                if any(v is not None for v in vals):
+                    tool_line_data_sp[tool_name] = vals
+
+            if not skip_graphs and tool_line_data_sp:
+                chart_vals_sp = [v for vals in tool_line_data_sp.values() for v in vals if v is not None]
+                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_sp, "0.0 --> 100.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Encoding Speed across Bitrates - {fam_label} (Higher is Better)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "Speed (xRT)" {axis_lo_sp:.4g} --> {axis_hi_sp:.4g}\n')
+                for tool_name, vals in tool_line_data_sp.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
+                f.write("```\n\n")
 
             # 6. Bitrate Accuracy per rate family
             f.write(f"### Bitrate Accuracy ({fam_label})\n\n")
@@ -730,21 +799,43 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("### Encoder Efficiency & Footprint\n\n")
 
         if not skip_graphs and sorted_tools:
+            tool_line_data_speed = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in scenario_list:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["speed_count"] > 0:
+                        vals.append(stats[best_rk][s]["speed_sum"] / stats[best_rk][s]["speed_count"])
+                    else:
+                        vals.append(None)
+                if any(v is not None for v in vals):
+                    tool_line_data_speed[tool_name] = vals
+
+            if tool_line_data_speed:
+                chart_vals_sp = [v for vals in tool_line_data_speed.values() for v in vals if v is not None]
+                max_v = max(chart_vals_sp) if chart_vals_sp else 100.0
+                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_sp, f"0.0 --> {max_v * 1.15:.1f}")
+                sc_labels = [f'"{scenario_axis_label(s, scenario_family(s))}"' for s in scenario_list]
+                f.write("#### Encoding Speed (xRT)\n\n")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write('    title "Encoding Speed across Scenarios (xRealtime, Higher is Better)"\n')
+                f.write(f"    x-axis [{', '.join(sc_labels)}]\n")
+                f.write(f'    y-axis "Speed (xRT)" {axis_lo_sp:.4g} --> {axis_hi_sp:.4g}\n')
+                for tool_name, vals in tool_line_data_speed.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
+                f.write("```\n\n")
+
             tool_labels = [f'"{tool_overall[t]["tool"]}"' for t in sorted_tools if t in tool_overall]
-            tool_speeds = [f"{tool_overall[t]['avg_speed']:.1f}" for t in sorted_tools if t in tool_overall]
             tool_roms = [f"{(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size'] + tool_overall[t].get('data_size', 0)) / 1024.0:.1f}" for t in sorted_tools if t in tool_overall]
-
-            max_speed = max([tool_overall[t]['avg_speed'] for t in sorted_tools if t in tool_overall] + [1.0])
             max_rom = max([(tool_overall[t]['text_size'] + tool_overall[t]['rodata_size'] + tool_overall[t].get('data_size', 0)) / 1024.0 for t in sorted_tools if t in tool_overall] + [1.0])
-
-            f.write("#### Encoding Speed (xRT)\n\n")
-            f.write("```mermaid\n")
-            f.write("xychart-beta\n")
-            f.write('    title "Average Encoding Speed (xRealtime, Higher is Better)"\n')
-            f.write(f"    x-axis [{', '.join(tool_labels)}]\n")
-            f.write(f'    y-axis "Speed (xRT)" 0 --> {int(max_speed * 1.25) + 1}\n')
-            f.write(f'    bar "Encoding Speed" [{", ".join(tool_speeds)}]\n')
-            f.write("```\n\n")
 
             f.write("#### Codec ROM (Flash) Size\n\n")
             f.write("```mermaid\n")
@@ -832,13 +923,16 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         # Metric Legend & Footnotes
         f.write("\n---\n")
         f.write("**Metric Legend**:\n")
-        f.write("- **Ranking**: by Worst MOS, then Overall MOS as tiebreaker.\n")
+        f.write("- **Ranking**: by 1st Percentile MOS ($P_1$), then Overall MOS as tiebreaker.\n")
+        f.write("- **1st Percentile MOS ($P_1$)**: Score threshold that 99% of tested clips equal or exceed (**Higher is Better**)\n")
         f.write("- **Quality (MOS)**: Perceptual audio quality (1-5, **Higher is Better**)\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Transient Fidelity**: How little attacks are smeared/delayed (0-1, **Higher is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
         f.write("- **ROM (Flash)**: Codec code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
+        if not has_decoders:
+            f.write(f"\n---\n*Generated by `faac-benchmark` version `{get_git_version()}`.*\n")
 
     print(f"\nLeaderboard generated at: {output_path}")
 
@@ -850,6 +944,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
     stats = defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0,
+        "ic_sum": 0, "ic_count": 0,
         "snr_sum": 0, "snr_count": 0,
         "delay_sum": 0, "delay_count": 0,
         "ram_sum": 0, "ram_count": 0,
@@ -859,6 +954,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
     p_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {
         "mos_sum": 0, "mos_count": 0, "mos_min": 6.0, "mos_min_file": None,
+        "ic_sum": 0, "ic_count": 0,
         "snr_sum": 0, "snr_count": 0,
         "delay_sum": 0, "delay_count": 0,
         "ram_sum": 0, "ram_count": 0,
@@ -870,7 +966,9 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
     clip_mos = defaultdict(dict)
     bug_flags = []
     mono_downmix_counts = defaultdict(int)
+    crash_counts = defaultdict(int)
     timeout_counts = defaultdict(int)
+    runaway_counts = defaultdict(int)
 
     for res in results:
         rk = res["row_key"]
@@ -917,6 +1015,12 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 if res.get("filename"):
                     clip_mos[(s, res["filename"])][rk] = res["mos"]
 
+            if res.get("ic_err") is not None:
+                stats[rk][s]["ic_sum"] += res["ic_err"]
+                stats[rk][s]["ic_count"] += 1
+                p_stats[rk][p][s]["ic_sum"] += res["ic_err"]
+                p_stats[rk][p][s]["ic_count"] += 1
+
             if res.get("snr_db") is not None and res["snr_db"] != float("inf"):
                 stats[rk][s]["snr_sum"] += res["snr_db"]
                 stats[rk][s]["snr_count"] += 1
@@ -946,22 +1050,24 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 p_stats[rk][p][s]["speed_sum"] += spd
                 p_stats[rk][p][s]["speed_count"] += 1
 
-    rob_stats = defaultdict(lambda: {"crash_free": 0, "total": 0})
     if robustness_results:
         for r_res in robustness_results:
             rk = r_res["row_key"]
-            rob_stats[rk]["total"] += 1
-            is_cf = r_res.get("crash_free") if "crash_free" in r_res else (r_res.get("passed") or (not r_res.get("timeout") and not r_res.get("runaway")))
-            if is_cf:
-                rob_stats[rk]["crash_free"] += 1
+            if r_res.get("crash"):
+                crash_counts[rk] += 1
+            if r_res.get("timeout"):
+                timeout_counts[rk] += 1
+            if r_res.get("runaway"):
+                runaway_counts[rk] += 1
 
     overall = {}
     for rk, dec_obj in decoder_info.items():
-        d_mos, d_speed, d_snr, d_delay, d_ram = [], [], [], [], []
+        d_mos, d_speed, d_snr, d_delay, d_ram, d_ic = [], [], [], [], [], []
         d_worst_mos = 6.0
         d_total = d_valid = 0
         scenario_count = 0
 
+        decoder_clip_mos = []
         for s_name in scenario_list:
             st = stats[rk][s_name]
             d_total += st["total_count"]
@@ -970,6 +1076,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 d_mos.append(st["mos_sum"] / st["mos_count"])
                 d_worst_mos = min(d_worst_mos, st["mos_min"])
                 scenario_count += 1
+            if st["ic_count"] > 0:
+                d_ic.append(st["ic_sum"] / st["ic_count"])
             if st["snr_count"] > 0:
                 d_snr.append(st["snr_sum"] / st["snr_count"])
             if st["delay_count"] > 0:
@@ -979,18 +1087,19 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             if st["speed_count"] > 0:
                 d_speed.append(st["speed_sum"] / st["speed_count"])
 
-        rob_info = rob_stats[rk]
-        robustness_pct = (rob_info["crash_free"] / rob_info["total"] * 100.0) if rob_info["total"] > 0 else 100.0
+        decoder_clip_mos = [r["mos"] for r in results if r["row_key"] == rk and r.get("decode_valid") and r.get("mos") is not None]
+        d_p1_mos = compute_p1_mos(decoder_clip_mos) if decoder_clip_mos else (d_worst_mos if d_mos else 0)
 
         overall[rk] = {
             "tool": dec_obj.name,
             "worst_mos": d_worst_mos if d_mos else 0,
+            "p1_mos": d_p1_mos,
             "overall_mos": sum(d_mos) / len(d_mos) if d_mos else 0,
+            "avg_ic": sum(d_ic) / len(d_ic) if d_ic else 0,
             "avg_snr_db": sum(d_snr) / len(d_snr) if d_snr else None,
             "avg_delay_ms": sum(d_delay) / len(d_delay) if d_delay else 0.0,
             "avg_ram_kb": sum(d_ram) / len(d_ram) if d_ram else 0,
             "avg_speed": sum(d_speed) / len(d_speed) if d_speed else 0,
-            "robustness_pct": robustness_pct,
             "text_size": dec_obj.text_size,
             "rodata_size": dec_obj.rodata_size,
             "data_size": getattr(dec_obj, "data_size", 0),
@@ -999,7 +1108,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
             "scenario_total": len(scenario_list)
         }
 
-    sorted_rk = sorted(overall.keys(), key=lambda rk: (overall[rk]["worst_mos"], overall[rk]["overall_mos"]), reverse=True)
+    sorted_rk = sorted(overall.keys(), key=lambda rk: (overall[rk]["p1_mos"], overall[rk]["overall_mos"]), reverse=True)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     open_mode = "a" if append_mode else "w"
@@ -1013,42 +1122,60 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
 
         f.write('<a name="decoder-leaderboard"></a>\n')
         f.write("## 🔊 Decoder Leaderboard\n\n")
-        f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Quality (MOS), Timing Alignment Error, Robustness, Speed, and Footprint.\n\n")
+        f.write("Objective evaluation of AAC decoders on Spec Conformance (SNR), Decoded Quality (MOS), Stereo Fidelity, Timing Alignment Error, Speed, and Footprint.\n\n")
 
         f.write("### Overall Decoder Rankings\n\n")
-        f.write("| Rank | Decoder | Status | Worst MOS | Overall MOS | Mean SNR | Timing Error | Robustness | Speed (xRT) | Peak RAM | ROM (Flash) |\n")
+        f.write("| Rank | Decoder | Status | 1st Percentile MOS | Overall MOS | Stereo Fidelity | Mean SNR | Timing Error | Speed (xRT) | Peak RAM | ROM (Flash) |\n")
         f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
-        best_worst_mos = max(o["worst_mos"] for o in overall.values()) if overall else 0
+        best_p1_mos = max(o["p1_mos"] for o in overall.values()) if overall else 0
         best_mos = max(o["overall_mos"] for o in overall.values()) if overall else 0
         best_speed = max(o["avg_speed"] for o in overall.values()) if overall else 0
-        best_robustness = max(o["robustness_pct"] for o in overall.values()) if overall else 100.0
+        has_dec_ic = any(o["avg_ic"] > 0 for o in overall.values())
+        best_dec_ic = max(1.0 - o["avg_ic"] for o in overall.values() if o["avg_ic"] > 0) if has_dec_ic else None
 
         for i, rk in enumerate(sorted_rk):
             o = overall[rk]
-            rank_str = f"🏆 {i+1}" if i == 0 and o["worst_mos"] > 0 else f"{i+1}"
+            if i == 0 and o["p1_mos"] > 0:
+                rank_str = f"🥇 {i+1}"
+            elif i == 1 and o["p1_mos"] > 0:
+                rank_str = f"🥈 {i+1}"
+            elif i == 2 and o["p1_mos"] > 0:
+                rank_str = f"🥉 {i+1}"
+            else:
+                rank_str = f"{i+1}"
 
-            if timeout_counts[rk] > 0:
-                status_str = f"⚠️ ({timeout_counts[rk]}x timeout)"
-            elif mono_downmix_counts[rk] > 0:
-                status_str = "No HE-v2 PS (1ch)"
+            c_cnt = crash_counts[rk]
+            t_cnt = timeout_counts[rk]
+            r_cnt = runaway_counts[rk]
+
+            issues = []
+            if c_cnt > 0: issues.append(f"{c_cnt}x crash")
+            if t_cnt > 0: issues.append(f"{t_cnt}x timeout")
+            if r_cnt > 0: issues.append(f"{r_cnt}x runaway")
+            if mono_downmix_counts[rk] > 0: issues.append("No HE-v2 PS (1ch)")
+
+            if issues:
+                status_str = f"⚠️ ({', '.join(issues)})" if (c_cnt > 0 or t_cnt > 0 or r_cnt > 0 or len(issues) > 1) else "No HE-v2 PS (1ch)"
             elif o["valid_rate"] == 100:
                 status_str = "OK"
             else:
                 status_str = f"⚠️ ({o['valid_rate']:.0f}% valid)"
 
-            w_str = f"**{o['worst_mos']:.3f}**" if abs(o['worst_mos'] - best_worst_mos) < 1e-6 and o['worst_mos'] > 0 else f"{o['worst_mos']:.3f}"
+            w_str = f"**{o['p1_mos']:.3f}**" if abs(o['p1_mos'] - best_p1_mos) < 1e-6 and o['p1_mos'] > 0 else f"{o['p1_mos']:.3f}"
             m_str = f"**{o['overall_mos']:.3f}**" if abs(o['overall_mos'] - best_mos) < 1e-6 and o['overall_mos'] > 0 else f"{o['overall_mos']:.3f}"
+
+            ic_fid = 1.0 - o["avg_ic"]
+            ic_str = f"**{ic_fid:.4f}**" if best_dec_ic and abs(ic_fid - best_dec_ic) < 1e-6 and o["avg_ic"] > 0 else (f"{ic_fid:.4f}" if o["avg_ic"] > 0 else "N/A")
 
             snr_str = f"{o['avg_snr_db']:.1f} dB" if o['avg_snr_db'] is not None else "Bit-Exact / N/A"
             delay_str = f"{o['avg_delay_ms']:.2f} ms" if o['avg_delay_ms'] is not None else "N/A"
-            rob_str = f"**{o['robustness_pct']:.1f}%**" if abs(o['robustness_pct'] - best_robustness) < 1e-6 else f"{o['robustness_pct']:.1f}%"
 
             s_str = f"**{o['avg_speed']:.1f}x**" if abs(o['avg_speed'] - best_speed) < 1e-6 and o['avg_speed'] > 0 else f"{o['avg_speed']:.1f}x"
             ram_str = format_size(int(o["avg_ram_kb"] * 1024)) if o["avg_ram_kb"] > 0 else "N/A"
             rom_str = format_size(o["text_size"] + o["rodata_size"] + o.get("data_size", 0))
 
-            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {snr_str} | {delay_str} | {rob_str} | {s_str} | {ram_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {ic_str} | {snr_str} | {delay_str} | {s_str} | {ram_str} | {rom_str} |\n")
 
         f.write('\n<a name="per-scenario-decoder-breakdowns"></a>\n')
         f.write("<details><summary><b>📊 View Per-Scenario Decoder Breakdowns</b></summary>\n\n")
@@ -1297,15 +1424,16 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
         # Metric Legend & Footnotes for Decoders
         f.write("\n---\n")
         f.write("**Decoder Metric Legend**:\n")
-        f.write("- **Ranking**: by Worst MOS, then Overall MOS as tiebreaker.\n")
-        f.write("- **Worst MOS**: Minimum perceptual MOS score observed across any clip in any scenario (**Higher is Better**)\n")
+        f.write("- **Ranking**: by 1st Percentile MOS ($P_1$), then Overall MOS as tiebreaker.\n")
+        f.write("- **1st Percentile MOS ($P_1$)**: Score threshold that 99% of tested clips equal or exceed (**Higher is Better**)\n")
         f.write("- **Overall MOS**: Perceptual audio quality averaged across all scenarios (1-5, **Higher is Better**)\n")
+        f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
         f.write("- **Mean SNR**: Specification conformance signal-to-noise ratio in dB vs reference decode (**Higher is Better**)\n")
         f.write("- **Timing Error**: Sample alignment offset delay in ms (**Lower is Better**)\n")
-        f.write("- **Robustness**: Crash-free decoding rate on corrupted ADTS bitstreams (**Higher is Better**)\n")
         f.write("- **Speed**: Decoding throughput in xRealtime (**Higher is Better**)\n")
         f.write("- **Peak RAM**: Peak dynamic memory allocation during decode (**Lower is Better**)\n")
         f.write("- **ROM (Flash)**: Decoder binary code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
+        f.write(f"\n---\n*Generated by `faac-benchmark` version `{get_git_version()}`.*\n")
 
     print(f"\nDecoder leaderboard generated at: {output_path}")
 
@@ -1557,6 +1685,7 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
             n_err_exit = sum(1 for r in rows if r.get("error_exit") and not r.get("crash") and not r.get("timeout") and not r.get("runaway"))
             f.write(f"| {dec.name} | {n_pass} | {n_err_exit} | {n_timeout} | {n_runaway} |\n")
         f.write("\n")
-        f.write("*An error exit on a corrupted stream is acceptable; a timeout or runaway is not.*\n\n")
+        f.write("*An error exit on a corrupted stream is acceptable; a timeout or runaway is not.*\n")
+        f.write(f"\n---\n*Generated by `faac-benchmark` version `{get_git_version()}`.*\n")
 
     print(f"Decoder report generated at: {output_path}")

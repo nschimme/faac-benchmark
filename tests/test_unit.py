@@ -1326,7 +1326,7 @@ class TestCompareEncodersLeaderboard(unittest.TestCase):
             self.assertIn("## Per-Scenario Breakdown & Visualizations", content)
             self.assertIn("xychart-beta", content)
             self.assertIn("#### Per-Scenario Average MOS", content)
-            self.assertIn("#### Per-Scenario Worst MOS", content)
+            self.assertIn("#### Per-Scenario 1st Percentile MOS", content)
             self.assertIn("#### LC Profile", content)
             self.assertIn("#### HE-v1 Profile", content)
             self.assertIn("#### HE-v2 Profile", content)

@@ -198,8 +198,8 @@ CEOF
 echo "==> Compiling Helix AAC Decoder..." >&2
 (
     cd "$BUILD_DIR"
-    gcc -O3 -c -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" helix_aac_dec.c "$HELIX_SRC/libhelix-aac"/*.c
-    g++ -O3 -c -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" "$HELIX_SRC/utils/helix_memory.cpp"
+    gcc -O3 -c -DARDUINO -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" helix_aac_dec.c "$HELIX_SRC/libhelix-aac"/*.c
+    g++ -O3 -c -DARDUINO -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" "$HELIX_SRC/utils/helix_memory.cpp"
     g++ *.o -o "$TARGET_BIN"
     rm -f *.o
 ) >&2

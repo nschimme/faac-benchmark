@@ -98,11 +98,16 @@ class Decoder:
 
 
 class FAADDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="faad", lib_override=None):
+    def __init__(self, name, binary_path, tool_id="faad", lib_override=None, is_faad3=False):
         super().__init__(name, binary_path, tool_id, lib_name_substr="libfaad", lib_override=lib_override)
+        self.is_faad3 = is_faad3 or "faad3" in tool_id.lower()
 
     def get_decode_cmd(self, input_path, output_path):
-        return [self.binary_path, "-q", "-o", output_path, input_path]
+        cmd = [self.binary_path, "-q"]
+        if self.is_faad3:
+            cmd.append("--strict")
+        cmd.extend(["-o", output_path, input_path])
+        return cmd
 
 
 class FFmpegDecoder(Decoder):
@@ -226,7 +231,7 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         display_name = f"{base_name} {ver}" if ver else base_name
-        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override)
+        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override, is_faad3=is_faad3)
 
     elif decoder_type in ("helix", "helix_aac", "helix-aac-dec"):
         h_bin = binary_path
@@ -582,14 +587,15 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
             stderr_clean = stderr_text.strip()
-            is_timeout = (res.returncode == -124) or ("timed out" in stderr_clean.lower()) or ("timeout" in stderr_clean.lower())
+            is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_clean.lower()) or ("timeout" in stderr_clean.lower())
             if is_timeout:
                 err_detail = "Timeout expired"
+            elif res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139):
+                sig_num = -res.returncode if res.returncode < 0 else (res.returncode - 128)
+                err_detail = f"Process terminated by signal {sig_num}"
             elif stderr_clean:
                 stderr_tail = next((l for l in reversed(stderr_clean.splitlines()) if l.strip()), "")
                 err_detail = f"exit code {res.returncode}: {stderr_tail}"
-            elif res.returncode < 0:
-                err_detail = f"Process terminated by signal {-res.returncode}"
             else:
                 err_detail = f"exit code {res.returncode}"
 
@@ -603,7 +609,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 "duration": 0,
                 "audio_duration": None,
                 "decode_valid": False,
-                "decode_error": err_detail if is_timeout else f"Decode failed: {err_detail}",
+                "decode_error": "Timeout expired" if is_timeout else f"Decode failed: {err_detail}",
                 "timeout": is_timeout,
                 "snr_db": None,
                 "mos_source": None,
@@ -618,6 +624,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
 
         valid, decode_err = decode_validate(output_path)
         snr_db = None
+        ic_err_val = None
         conformance_snr_db = None
         alignment_delay_ms = None
         gapless_offset_samples = None
@@ -652,6 +659,24 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                         gapless_length_delta = dw.getnframes() - rw.getnframes()
                 except Exception:
                     gapless_length_delta = None
+
+                if v_channels >= 2:
+                    try:
+                        import phase3_stereo
+                        with tempfile.TemporaryDirectory() as td:
+                            ref_wav_stereo = get_cached_ref_wav(ref_cache_dir or td, ref_path, 48000, v_channels) if ref_cache_dir else None
+                            if not ref_wav_stereo:
+                                ref_wav_stereo = os.path.join(td, "ref_stereo.wav")
+                                if not wav_conv(ref_path, ref_wav_stereo, rate=48000, channels=v_channels):
+                                    ref_wav_stereo = ref_path
+
+                            dec_wav_stereo = os.path.join(td, "dec_stereo.wav")
+                            if not wav_conv(output_path, dec_wav_stereo, rate=48000, channels=v_channels):
+                                dec_wav_stereo = output_path
+
+                            ic_err_val = phase3_stereo.coherence_error(ref_wav_stereo, dec_wav_stereo)
+                    except Exception:
+                        ic_err_val = None
 
                 # FFmpeg decoding itself IS the conformance reference; every
                 # other decoder is measured against it, the same way as the
@@ -738,6 +763,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "mos": mos_val,
             "mos_source": mos_source,
             "snr_db": snr_db,
+            "ic_err": ic_err_val,
             "conformance_snr_db": conformance_snr_db,
             "alignment_delay_ms": alignment_delay_ms,
             "gapless_offset_samples": gapless_offset_samples,
@@ -844,8 +870,8 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
         stderr_low = (res.stderr or "").lower()
-        is_timeout = (res.returncode == -124) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
-        is_crash = (res.returncode < 0) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
+        is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
+        is_crash = (res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139)) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
 
         if not is_timeout and not is_crash:
             if res.returncode == 0:

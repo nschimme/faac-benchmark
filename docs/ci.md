@@ -14,10 +14,10 @@ Run benchmarks in a matrix, then consolidate with the reporting action.
 ```yaml
 jobs:
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     strategy:
+      fail-fast: false
       matrix:
-        arch: [amd64]
         rate_control: [abr, vbr, cbr]
     steps:
       - name: Checkout Candidate
@@ -63,15 +63,26 @@ jobs:
           rate-control: ${{ matrix.rate_control }}
           run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_cand
           output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_cand.json
+      - name: Generate Per-Rate Control Report
+        uses: nschimme/faac-benchmark/report@master
+        with:
+          results-path: ./results
+          report-output: report_${{ matrix.rate_control }}.md
+          summary-output: summary_${{ matrix.rate_control }}.md
+          cases-output: cases_${{ matrix.rate_control }}.md
       - name: Upload Results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: results-${{ matrix.arch }}-${{ matrix.rate_control }}
-          path: results/*.json
+          name: results-${{ matrix.rate_control }}
+          path: |
+            results/*.json
+            report_${{ matrix.rate_control }}.md
+            cases_${{ matrix.rate_control }}.md
 
   report:
     needs: benchmark
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     if: always()
     permissions:
       pull-requests: write
@@ -120,7 +131,7 @@ Runs the encoding benchmark and MOS computation for a single configuration. Each
 ### Action: `nschimme/faac-benchmark/report`
 
 Consolidates multiple result JSONs into one Markdown report + GitHub Step
-Summary, and writes `summary.md` for a PR comment and `cases.md` for full test case details.
+Summary, and writes `summary.md` for a PR comment.
 
 | Input | Description | Required | Default |
 | :--- | :--- | :---: | :--- |
@@ -128,12 +139,20 @@ Summary, and writes `summary.md` for a PR comment and `cases.md` for full test c
 | `base-sha` | Baseline commit SHA (else pulled from JSONs). | No | |
 | `cand-sha` | Candidate commit SHA (else pulled from JSONs). | No | |
 | `summary-only` | Generate only the high-signal summary. | No | `false` |
+| `report-output` | Output filename for the full Markdown report. | No | `report.md` |
+| `summary-output` | Output filename for the Markdown summary. | No | `summary.md` |
+| `cases-output` | Output filename for per-clip test cases details (optional). | No | |
+| `strict-decode` | Treat candidate decode validation failures as hard regressions. | No | `false` |
+| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`). | No | |
+| `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
+| `skip-graphs` | Skip generating Mermaid.js charts in the report. | No | `false` |
+| `fail-on-regression` | Fail job if compare_results detects regressions. | No | `true` |
 
 ## Consolidating results
 
 ```bash
 python3 compare_results.py <results_dir_or_files> \
-    --output report.md --summary-output summary.md --cases-output cases.md \
+    --output report.md --summary-output summary.md \
     [--base-sha SHA] [--cand-sha SHA] [--strict-decode]
 ```
 
