@@ -761,6 +761,17 @@ def get_git_tag():
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
 
+def get_git_version():
+    """Returns git tag if available, else git short commit hash."""
+    tag = get_git_tag()
+    if tag:
+        return tag
+    try:
+        res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True)
+        return res.stdout.strip()
+    except Exception:
+        return "unknown"
+
 def get_ffmpeg_path():
     return shutil.which("ffmpeg")
 
