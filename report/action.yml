@@ -31,7 +31,7 @@ runs:
     - name: Generate Report
       shell: bash
       run: |
-        ARGS="${{ inputs.results-path }} --output report.md --summary-output summary.md --cases-output cases.md"
+        ARGS="${{ inputs.results-path }} --output report.md --summary-output summary.md"
         if [ -n "${{ inputs.base-sha }}" ]; then ARGS="$ARGS --base-sha ${{ inputs.base-sha }}"; fi
         if [ -n "${{ inputs.cand-sha }}" ]; then ARGS="$ARGS --cand-sha ${{ inputs.cand-sha }}"; fi
         if [ "${{ inputs.summary-only }}" == "true" ]; then ARGS="$ARGS --summary-only"; fi
@@ -42,9 +42,6 @@ runs:
         # Also append to the GitHub Step Summary for visibility
         if [ -f "report.md" ]; then
           cat report.md >> $GITHUB_STEP_SUMMARY
-        fi
-        if [ -f "cases.md" ]; then
-          cat cases.md >> $GITHUB_STEP_SUMMARY
         fi
 
         exit ${EXIT_CODE:-0}

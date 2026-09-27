@@ -120,7 +120,7 @@ Runs the encoding benchmark and MOS computation for a single configuration. Each
 ### Action: `nschimme/faac-benchmark/report`
 
 Consolidates multiple result JSONs into one Markdown report + GitHub Step
-Summary, and writes `summary.md` for a PR comment and `cases.md` for full test case details.
+Summary, and writes `summary.md` for a PR comment.
 
 | Input | Description | Required | Default |
 | :--- | :--- | :---: | :--- |
@@ -133,7 +133,7 @@ Summary, and writes `summary.md` for a PR comment and `cases.md` for full test c
 
 ```bash
 python3 compare_results.py <results_dir_or_files> \
-    --output report.md --summary-output summary.md --cases-output cases.md \
+    --output report.md --summary-output summary.md \
     [--base-sha SHA] [--cand-sha SHA] [--strict-decode]
 ```
 
