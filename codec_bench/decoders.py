@@ -98,11 +98,16 @@ class Decoder:
 
 
 class FAADDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="faad", lib_override=None):
+    def __init__(self, name, binary_path, tool_id="faad", lib_override=None, is_faad3=False):
         super().__init__(name, binary_path, tool_id, lib_name_substr="libfaad", lib_override=lib_override)
+        self.is_faad3 = is_faad3 or "faad3" in tool_id.lower()
 
     def get_decode_cmd(self, input_path, output_path):
-        return [self.binary_path, "-q", "-o", output_path, input_path]
+        cmd = [self.binary_path, "-q"]
+        if self.is_faad3:
+            cmd.append("--strict")
+        cmd.extend(["-o", output_path, input_path])
+        return cmd
 
 
 class FFmpegDecoder(Decoder):
@@ -226,7 +231,7 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
         display_name = f"{base_name} {ver}" if ver else base_name
-        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override)
+        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override, is_faad3=is_faad3)
 
     elif decoder_type in ("helix", "helix_aac", "helix-aac-dec"):
         h_bin = binary_path
@@ -603,7 +608,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 "duration": 0,
                 "audio_duration": None,
                 "decode_valid": False,
-                "decode_error": err_detail if is_timeout else f"Decode failed: {err_detail}",
+                "decode_error": "TIMEOUT" if is_timeout else f"Decode failed: {err_detail}",
                 "timeout": is_timeout,
                 "snr_db": None,
                 "mos_source": None,
@@ -772,7 +777,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         elif "timed out" in detail.lower() or "timeout" in detail.lower():
             is_timeout = True
 
-        err_msg = "Timeout expired" if is_timeout else f"Decode failed: {detail}"
+        err_msg = "TIMEOUT" if is_timeout else f"Decode failed: {detail}"
         return {
             "tool": decoder.name,
             "row_key": decoder_row_key(decoder),

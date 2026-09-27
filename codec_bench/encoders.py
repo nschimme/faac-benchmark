@@ -235,6 +235,17 @@ class AFConvertEncoder(Encoder):
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and channels > 2:
             return False, f"Apple AAC ({profile_label(self.profile)}) only supports max 2 channels (got {channels})"
+
+        br_per_ch = bitrate_kbps / max(1, channels)
+        if self.profile == "he":
+            if br_per_ch < 12 or br_per_ch > 32:
+                return False, f"Apple AAC HE-v1 supports 12-32 kbps/ch (got {br_per_ch:.1f} kbps/ch)"
+        elif self.profile == "hev2":
+            if channels != 2:
+                return False, f"Apple AAC HE-v2 requires 2 channels (got {channels})"
+            if bitrate_kbps < 16 or bitrate_kbps > 48:
+                return False, f"Apple AAC HE-v2 supports 16-48 kbps total (got {bitrate_kbps} kbps)"
+
         return super().supports_scenario(bitrate_kbps, channels, sample_rate)
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):

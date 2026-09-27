@@ -211,6 +211,7 @@ try:
 
     num_ref_ch = ref_aligned.shape[1]
     num_dec_ch = dec_aligned.shape[1]
+    is_mono_downmix = (num_ref_ch >= 2 and num_dec_ch == 1)
 
     if num_ref_ch != num_dec_ch:
         if num_ref_ch == 1 and num_dec_ch > 1:
@@ -239,6 +240,13 @@ try:
         mos = float(sum(per_channel_mos) / len(per_channel_mos))
     else:
         dist = math.sqrt(sum(d * d for d in per_channel_dist))
+        if is_mono_downmix and num_ref_ch >= 2:
+            ref_sub = ref_aligned[:n, 0] - ref_aligned[:n, 1]
+            ref_sum = ref_aligned[:n, 0] + ref_aligned[:n, 1]
+            ref_side_e = float(np.mean(ref_sub * ref_sub))
+            ref_total_e = float(np.mean(ref_sum * ref_sum)) + ref_side_e + 1e-9
+            spatial_ratio = ref_side_e / ref_total_e
+            dist = dist * (1.0 + math.sqrt(spatial_ratio))
         mos = float(zimtohrli.mos_from_zimtohrli(dist))
     print(json.dumps({"mos": mos, "backend": "zimtohrli"}))
 except Exception:

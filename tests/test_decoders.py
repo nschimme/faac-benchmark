@@ -9,6 +9,15 @@ import codec_bench.decoders as dec
 import utils
 
 class TestDecoders(unittest.TestCase):
+    def test_faad3_strict_mode(self):
+        faad3 = dec.FAADDecoder("FAAD3 3.0", "/usr/bin/faad3", tool_id="faad3", is_faad3=True)
+        cmd = faad3.get_decode_cmd("in.aac", "out.wav")
+        self.assertIn("--strict", cmd)
+
+        faad2 = dec.FAADDecoder("FAAD2 2.11", "/usr/bin/faad", tool_id="faad2", is_faad3=False)
+        cmd2 = faad2.get_decode_cmd("in.aac", "out.wav")
+        self.assertNotIn("--strict", cmd2)
+
     def test_multi_version_faad_detection(self):
         class DummyArgs:
             faad_bin = ["/usr/bin/faad1", "/usr/bin/faad2"]

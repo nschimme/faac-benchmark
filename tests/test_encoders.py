@@ -51,11 +51,22 @@ class TestEncoders(unittest.TestCase):
         self.assertTrue(ok_lc_6ch)
 
         af_he = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
-        ok_he_2ch, _ = af_he.supports_scenario(64, 2, 44100)
+        ok_he_2ch, _ = af_he.supports_scenario(48, 2, 44100)
         self.assertTrue(ok_he_2ch)
         ok_he_6ch, reason = af_he.supports_scenario(160, 6, 44100)
         self.assertFalse(ok_he_6ch)
         self.assertIn("max 2 channels", reason)
+
+        ok_he_invalid, reason_he = af_he.supports_scenario(16, 2, 44100)
+        self.assertFalse(ok_he_invalid)
+        self.assertIn("12-32 kbps/ch", reason_he)
+
+        af_hev2 = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="hev2")
+        ok_v2_valid, _ = af_hev2.supports_scenario(32, 2, 44100)
+        self.assertTrue(ok_v2_valid)
+        ok_v2_invalid, reason_v2 = af_hev2.supports_scenario(64, 2, 44100)
+        self.assertFalse(ok_v2_invalid)
+        self.assertIn("16-48 kbps total", reason_v2)
 
     def test_detect_encoders_optin_variations(self):
         import argparse

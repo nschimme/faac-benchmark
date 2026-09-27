@@ -127,7 +127,7 @@ Options:
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
 
 The leaderboard evaluates key dimensions:
-1. **Quality**: Average and Worst MOS across scenarios (higher is better).
+1. **Quality**: Average and 1st Percentile MOS ($P_1$) / 99% Floor MOS across scenarios (higher is better).
 2. **Spec Conformance (Decoders)**: Signal-to-Noise Ratio (SNR in dB) against reference decodes (higher/bit-exact is better).
 3. **Timing Alignment (Decoders)**: Sample timing alignment error (in ms) relative to reference audio.
 4. **Robustness (Decoders)**: Crash-free decoding success rate (%) on deterministically corrupted ADTS bitstreams.
