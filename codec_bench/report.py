@@ -392,8 +392,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(row_str + "\n")
                 f.write("\n")
 
-            f.write(f"#### Per-Scenario Worst MOS (Min Clip MOS - {fam_label})\n\n")
-            f.write("> **Note**: Minimum perceptual MOS score observed across any clip in the scenario. "
+            f.write(f"#### Per-Scenario 1st Percentile MOS ($P_1$) ({fam_label})\n\n")
+            f.write("> **Note**: 1st percentile MOS ($P_1$) score threshold observed across clips in the scenario. "
                     "Highlights edge-case clip degradation. "
                     "A 🐛 names the clip when every other encoder scored ≥0.75 MOS higher on that exact clip "
                     "-- likely a defect specific to this encoder; see Quality Outliers under Issues Worth Investigating below.\n\n")
@@ -412,26 +412,29 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
                 for s_name in fam_scenarios:
                     row_str = f"| {s_name} |"
-                    p_valid_min = [stats[rk][s_name]["mos_min"] for rk in p_rks if stats[rk][s_name]["mos_count"] > 0]
+                    p_valid_min = [compute_p1_mos([r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None])
+                                   if stats[rk][s_name]["mos_count"] > 0 else 0
+                                   for rk in p_rks]
                     best_p_min = max(p_valid_min) if p_valid_min else None
 
                     for rk in p_rks:
                         st = stats[rk][s_name]
                         if st["mos_count"] > 0:
-                            min_m = st["mos_min"]
+                            sc_clips = [r["mos"] for r in results if r["row_key"] == rk and r["scenario"] == s_name and r.get("mos") is not None]
+                            p1_m = compute_p1_mos(sc_clips) if sc_clips else st["mos_min"]
                             min_f = st["mos_min_file"]
                             gap = cell_peer_gap(clip_mos, rk, s_name, min_f)
                             if gap is not None:
                                 bug_flags.append((encoder_info[rk].name, p, s_name, min_f, gap[0], gap[1]))
 
-                            is_best = best_p_min and abs(min_m - best_p_min) < 1e-6
+                            is_best = best_p_min and abs(p1_m - best_p_min) < 1e-6
                             bug_mark = " 🐛" if gap is not None else ""
-                            p_bar = make_progress_bar(min_m, 5.0)
+                            p_bar = make_progress_bar(p1_m, 5.0)
 
                             if is_best:
-                                cell = f" **{min_m:.3f}**{p_bar}{bug_mark}"
+                                cell = f" **{p1_m:.3f}**{p_bar}{bug_mark}"
                             else:
-                                cell = f" {min_m:.3f}{p_bar}{bug_mark}"
+                                cell = f" {p1_m:.3f}{p_bar}{bug_mark}"
                             row_str += f"{cell} |"
                         else:
                             row_str += " N/A |"
@@ -584,6 +587,41 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(row_str + "\n")
                 f.write("\n")
             f.write("</details>\n\n")
+
+            # 7. Encoding Speed per rate family
+            f.write(f"### Encoding Speed ({fam_label})\n\n")
+            f.write("> **Note**: Encoding throughput measured in xRealtime. **Higher is Better**.\n\n")
+
+            tool_line_data_sp = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk and stats[best_rk][s]["speed_count"] > 0:
+                        vals.append(stats[best_rk][s]["speed_sum"] / stats[best_rk][s]["speed_count"])
+                    else:
+                        vals.append(None)
+                if any(v is not None for v in vals):
+                    tool_line_data_sp[tool_name] = vals
+
+            if not skip_graphs and tool_line_data_sp:
+                chart_vals_sp = [v for vals in tool_line_data_sp.values() for v in vals if v is not None]
+                axis_lo_sp, axis_hi_sp = zoomed_y_range(chart_vals_sp, "0.0 --> 100.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Encoding Speed across Bitrates - {fam_label} (Higher is Better)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "Speed (xRT)" {axis_lo_sp:.4g} --> {axis_hi_sp:.4g}\n')
+                for tool_name, vals in tool_line_data_sp.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
+                f.write("```\n\n")
 
             # 6. Bitrate Accuracy per rate family
             f.write(f"### Bitrate Accuracy ({fam_label})\n\n")
