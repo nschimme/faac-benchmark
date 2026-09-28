@@ -116,7 +116,7 @@ def encode_aac(faac_bin, wav_path, aac_path, bitrate, extra_args=None, env_extra
     cmd = [faac_bin]
     if is_faac_legacy(faac_bin):
         cmd.append('-w')
-    cmd.extend(['-b', str(bitrate), '-o', aac_path, wav_path])
+    cmd.extend(['--overwrite', '-b', str(bitrate), '-o', aac_path, wav_path])
     if extra_args:
         cmd.extend(extra_args)
     env = dict(os.environ)
