@@ -116,7 +116,7 @@ Benchmark `faac` and `faad` against other available AAC encoders (FDK-AAC, FFmpe
 python3 compare_codecs.py [saved_results.json ...] [options]
 ```
 
-`compare_codecs.py` automatically detects and aggregates saved JSON runs from `results/` and the current working directory, reusing prior encoder/decoder evaluations to skip completed tasks, regenerate reports instantly, or run differential benchmarks when encoder or decoder binaries change.
+`compare_codecs.py` runs fresh by default. Use `--resume` to discover saved JSON runs from `results/` and the current working directory, or pass saved result paths explicitly. It retries failed or incomplete encoder rows and excludes combinations the current capability check rejects. Decoder-only mode reads saved encoder results because it needs their bitstreams.
 
 Options:
 - `--mode encoder|decoder|both`: Benchmarking mode (default: `both`).

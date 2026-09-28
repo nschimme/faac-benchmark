@@ -3,7 +3,9 @@
 """
 
 import unittest
+from unittest.mock import patch
 import codec_bench.encoders as enc
+import compare_codecs as cd
 
 class TestEncoders(unittest.TestCase):
     def test_profile_labels(self):
@@ -67,6 +69,34 @@ class TestEncoders(unittest.TestCase):
         ok_v2_invalid, reason_v2 = af_hev2.supports_scenario(64, 2, 44100)
         self.assertFalse(ok_v2_invalid)
         self.assertIn("16-48 kbps total", reason_v2)
+
+    def test_apple_probe_uses_scenario_format(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="hev2")
+        names = ["32k_stereo_16k", "32k_stereo_64k"]
+        with patch.object(cd, "probe_encoder_capability", return_value=False) as probe:
+            eligible = cd.supported_encoder_scenarios([apple], names)
+        self.assertEqual(eligible["32k_stereo_16k"], [])
+        self.assertEqual(eligible["32k_stereo_64k"], [])
+        probe.assert_called_once_with(apple, 16, 2, 32000)
+
+    def test_old_apple_failures_are_not_reused(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
+        eligible = {"32k_stereo_16k": [], "32k_stereo_48k": [apple]}
+        rows = [
+            {"row_key": "afconvert_he", "scenario": "32k_stereo_16k", "decode_valid": False},
+            {"row_key": "afconvert_he", "scenario": "32k_stereo_48k", "decode_valid": False},
+            {"row_key": "afconvert_he", "scenario": "32k_stereo_48k", "decode_valid": True},
+        ]
+        kept = cd.reusable_encoder_results(rows, [apple], list(eligible), eligible)
+        self.assertEqual(kept, [rows[2]])
+
+    def test_resume_retries_missing_mos(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
+        eligible = {"16k_mono_20k": [apple]}
+        row = {"row_key": "afconvert_lc", "scenario": "16k_mono_20k",
+               "decode_valid": True, "mos": None}
+        self.assertEqual(cd.reusable_encoder_results([row], [apple], list(eligible), eligible,
+                                                     require_mos=True), [])
 
     def test_detect_encoders_optin_variations(self):
         import argparse

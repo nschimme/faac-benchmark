@@ -8,6 +8,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  macos-smoke:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          brew install ffmpeg
+          python3 -m pip install -r requirements.txt
+      - name: Check speech scoring and Apple AAC
+        run: RUN_MACOS_NATIVE_SMOKE=1 python3 -m unittest tests.test_macos_smoke -v
+
   codec-leaderboard:
     runs-on: ubuntu-24.04-arm
     steps:

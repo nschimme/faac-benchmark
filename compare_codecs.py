@@ -93,7 +93,9 @@ def gate_filter(name, filtered_samples):
     gate_list = GATE_CLIPS.get(name)
     if gate_list:
         gate_set = set(gate_list)
-        return [f for f in filtered_samples if f in gate_set]
+        selected = [f for f in filtered_samples if f in gate_set]
+        if selected:
+            return selected
     return filtered_samples[:GATE_FALLBACK_N]
 
 
@@ -286,6 +288,74 @@ def auto_detect_saved_json_files(explicit_results_json):
     return json_paths
 
 
+def saved_result_paths(args, run_encoders=True):
+    if args.saved_jsons:
+        return args.saved_jsons
+    if args.resume or not run_encoders:
+        return auto_detect_saved_json_files(args.results_json)
+    return []
+
+
+def supported_encoder_scenarios(encoders, scenario_list):
+    """Probe Apple against the exact scenario format once, before scheduling clips."""
+    eligible = {}
+    probe_cache = {}
+    for name in scenario_list:
+        cfg = SCENARIOS[name]
+        bitrate = cfg["bitrate"]
+        channels = scenario_channels(cfg)
+        rate = scenario_rate(cfg)
+        eligible[name] = []
+        for encoder in encoders:
+            supported, _ = encoder.supports_scenario(bitrate, channels, rate)
+            if not supported:
+                continue
+            if isinstance(encoder, AFConvertEncoder):
+                key = (encoder.binary_path, encoder.profile, bitrate, channels, rate)
+                if key not in probe_cache:
+                    probe_cache[key] = probe_encoder_capability(encoder, bitrate, channels, rate)
+                if not probe_cache[key]:
+                    print(f"  Apple AAC {profile_label(encoder.profile)} unsupported: {name} "
+                          f"({bitrate} kbps, {channels} ch, {rate} Hz)")
+                    continue
+            eligible[name].append(encoder)
+    return eligible
+
+
+def reusable_encoder_results(results, encoders, scenario_list, eligible, require_mos=False):
+    """Old failures must be retried, and unsupported combinations must not reappear."""
+    active_keys = {encoder_row_key(e) for e in encoders}
+    allowed = {(encoder_row_key(e), name) for name in scenario_list for e in eligible[name]}
+    return [r for r in results if r.get("scenario") in scenario_list
+            and r.get("decode_valid") is True
+            and (not require_mos or r.get("mos") is not None)
+            and (r.get("row_key") not in active_keys or
+                 (r.get("row_key"), r.get("scenario")) in allowed)]
+
+
+def check_speech_metric(scenario_list, external_data_dir):
+    speech = [SCENARIOS[name] for name in scenario_list if SCENARIOS[name]["mode"] == "speech"]
+    if not speech:
+        return
+    for cfg in speech:
+        directory = corpus_dir(cfg, external_data_dir)
+        if not os.path.isdir(directory):
+            continue
+        sample = next((os.path.join(directory, name) for name in sorted(os.listdir(directory))
+                       if name.endswith(".wav")), None)
+        if sample:
+            script = ("import sys, phase2_mos; "
+                      "mos, _ = phase2_mos.score_wav_pair(sys.argv[1], sys.argv[1], mode_str='speech'); "
+                      "sys.exit(0 if mos is not None else 1)")
+            proc = subprocess.run([sys.executable, "-c", script, sample],
+                                  capture_output=True, text=True)
+            if proc.returncode:
+                detail = (proc.stdout + proc.stderr).strip()
+                raise RuntimeError(f"ViSQOL speech preflight failed: {detail or f'exit code {proc.returncode}'}")
+            return
+    raise RuntimeError("ViSQOL speech preflight failed: no 16 kHz speech WAV found")
+
+
 def load_all_saved_results(json_paths):
     """Loads and aggregates encoder, decoder, and robustness results from JSON files."""
     loaded_encoders = []
@@ -372,7 +442,7 @@ def main():
     parser.add_argument("--skip-stereo", action="store_true", help="Skip inter-channel coherence calculation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip attack centroid shift calculation")
     parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid xychart-beta plots")
-    parser.add_argument("--resume", action="store_true", help="Reuse existing comparison_results.json if available")
+    parser.add_argument("--resume", action="store_true", help="Reuse saved results; default is a fresh run")
     parser.add_argument("--iterations", type=int, default=1,
                         help="Repeat each decode this many times (output discarded) for mean/std latency, xRT, MB/s (default: 1 = single timed decode only)")
     parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
@@ -402,6 +472,10 @@ def main():
     num_cpus = max(1, os.cpu_count() or 1)
     encoder_results = []
     encoders = []
+    candidate_jsons = saved_result_paths(args, run_encoders)
+
+    if run_encoders and not args.skip_mos:
+        check_speech_metric(scenario_list, external_data_dir)
 
     if run_encoders:
         encoders = detect_encoders(args)
@@ -412,15 +486,18 @@ def main():
         else:
             print(f"Detected encoders ({len(encoders)} variants): {', '.join(f'{e.name} ({profile_label(e.profile)})' for e in encoders)}")
 
+        eligible = supported_encoder_scenarios(encoders, scenario_list)
+
         # Auto-detect and merge saved runs
-        candidate_jsons = args.saved_jsons if args.saved_jsons else auto_detect_saved_json_files(args.results_json)
         loaded_enc, loaded_dec, loaded_rob = load_all_saved_results(candidate_jsons)
         if loaded_enc:
             print(f"==> Auto-detected and loaded {len(loaded_enc)} encoder entries from: {', '.join(candidate_jsons)}")
-            encoder_results = loaded_enc
+            encoder_results = reusable_encoder_results(loaded_enc, encoders, scenario_list, eligible,
+                                                       require_mos=not args.skip_mos)
 
         # Identify missing encoder tasks using smart reuse (encoder_version, scenario, filename)
-        existing_keys = {(r.get("tool"), r.get("scenario"), r.get("filename")) for r in encoder_results if r.get("decode_valid") is not None}
+        existing_keys = {(r.get("row_key"), r.get("scenario"), r.get("filename"))
+                         for r in encoder_results if r.get("decode_valid") is True}
 
         total_tasks = 0
         tasks = []
@@ -441,8 +518,8 @@ def main():
                 samples = gate_filter(s_name, samples)
 
             for sample in samples:
-                for encoder in encoders:
-                    if (encoder.name, s_name, sample) not in existing_keys:
+                for encoder in eligible[s_name]:
+                    if (encoder_row_key(encoder), s_name, sample) not in existing_keys:
                         tasks.append((encoder, s_name, cfg, sample, d_dir))
 
         if tasks:
@@ -491,7 +568,7 @@ def main():
                     samples = gate_filter(s_name, samples)
 
                 for sample in samples:
-                    for encoder in encoders:
+                    for encoder in eligible[s_name]:
                         tasks.append((encoder, s_name, cfg, sample, d_dir))
 
             total_tasks = len(tasks)
@@ -560,7 +637,6 @@ def main():
                 sampled_ids.add(id(item))
 
         # Load any existing decoder results
-        candidate_jsons = args.saved_jsons if args.saved_jsons else auto_detect_saved_json_files(args.results_json)
         _enc_res, loaded_dec, loaded_rob = load_all_saved_results(candidate_jsons)
         if loaded_dec:
             decoder_results.extend(loaded_dec)
@@ -740,6 +816,15 @@ def main():
     if args.decoder_report and run_decoders and decoders:
         generate_decoder_report(decoders, decoder_results, decoder_robustness_results, args.decoder_report,
                                 muxer_results=muxer_results)
+
+    if run_encoders and not args.skip_mos:
+        missing = [r for r in encoder_results if r.get("decode_valid")
+                   and SCENARIOS.get(r.get("scenario"), {}).get("mode") == "speech"
+                   and r.get("mos") is None]
+        if missing:
+            print(f"ERROR: ViSQOL speech scoring missing for {len(missing)} valid encodes; "
+                  f"first: {missing[0].get('row_key')} / {missing[0].get('scenario')} / {missing[0].get('filename')}")
+            sys.exit(1)
 
     if args.gate and run_decoders and decoders:
         gate_ok, gate_lines = evaluate_gate(decoder_results, decoder_robustness_results)

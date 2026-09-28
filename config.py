@@ -40,7 +40,7 @@ CORPORA = {
         "family": "16k_mono",
         "label": "16 kHz Mono Speech",
         "max_clips": 40,
-        # The clean refs mirror the degraded set's naming (R_01_CHOP_FA.wav),
+        # The clean refs mirror the degraded set's naming (R_01_CLIP_FA.wav),
         # one distinct recording per condition, so they stratify the same way:
         # (condition, talker).
         "strata": r"_([A-Z]+)_([A-Z]{2})\.wav$"},
@@ -52,7 +52,7 @@ CORPORA = {
         "family": "24k_mono",
         "label": "24 kHz Mono Speech",
         "max_clips": 40,
-        # The clean refs mirror the degraded set's naming (R_01_CHOP_FA.wav),
+        # The clean refs mirror the degraded set's naming (R_01_CLIP_FA.wav),
         # one distinct recording per condition, so they stratify the same way:
         # (condition, talker).
         "strata": r"_([A-Z]+)_([A-Z]{2})\.wav$"},
@@ -440,9 +440,8 @@ del _name, _cfg, _corpus
 # Curated to span the strata that matter (percussive vs tonal music; chop/noise/
 # echo speech across voices). Corpora sharing content share a list. Any
 # scenario without an entry falls back to a deterministic even-spaced slice
-# (see phase1_encode.gate_filter), so --gate always works -- which is how the
-# clean-speech corpora are handled, since their filenames come from the
-# TCD-VoIP ref set rather than being curated here.
+# (see phase1_encode.gate_filter), so --gate always works. Clean speech uses
+# its own fixed reference-file list below.
 _MUSIC_GATE = [
     "sandman.16b48k.wav",          # percussive (LC-favoured)
     "velvet.16b48k.wav",           # tonal/bright (HE-favoured)
@@ -456,10 +455,10 @@ _SPEECH_GATE = [
     "C_18_NOISE_ML.wav",
 ]
 _SPEECH_CLEAN_GATE = [
-    "R_01_CHOP_FA.wav",
-    "R_01_CHOP_FG.wav",
-    "R_01_CHOP_MK.wav",
-    "R_01_CHOP_ML.wav",
+    "R_01_CLIP_MK.wav",
+    "R_01_COMPSPKR_FA.wav",
+    "R_01_COMPSPKR_ML.wav",
+    "R_01_ECHO_FG.wav",
 ]
 _AUDIO_51_GATE = [
     "6_Channel_ID.wav",

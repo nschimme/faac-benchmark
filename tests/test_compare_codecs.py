@@ -8,6 +8,8 @@ import unittest
 import tempfile
 import json
 import shutil
+from argparse import Namespace
+from unittest.mock import patch
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SCRIPT_DIR not in sys.path:
@@ -17,6 +19,21 @@ import utils
 import compare_codecs as cd
 
 class TestCompareDecoders(unittest.TestCase):
+    def test_saved_results_require_resume(self):
+        args = Namespace(saved_jsons=[], resume=False, results_json="comparison_results.json")
+        self.assertEqual(cd.saved_result_paths(args), [])
+        args.saved_jsons = ["prior.json"]
+        self.assertEqual(cd.saved_result_paths(args), ["prior.json"])
+        args.saved_jsons = []
+        args.resume = True
+        with patch.object(cd, "auto_detect_saved_json_files", return_value=["old.json"]):
+            self.assertEqual(cd.saved_result_paths(args), ["old.json"])
+
+    def test_gate_filter_uses_speech_clips_and_falls_back(self):
+        clips = ["R_01_CLIP_MK.wav", "R_01_COMPSPKR_FA.wav", "other.wav"]
+        self.assertEqual(cd.gate_filter("16k_mono_20k", clips), clips[:2])
+        self.assertEqual(cd.gate_filter("16k_mono_20k", ["other.wav"]), ["other.wav"])
+
     def test_compute_snr_identical(self):
         with tempfile.TemporaryDirectory() as td:
             wav1 = os.path.join(td, "w1.wav")
