@@ -1401,101 +1401,102 @@ def main():
 
     if not summary_only:
         # Scenario Performance Tables separated per rate control mode
-        report.append("\n<details><summary><b>📋 View Scenario Performance Details</b></summary>\n")
-        report.append("### Scenario Performance")
-        has_sig_mark = False
+        if len(modes_present) == 1:
+            report.append("\n<details><summary><b>📋 View Scenario Performance Details</b></summary>\n")
+            report.append("### Scenario Performance")
+            has_sig_mark = False
 
-        for mode in modes_present:
-            if len(modes_present) > 1:
-                report.append(f"\n#### {mode.upper()} Scenario Performance")
+            for mode in modes_present:
+                if len(modes_present) > 1:
+                    report.append(f"\n#### {mode.upper()} Scenario Performance")
 
-            bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
-            report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
-            report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
+                report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-            mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
-            for suite_data in all_suite_data.values():
-                if suite_data.get("rate_control_mode", "abr") != mode:
-                    continue
-                for sc_name, sc_stats in suite_data["scenario_stats"].items():
-                    mode_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
-                    mode_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
-                    mode_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
-                    mode_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
-                    mode_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
-                    mode_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
-                    mode_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
-                    mode_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
-                    mode_scenario_stats[sc_name]["vbr_chg_sum"] += sc_stats.get("vbr_bitrate_chg_sum", 0)
-                    mode_scenario_stats[sc_name]["vbr_chg_count"] += sc_stats.get("vbr_bitrate_chg_count", 0)
-                    mode_scenario_stats[sc_name]["mos_deltas"] += sc_stats.get("mos_deltas", [])
-                    mode_scenario_stats[sc_name]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
-                    mode_scenario_stats[sc_name]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
-                    mode_scenario_stats[sc_name]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
+                mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
+                for suite_data in all_suite_data.values():
+                    if suite_data.get("rate_control_mode", "abr") != mode:
+                        continue
+                    for sc_name, sc_stats in suite_data["scenario_stats"].items():
+                        mode_scenario_stats[sc_name]["mos_delta"] += sc_stats["mos_delta_sum"]
+                        mode_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
+                        mode_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
+                        mode_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
+                        mode_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
+                        mode_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
+                        mode_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
+                        mode_scenario_stats[sc_name]["acc_count"] += sc_stats["bitrate_acc_count"]
+                        mode_scenario_stats[sc_name]["vbr_chg_sum"] += sc_stats.get("vbr_bitrate_chg_sum", 0)
+                        mode_scenario_stats[sc_name]["vbr_chg_count"] += sc_stats.get("vbr_bitrate_chg_count", 0)
+                        mode_scenario_stats[sc_name]["mos_deltas"] += sc_stats.get("mos_deltas", [])
+                        mode_scenario_stats[sc_name]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
+                        mode_scenario_stats[sc_name]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
+                        mode_scenario_stats[sc_name]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
 
-            # One table, not one per family: in CI the job here is "scan for a
-            # regressed row", and five tables means five places to look. The
-            # sort key keeps families contiguous; a bold separator row renders
-            # as a subhead inside the single table.
-            current_family = None
-            for sc_name in sorted(mode_scenario_stats.keys(), key=get_scenario_sort_key):
-                fam = scenario_family(sc_name)
-                if fam != current_family:
-                    current_family = fam
-                    report.append(f"| **{family_label(fam)}** | | | | | | | | |")
-                gs = mode_scenario_stats[sc_name]
-                sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
-                sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
-                sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
+                # One table, not one per family: in CI the job here is "scan for a
+                # regressed row", and five tables means five places to look. The
+                # sort key keeps families contiguous; a bold separator row renders
+                # as a subhead inside the single table.
+                current_family = None
+                for sc_name in sorted(mode_scenario_stats.keys(), key=get_scenario_sort_key):
+                    fam = scenario_family(sc_name)
+                    if fam != current_family:
+                        current_family = fam
+                        report.append(f"| **{family_label(fam)}** | | | | | | | | |")
+                    gs = mode_scenario_stats[sc_name]
+                    sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
+                    sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
+                    sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
 
-                if mode == "vbr":
-                    sc_bitrate_val = f"{(gs['vbr_chg_sum'] / gs['vbr_chg_count']):+.2f}%" if gs['vbr_chg_count'] > 0 else "N/A"
-                else:
-                    sc_bitrate_val = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
+                    if mode == "vbr":
+                        sc_bitrate_val = f"{(gs['vbr_chg_sum'] / gs['vbr_chg_count']):+.2f}%" if gs['vbr_chg_count'] > 0 else "N/A"
+                    else:
+                        sc_bitrate_val = f"{(gs['acc_sum'] / gs['acc_count']):.1f}%" if gs['acc_count'] > 0 else "N/A"
 
-                sc_centroid_deltas = gs.get("centroid_deltas", [])
-                n_c_total = len(sc_centroid_deltas)
-                if n_c_total >= MIN_CENTROID_ONSETS:
-                    lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
-                    p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
-                    v_c = transient.ci_signtest_verdict(
-                        lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
-                    if v_c in ("regression", "improved"):
-                        icon = "📉" if v_c == "regression" else "📈"
-                        sc_o_abs = gs.get("centroid_o_abs", [])
-                        sc_b_abs = gs.get("centroid_b_abs", [])
-                        if sc_o_abs and sc_b_abs:
-                            fid_o = 1.0 / (1.0 + sum(sc_o_abs) / len(sc_o_abs))
-                            fid_b = 1.0 / (1.0 + sum(sc_b_abs) / len(sc_b_abs))
-                            sc_fid_delta = fid_o - fid_b
-                            sc_transient = f"{sc_fid_delta:+.4f} {icon} (n={n_c})"
+                    sc_centroid_deltas = gs.get("centroid_deltas", [])
+                    n_c_total = len(sc_centroid_deltas)
+                    if n_c_total >= MIN_CENTROID_ONSETS:
+                        lo_c, hi_c = transient.bootstrap_ci(sc_centroid_deltas)
+                        p_c, _neg_c, n_c = transient.sign_test_p(sc_centroid_deltas)
+                        v_c = transient.ci_signtest_verdict(
+                            lo_c, hi_c, p_c, label_decrease="improved", label_increase="regression")
+                        if v_c in ("regression", "improved"):
+                            icon = "📉" if v_c == "regression" else "📈"
+                            sc_o_abs = gs.get("centroid_o_abs", [])
+                            sc_b_abs = gs.get("centroid_b_abs", [])
+                            if sc_o_abs and sc_b_abs:
+                                fid_o = 1.0 / (1.0 + sum(sc_o_abs) / len(sc_o_abs))
+                                fid_b = 1.0 / (1.0 + sum(sc_b_abs) / len(sc_b_abs))
+                                sc_fid_delta = fid_o - fid_b
+                                sc_transient = f"{sc_fid_delta:+.4f} {icon} (n={n_c})"
+                            else:
+                                sc_transient = f"{icon} (n={n_c})"
                         else:
-                            sc_transient = f"{icon} (n={n_c})"
+                            sc_transient = f"➖ (n={n_c})"
                     else:
-                        sc_transient = f"➖ (n={n_c})"
-                else:
-                    sc_transient = f"➖ (n={n_c_total})"
+                        sc_transient = f"➖ (n={n_c_total})"
 
-                ci = bootstrap_mean_ci(gs["mos_deltas"])
-                if ci:
-                    if ci["lo"] <= 0 <= ci["hi"]:
-                        sig = ""
+                    ci = bootstrap_mean_ci(gs["mos_deltas"])
+                    if ci:
+                        if ci["lo"] <= 0 <= ci["hi"]:
+                            sig = ""
+                        else:
+                            sig = " ✳"
+                            has_sig_mark = True
+                        sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
+                        sc_wl = f"{ci['wins']}/{ci['losses']}"
                     else:
-                        sig = " ✳"
-                        has_sig_mark = True
-                    sc_ci = f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]{sig}"
-                    sc_wl = f"{ci['wins']}/{ci['losses']}"
-                else:
-                    sc_ci, sc_wl = "N/A", "N/A"
+                        sc_ci, sc_wl = "N/A", "N/A"
 
-                report.append(
-                    f"| {sc_name} | {format_scenario_rate(sc_name)} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                    f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_bitrate_val} |")
+                    report.append(
+                        f"| {sc_name} | {format_scenario_rate(sc_name)} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
+                        f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_bitrate_val} |")
 
-        report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
-        if has_sig_mark:
-            report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
-        report.append("\n</details>")
+            report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
+            if has_sig_mark:
+                report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
+            report.append("\n</details>")
 
         # 1. Collapsible Details: Regressions
         total_regressions = global_metrics["total_regressions"]
@@ -1513,84 +1514,85 @@ def main():
             report.append("\n</details>")
 
         # 2. Collapsible Additional Details
-        report.append(
-            "\n<details><summary><b>View Additional Suite Details</b></summary>\n")
-
-        rendered_object_movers = False
-        seen_footprint_details = set()
-
-        for name, data in sorted(all_suite_data.items()):
-            status_icon = "✅"
-            if data["has_regression"]:
-                status_icon = "❌"
-            elif data["missing_data"]:
-                status_icon = "❌"
-
-            avg_mos_suite = f"{(data['mos_delta_sum'] /
-                                data['mos_count']):+.3f}" if data["mos_count"] > 0 else "N/A"
-            suite_bit_exact_percent = (
-                data["bit_exact_count"] /
-                data["total_cases"] *
-                100) if data["total_cases"] > 0 else 0
-
-            report.append(f"\n#### {status_icon} {name}")
+        if len(modes_present) == 1:
             report.append(
-                f"- MOS Δ: {avg_mos_suite}, TP Δ: {data['tp_reduction']:+.1f}%, Size Δ: {data['lib_size_chg']:+.2f}%")
-            report.append(
-                f"- Bitstream Consistency: {suite_bit_exact_percent:.1f}%")
+                "\n<details><summary><b>View Additional Suite Details</b></summary>\n")
 
-            # Named gate decisions. Deduplicate footprint gate if identical across suites.
-            if data.get("gates"):
-                icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
-                report.append("\n**Gates**")
-                for g in data["gates"]:
-                    if g["name"] == "footprint":
-                        fp_key = f"{g['status']}:{g['detail']}"
-                        if fp_key in seen_footprint_details and len(all_suite_data) > 1:
-                            continue
-                        seen_footprint_details.add(fp_key)
-                    report.append(
-                        f"- {icons.get(g['status'], '?')} `{g['name']}`: {g['detail']}")
+            rendered_object_movers = False
+            seen_footprint_details = set()
 
-            # The rate-quality curve, per object type. Pooling these two
-            # segments reports a smaller number than either of them, so they
-            # are printed apart and never summed.
-            if data.get("bd_rate_segments"):
-                report.append("\n**BD-rate** (positive = more bits for equal "
-                              "quality = worse)")
-                report.append("| Ladder | Rungs | Clips | Mean | Median |")
-                report.append("| :--- | :---: | :---: | :---: | :---: |")
-                for seg in data["bd_rate_segments"]:
-                    st = seg["stats"]
-                    ot = seg["object_type"] or "pooled (object type unrecorded)"
-                    report.append(
-                        f"| {seg['corpus']} / {ot} | {len(seg['rungs'])} | "
-                        f"{st['n']} | {st['mean']:+.3f}% | {st['median']:+.3f}% |")
-                for note in data.get("bd_rate_notes", []):
-                    report.append(f"- {note}")
+            for name, data in sorted(all_suite_data.items()):
+                status_icon = "✅"
+                if data["has_regression"]:
+                    status_icon = "❌"
+                elif data["missing_data"]:
+                    status_icon = "❌"
 
-            if data.get("object_movers") and not rendered_object_movers:
-                rendered_object_movers = True
-                report.append("\n**Object .text movers**")
-                if not skip_graphs and data["object_movers"]:
-                    objs = [f'"{obj}"' for _, obj in data["object_movers"][:6]]
-                    diffs = [f"{d}" for d, _ in data["object_movers"][:6]]
-                    max_d = max(abs(d) for d, _ in data["object_movers"][:6]) if data["object_movers"] else 100
-                    d_bound = max(int(max_d * 1.25) + 1, 10)
-                    report.append("```mermaid")
-                    report.append("xychart-beta")
-                    report.append('    title "Object File .text Size Movers (Bytes)"')
-                    report.append(f"    x-axis [{', '.join(objs)}]")
-                    report.append(f'    y-axis "Byte Change" {-d_bound} --> {d_bound}')
-                    report.append(f'    bar "Byte Change" [{", ".join(diffs)}]')
-                    report.append("```\n")
-                report.append(", ".join(
-                    f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))
+                avg_mos_suite = f"{(data['mos_delta_sum'] /
+                                    data['mos_count']):+.3f}" if data["mos_count"] > 0 else "N/A"
+                suite_bit_exact_percent = (
+                    data["bit_exact_count"] /
+                    data["total_cases"] *
+                    100) if data["total_cases"] > 0 else 0
 
-        report.append("\n</details>")
+                report.append(f"\n#### {status_icon} {name}")
+                report.append(
+                    f"- MOS Δ: {avg_mos_suite}, TP Δ: {data['tp_reduction']:+.1f}%, Size Δ: {data['lib_size_chg']:+.2f}%")
+                report.append(
+                    f"- Bitstream Consistency: {suite_bit_exact_percent:.1f}%")
+
+                # Named gate decisions. Deduplicate footprint gate if identical across suites.
+                if data.get("gates"):
+                    icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
+                    report.append("\n**Gates**")
+                    for g in data["gates"]:
+                        if g["name"] == "footprint":
+                            fp_key = f"{g['status']}:{g['detail']}"
+                            if fp_key in seen_footprint_details and len(all_suite_data) > 1:
+                                continue
+                            seen_footprint_details.add(fp_key)
+                        report.append(
+                            f"- {icons.get(g['status'], '?')} `{g['name']}`: {g['detail']}")
+
+                # The rate-quality curve, per object type. Pooling these two
+                # segments reports a smaller number than either of them, so they
+                # are printed apart and never summed.
+                if data.get("bd_rate_segments"):
+                    report.append("\n**BD-rate** (positive = more bits for equal "
+                                  "quality = worse)")
+                    report.append("| Ladder | Rungs | Clips | Mean | Median |")
+                    report.append("| :--- | :---: | :---: | :---: | :---: |")
+                    for seg in data["bd_rate_segments"]:
+                        st = seg["stats"]
+                        ot = seg["object_type"] or "pooled (object type unrecorded)"
+                        report.append(
+                            f"| {seg['corpus']} / {ot} | {len(seg['rungs'])} | "
+                            f"{st['n']} | {st['mean']:+.3f}% | {st['median']:+.3f}% |")
+                    for note in data.get("bd_rate_notes", []):
+                        report.append(f"- {note}")
+
+                if data.get("object_movers") and not rendered_object_movers:
+                    rendered_object_movers = True
+                    report.append("\n**Object .text movers**")
+                    if not skip_graphs and data["object_movers"]:
+                        objs = [f'"{obj}"' for _, obj in data["object_movers"][:6]]
+                        diffs = [f"{d}" for d, _ in data["object_movers"][:6]]
+                        max_d = max(abs(d) for d, _ in data["object_movers"][:6]) if data["object_movers"] else 100
+                        d_bound = max(int(max_d * 1.25) + 1, 10)
+                        report.append("```mermaid")
+                        report.append("xychart-beta")
+                        report.append('    title "Object File .text Size Movers (Bytes)"')
+                        report.append(f"    x-axis [{', '.join(objs)}]")
+                        report.append(f'    y-axis "Byte Change" {-d_bound} --> {d_bound}')
+                        report.append(f'    bar "Byte Change" [{", ".join(diffs)}]')
+                        report.append("```\n")
+                    report.append(", ".join(
+                        f"`{obj}` {d:+d}" for d, obj in data["object_movers"]))
+
+            report.append("\n</details>")
 
     # Build individual test cases document
-    cases_lines = ["# Individual Test Cases Report\n"]
+    cases_lines = ["<details><summary><b>📋 View Individual Test Cases</b></summary>\n", "# Individual Test Cases Report\n"]
     total_cases_count = sum(len(d["all_cases"]) for d in all_suite_data.values())
     cases_filename = args.cases_output
 
@@ -1633,6 +1635,8 @@ def main():
                 for c in data["all_cases"]:
                     cases_lines.append(c["line"])
                 cases_lines.append("")
+
+        cases_lines.append("</details>")
 
         if total_cases_count > 0:
             report.append(f"\n_Full per-clip test cases ({total_cases_count} total) exported to `{os.path.basename(cases_filename)}`._\n")
