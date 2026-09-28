@@ -325,35 +325,56 @@ def supported_encoder_scenarios(encoders, scenario_list):
 def reusable_encoder_results(results, encoders, scenario_list, eligible, require_mos=False):
     """Old failures must be retried, and unsupported combinations must not reappear."""
     active_keys = {encoder_row_key(e) for e in encoders}
+    legacy_keys = defaultdict(list)
+    for encoder in encoders:
+        legacy_keys[(encoder.name, encoder.profile)].append(encoder_row_key(encoder))
     allowed = {(encoder_row_key(e), name) for name in scenario_list for e in eligible[name]}
-    return [r for r in results if r.get("scenario") in scenario_list
-            and r.get("decode_valid") is True
-            and (not require_mos or r.get("mos") is not None)
-            and (r.get("row_key") not in active_keys or
-                 (r.get("row_key"), r.get("scenario")) in allowed)]
+    reusable = []
+    for row in results:
+        if row.get("scenario") not in scenario_list or row.get("decode_valid") is not True:
+            continue
+        if require_mos and row.get("mos") is None:
+            continue
+        key = row.get("row_key")
+        if not key:
+            matches = legacy_keys[(row.get("tool"), row.get("profile"))]
+            if len(matches) != 1:
+                continue
+            key = matches[0]
+        if key not in active_keys or (key, row["scenario"]) not in allowed:
+            continue
+        reusable.append({**row, "row_key": key})
+    return reusable
 
 
 def check_speech_metric(scenario_list, external_data_dir):
-    speech = [SCENARIOS[name] for name in scenario_list if SCENARIOS[name]["mode"] == "speech"]
-    if not speech:
+    speech_names = [name for name in scenario_list if SCENARIOS[name]["mode"] == "speech"]
+    if not speech_names:
         return
-    for cfg in speech:
-        directory = corpus_dir(cfg, external_data_dir)
+    failures = []
+    script = ("import sys, phase2_mos; "
+              "mos, _ = phase2_mos.score_wav_pair(sys.argv[1], sys.argv[1], mode_str='speech'); "
+              "sys.exit(0 if mos is not None else 1)")
+    for name in speech_names:
+        directory = corpus_dir(SCENARIOS[name], external_data_dir)
         if not os.path.isdir(directory):
+            failures.append(f"{name}: corpus directory missing: {directory}")
             continue
-        sample = next((os.path.join(directory, name) for name in sorted(os.listdir(directory))
-                       if name.endswith(".wav")), None)
-        if sample:
-            script = ("import sys, phase2_mos; "
-                      "mos, _ = phase2_mos.score_wav_pair(sys.argv[1], sys.argv[1], mode_str='speech'); "
-                      "sys.exit(0 if mos is not None else 1)")
+        sample = next((os.path.join(directory, filename) for filename in sorted(os.listdir(directory))
+                       if filename.endswith(".wav")), None)
+        if not sample:
+            failures.append(f"{name}: no speech WAV found in {directory}")
+            continue
+        try:
             proc = subprocess.run([sys.executable, "-c", script, sample],
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True, timeout=60)
             if proc.returncode:
                 detail = (proc.stdout + proc.stderr).strip()
-                raise RuntimeError(f"ViSQOL speech preflight failed: {detail or f'exit code {proc.returncode}'}")
-            return
-    raise RuntimeError("ViSQOL speech preflight failed: no 16 kHz speech WAV found")
+                failures.append(f"{name}: {detail or f'exit code {proc.returncode}'}")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"{name}: {exc}")
+    if failures:
+        raise RuntimeError("ViSQOL speech preflight failed: " + "; ".join(failures))
 
 
 def load_all_saved_results(json_paths):

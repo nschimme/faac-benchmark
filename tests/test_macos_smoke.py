@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import phase2_mos
 import compare_codecs
 from codec_bench.encoders import AFConvertEncoder, probe_encoder_capability
+from tests.helpers import scenario_at
 
 
 @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("RUN_MACOS_NATIVE_SMOKE") == "1",
@@ -42,8 +43,9 @@ class TestMacOSLeaderboardSmoke(unittest.TestCase):
         encoder = AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="hev2")
         self.assertTrue(probe_encoder_capability(encoder, 24, 2, 44100))
         supported = probe_encoder_capability(encoder, 16, 2, 32000)
-        eligible = compare_codecs.supported_encoder_scenarios([encoder], ["32k_stereo_16k"])
-        self.assertEqual(encoder in eligible["32k_stereo_16k"], supported)
+        scenario = scenario_at(32000, 2, 16)
+        eligible = compare_codecs.supported_encoder_scenarios([encoder], [scenario])
+        self.assertEqual(encoder in eligible[scenario], supported)
 
 
 if __name__ == "__main__":
