@@ -3,7 +3,10 @@
 """
 
 import unittest
+from unittest.mock import patch
 import codec_bench.encoders as enc
+import compare_codecs as cd
+from tests.helpers import scenario_at
 
 class TestEncoders(unittest.TestCase):
     def test_profile_labels(self):
@@ -67,6 +70,57 @@ class TestEncoders(unittest.TestCase):
         ok_v2_invalid, reason_v2 = af_hev2.supports_scenario(64, 2, 44100)
         self.assertFalse(ok_v2_invalid)
         self.assertIn("16-48 kbps total", reason_v2)
+
+    def test_apple_probe_uses_scenario_format(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="hev2")
+        low = scenario_at(32000, 2, 16)
+        high = scenario_at(32000, 2, 64)
+        names = [low, high]
+        with patch.object(cd, "probe_encoder_capability", return_value=False) as probe:
+            eligible = cd.supported_encoder_scenarios([apple], names)
+        self.assertEqual(eligible[low], [])
+        self.assertEqual(eligible[high], [])
+        probe.assert_called_once_with(apple, 16, 2, 32000)
+
+    def test_old_apple_failures_are_not_reused(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
+        unsupported = scenario_at(32000, 2, 16)
+        supported = scenario_at(32000, 2, 48)
+        eligible = {unsupported: [], supported: [apple]}
+        rows = [
+            {"row_key": "afconvert_he", "scenario": unsupported, "decode_valid": False},
+            {"row_key": "afconvert_he", "scenario": supported, "decode_valid": False},
+            {"row_key": "afconvert_he", "scenario": supported, "decode_valid": True},
+        ]
+        kept = cd.reusable_encoder_results(rows, [apple], list(eligible), eligible)
+        self.assertEqual(kept, [rows[2]])
+
+    def test_resume_retries_missing_mos(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
+        speech = scenario_at(16000, 1, 20)
+        eligible = {speech: [apple]}
+        row = {"row_key": "afconvert_lc", "scenario": speech,
+               "decode_valid": True, "mos": None}
+        self.assertEqual(cd.reusable_encoder_results([row], [apple], list(eligible), eligible,
+                                                     require_mos=True), [])
+
+    def test_legacy_rows_need_unique_active_eligible_encoder(self):
+        apple = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
+        unsupported = scenario_at(32000, 2, 16)
+        supported = scenario_at(32000, 2, 48)
+        eligible = {unsupported: [], supported: [apple]}
+        rows = [
+            {"tool": "Apple AAC", "profile": "he", "scenario": unsupported, "decode_valid": True},
+            {"tool": "Apple AAC", "profile": "he", "scenario": supported, "decode_valid": True},
+            {"tool": "Old Apple AAC", "profile": "he", "scenario": supported, "decode_valid": True},
+            {"row_key": "old_apple_he", "scenario": supported, "decode_valid": True},
+        ]
+        kept = cd.reusable_encoder_results(rows, [apple], list(eligible), eligible)
+        self.assertEqual(kept, [{**rows[1], "row_key": "afconvert_he"}])
+        duplicate = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert",
+                                         tool_id="other_afconvert", profile="he")
+        self.assertEqual(cd.reusable_encoder_results([rows[1]], [apple, duplicate],
+                                                      list(eligible), eligible), [])
 
     def test_detect_encoders_optin_variations(self):
         import argparse

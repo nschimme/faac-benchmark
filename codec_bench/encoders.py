@@ -437,7 +437,7 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
                 w.setnchannels(channels)
                 w.setsampwidth(2)
                 w.setframerate(sample_rate)
-                w.writeframes(b"\x00\x00" * sample_rate)
+                w.writeframes(b"\x00\x00" * sample_rate * channels)
             cmd = encoder.get_encode_cmd(dummy_wav, out_file, bitrate_kbps, channels, sample_rate)
             res = safe_run(cmd, env=encoder.get_run_env() or None, capture_output=True, check=False)
             if res.returncode != 0:

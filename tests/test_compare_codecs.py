@@ -8,6 +8,9 @@ import unittest
 import tempfile
 import json
 import shutil
+from argparse import Namespace
+from unittest.mock import patch
+from subprocess import CompletedProcess
 
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if SCRIPT_DIR not in sys.path:
@@ -15,8 +18,41 @@ if SCRIPT_DIR not in sys.path:
 
 import utils
 import compare_codecs as cd
+from config import SCENARIOS, GATE_CLIPS
+from tests.helpers import scenario_at
 
 class TestCompareDecoders(unittest.TestCase):
+    def test_saved_results_require_resume(self):
+        args = Namespace(saved_jsons=[], resume=False, results_json="comparison_results.json")
+        self.assertEqual(cd.saved_result_paths(args), [])
+        args.saved_jsons = ["prior.json"]
+        self.assertEqual(cd.saved_result_paths(args), ["prior.json"])
+        args.saved_jsons = []
+        args.resume = True
+        with patch.object(cd, "auto_detect_saved_json_files", return_value=["old.json"]):
+            self.assertEqual(cd.saved_result_paths(args), ["old.json"])
+
+    def test_gate_filter_uses_speech_clips_and_falls_back(self):
+        speech = scenario_at(16000, 1, 20)
+        clips = [*GATE_CLIPS[speech][:2], "other.wav"]
+        self.assertEqual(cd.gate_filter(speech, clips), clips[:2])
+        self.assertEqual(cd.gate_filter(speech, ["other.wav"]), ["other.wav"])
+
+    def test_speech_preflight_checks_every_selected_scenario(self):
+        names = [name for name, cfg in SCENARIOS.items() if cfg["mode"] == "speech"]
+        self.assertGreaterEqual(len(names), 2)
+        results = [CompletedProcess([], 0, "", "")]
+        results.extend(CompletedProcess([], 1, f"bad score {i}", "")
+                       for i in range(1, len(names)))
+        with patch.object(cd, "corpus_dir", side_effect=lambda cfg, _: cfg["corpus"]), \
+             patch.object(cd.os.path, "isdir", return_value=True), \
+             patch.object(cd.os, "listdir", return_value=["sample.wav"]), \
+             patch.object(cd.subprocess, "run", side_effect=results) as run:
+            with self.assertRaisesRegex(RuntimeError, f"{names[1]}: bad score 1") as err:
+                cd.check_speech_metric(names, "unused")
+        self.assertEqual(run.call_count, len(names))
+        self.assertIn(f"{names[-1]}: bad score {len(names) - 1}", str(err.exception))
+
     def test_compute_snr_identical(self):
         with tempfile.TemporaryDirectory() as td:
             wav1 = os.path.join(td, "w1.wav")
