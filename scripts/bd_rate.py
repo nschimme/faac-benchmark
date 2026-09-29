@@ -21,10 +21,21 @@ which is why rate-control work is gated on it.
 
 Positive BD-rate = the candidate needs MORE bits for equal quality = worse.
 
-The fit is the standard one: for each clip, MOS is the independent variable and
-log10(bitrate) the dependent one; a polynomial is fitted to each build's
-rate-quality curve, both are integrated over the MOS interval the two curves
-share, and the mean log-rate difference is converted back to a percentage.
+For each clip, MOS is the independent variable and log10(bitrate) the
+dependent one. Each build's rate-quality curve is interpolated through its
+rungs with a monotone piecewise cubic (PCHIP), both are integrated over the
+MOS interval the two curves share, and the mean log-rate difference is
+converted back to a percentage.
+
+Why PCHIP and not the classic least-squares cubic. A cubic fitted through 4-5
+rungs is free to swing between them, and it does when the rungs are unevenly
+spaced and MOS saturates at the top -- both true of the VBR ladders, whose -q
+steps are not evenly spaced in rate. On nschimme/faac#595 the 44.1 kHz VBR
+ladder scored +1.07% mean (median -0.21%) with the cubic, driven by clips
+where the candidate used fewer bits AND scored higher at every rung (e.g.
++11.8% for a clip at -2% bytes, +0.01 MOS on all five rungs). PCHIP passes
+through every rung and never overshoots, so a candidate that dominates at
+every rung cannot come out worse; the same ladder scores -1.87%.
 """
 
 import argparse
@@ -35,8 +46,7 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-# Default minimum rungs required for a BD-rate ladder fit. Four rungs permit a cubic (order-3)
-# fit; three rungs adaptively fall back to a quadratic (order-2) fit, ensuring gate runs and
+# Default minimum rungs required for a BD-rate ladder fit, so gate runs and
 # partial scenario sweeps are evaluated without silent exclusions.
 MIN_RUNGS = 3
 
@@ -153,53 +163,58 @@ def find_ladders(base_by_scen, cand_by_scen, min_rungs=MIN_RUNGS):
     return ladders, notes
 
 
-def bd_rate_curve(base_points, cand_points, order=None):
+def _monotone_points(points):
+    """(mos, log10 rate) arrays with MOS strictly increasing in rate.
+
+    Sorted by bitrate. A rung that does not raise MOS over every cheaper rung
+    says nothing about the rate needed for a quality already reached, and it
+    would make the curve multi-valued, so it is dropped.
+    """
+    import numpy as np
+    mos, lr, best = [], [], None
+    for rate, m in sorted(points, key=lambda p: p[0]):
+        if best is None or m > best:
+            mos.append(m)
+            lr.append(np.log10(rate))
+            best = m
+    return np.array(mos, dtype=float), np.array(lr, dtype=float)
+
+
+def bd_rate_curve(base_points, cand_points):
     """BD-rate for one clip from two (bitrate, mos) point lists.
 
     Returns a percentage, or None when the curves share no quality overlap or
-    the fit is degenerate.
+    too few rungs remain to interpolate.
     """
     import numpy as np
+    from scipy.interpolate import PchipInterpolator
 
     if len(base_points) != len(cand_points) or len(base_points) < 3:
         return None
-
-    if order is None:
-        order = 3 if len(base_points) >= 4 else 2
-    else:
-        order = min(order, len(base_points) - 1)
-
-    b = sorted(base_points, key=lambda p: p[1])
-    c = sorted(cand_points, key=lambda p: p[1])
-    if any(p[0] is None or p[0] <= 0 or p[1] is None for p in b + c):
+    if any(p[0] is None or p[0] <= 0 or p[1] is None
+           for p in list(base_points) + list(cand_points)):
         return None
 
-    b_mos = np.array([p[1] for p in b], dtype=float)
-    c_mos = np.array([p[1] for p in c], dtype=float)
-    b_lr = np.log10(np.array([p[0] for p in b], dtype=float))
-    c_lr = np.log10(np.array([p[0] for p in c], dtype=float))
+    b_mos, b_lr = _monotone_points(base_points)
+    c_mos, c_lr = _monotone_points(cand_points)
+    if len(b_mos) < 2 or len(c_mos) < 2:
+        return None
 
     lo = max(b_mos.min(), c_mos.min())
     hi = min(b_mos.max(), c_mos.max())
     if hi <= lo:
         return None
 
-    try:
-        b_poly = np.polyfit(b_mos, b_lr, order)
-        c_poly = np.polyfit(c_mos, c_lr, order)
-    except Exception:
-        return None
-
-    b_int = np.polyint(b_poly)
-    c_int = np.polyint(c_poly)
-    area_b = np.polyval(b_int, hi) - np.polyval(b_int, lo)
-    area_c = np.polyval(c_int, hi) - np.polyval(c_int, lo)
+    b_curve = PchipInterpolator(b_mos, b_lr)
+    c_curve = PchipInterpolator(c_mos, c_lr)
+    area_b = b_curve.integrate(lo, hi)
+    area_c = c_curve.integrate(lo, hi)
 
     avg_diff = (area_c - area_b) / (hi - lo)
     return float((10.0 ** avg_diff - 1.0) * 100.0)
 
 
-def bd_rate_ladder(base_by_scen, cand_by_scen, rungs, order=None):
+def bd_rate_ladder(base_by_scen, cand_by_scen, rungs):
     """Per-clip BD-rate across one ladder.
 
     Returns (results, skipped) where results is [(filename, bdrate)] for every
@@ -232,7 +247,7 @@ def bd_rate_ladder(base_by_scen, cand_by_scen, rungs, order=None):
             skipped += 1
             continue
 
-        bd = bd_rate_curve(base_pts, cand_pts, order=order)
+        bd = bd_rate_curve(base_pts, cand_pts)
         if bd is None or abs(bd) > IMPLAUSIBLE_PCT:
             skipped += 1
             continue
@@ -278,16 +293,13 @@ def analyze(base_matrix, cand_matrix, min_rungs=MIN_RUNGS):
 
     segments = []
     for lad in ladders:
-        n = len(lad["rungs"])
-        order = 3 if n >= 4 else 2
         results, skipped = bd_rate_ladder(
-            base_by_scen, cand_by_scen, lad["rungs"], order=order)
+            base_by_scen, cand_by_scen, lad["rungs"])
         stats = summarize(results)
         segments.append({
             "corpus": lad["corpus"],
             "object_type": lad["object_type"],
             "rungs": lad["rungs"],
-            "order": order,
             "clips": results,
             "skipped": skipped,
             "stats": stats,
@@ -300,7 +312,7 @@ def self_check(matrix, min_rungs=MIN_RUNGS):
 
     Cheap, and it is the only test that catches a fit or overlap bug without a
     second run to compare against: identical curves have to integrate to
-    identical areas whatever the polynomial does in between.
+    identical areas whatever the interpolant does in between.
     """
     out = analyze(matrix, matrix, min_rungs)
     worst = 0.0
@@ -318,7 +330,7 @@ def format_report(analysis, top=5):
         rungs = ", ".join(seg["rungs"])
         lines.append(f"## BD-rate: {label}")
         lines.append("")
-        lines.append(f"- rungs ({len(seg['rungs'])}, order-{seg['order']} fit): {rungs}")
+        lines.append(f"- rungs ({len(seg['rungs'])}, PCHIP): {rungs}")
         st = seg["stats"]
         if not st:
             lines.append("- no clip scored at every rung in both builds")
