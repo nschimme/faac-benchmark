@@ -30,8 +30,8 @@ class TestDecoders(unittest.TestCase):
         decoders = dec.detect_decoders(args)
         faad_decs = [d for d in decoders if isinstance(d, dec.FAADDecoder)]
         self.assertEqual(len(faad_decs), 2)
-        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0")
-        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1")
+        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0 (Float)")
+        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1 (Float)")
 
     def test_corrupt_adts_bitstream(self):
         with tempfile.TemporaryDirectory() as td:
@@ -110,6 +110,62 @@ class TestDecoders(unittest.TestCase):
             self.assertTrue(res["error_exit"])
             self.assertFalse(res["crash"])
             self.assertTrue(res["crash_free"])
+
+    def test_fixed_point_faad_detection(self):
+        with tempfile.TemporaryDirectory() as td:
+            bin_fixed = os.path.join(td, "faad-fixed")
+            with open(bin_fixed, "w") as f:
+                f.write("#!/bin/sh\necho 'FAAD2 v2.11.3 (Fixed point version)'\n")
+            os.chmod(bin_fixed, 0o755)
+
+            bin_float = os.path.join(td, "faad-float")
+            with open(bin_float, "w") as f:
+                f.write("#!/bin/sh\necho 'FAAD2 v2.11.3 (Floating point version)'\n")
+            os.chmod(bin_float, 0o755)
+
+            dec_fixed = dec.get_decoder_instance("faad", binary_path=bin_fixed)
+            self.assertTrue(dec_fixed.is_fixed_point)
+            self.assertIn("(Fixed)", dec_fixed.name)
+            self.assertIn("fixed", dec_fixed.tool_id)
+
+            dec_float = dec.get_decoder_instance("faad", binary_path=bin_float)
+            self.assertFalse(dec_float.is_fixed_point)
+            self.assertIn("(Float)", dec_float.name)
+            self.assertIn("float", dec_float.tool_id)
+
+    def test_helix_and_fdk_fixed_point_attributes(self):
+        helix = dec.HelixAACDecoder("Helix AAC 1.0 (Fixed)", "/bin/true", "helix_fixed")
+        self.assertTrue(helix.is_fixed_point)
+
+        fdk = dec.FDKDecoder("FDK AAC 2.0 (Fixed)", "/bin/true", "fdk_fixed")
+        self.assertTrue(fdk.is_fixed_point)
+
+    def test_fixed_point_leaderboard_rendering(self):
+        from codec_bench.report import generate_decoder_leaderboard
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            dec_fixed = dec.FAADDecoder("FAAD2 2.11.3 (Fixed)", "/bin/true", "faad2_fixed", is_fixed_point=True)
+            dec_float = dec.FAADDecoder("FAAD2 2.11.3 (Float)", "/bin/true", "faad2_float", is_fixed_point=False)
+
+            results = [
+                {
+                    "tool": dec_fixed.name, "row_key": "faad2_fixed", "scenario": "48k_stereo_64k",
+                    "filename": "clip1.wav", "duration": 0.01, "audio_duration": 5.0,
+                    "snr_db": 28.0, "mos": 4.1, "decode_valid": True
+                },
+                {
+                    "tool": dec_float.name, "row_key": "faad2_float", "scenario": "48k_stereo_64k",
+                    "filename": "clip1.wav", "duration": 0.01, "audio_duration": 5.0,
+                    "snr_db": 30.0, "mos": 4.3, "decode_valid": True
+                }
+            ]
+
+            generate_decoder_leaderboard([dec_fixed, dec_float], results, out_md, ["48k_stereo_64k"], skip_graphs=False)
+            self.assertTrue(os.path.exists(out_md))
+            with open(out_md) as f:
+                content = f.read()
+                self.assertIn("FAAD2 2.11.3 (Fixed)", content)
+                self.assertIn("FAAD2 2.11.3 (Float)", content)
 
 if __name__ == "__main__":
     unittest.main()
