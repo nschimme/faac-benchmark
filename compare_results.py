@@ -1116,7 +1116,9 @@ def find_result_pairs(inputs):
 
     if len(inputs) == 2 and all(os.path.isfile(p) for p in inputs):
         p1, p2 = inputs[0], inputs[1]
-        if "base" in os.path.basename(p2).lower() or "cand" in os.path.basename(p1).lower():
+        p1_base = os.path.basename(p1).lower()
+        p2_base = os.path.basename(p2).lower()
+        if ("base" in p2_base or "baseline" in p2_base) or ("cand" in p1_base or "candidate" in p1_base):
             return {"pair": (p2, p1)}
         return {"pair": (p1, p2)}
 
@@ -1128,34 +1130,71 @@ def find_result_pairs(inputs):
         elif os.path.isfile(inp):
             dirs_to_scan.append(os.path.dirname(inp) or ".")
 
-    replacements = [
-        ("_cand.json", "_base.json"),
-        ("-cand.json", "-base.json"),
-        (".cand.json", ".base.json"),
-        ("_candidate.json", "_baseline.json"),
-        ("-candidate.json", "-baseline.json"),
-        ("cand.json", "base.json"),
-        ("candidate.json", "baseline.json"),
+    cand_suffixes = [
+        "_cand.json", "-cand.json", ".cand.json",
+        "_candidate.json", "-candidate.json",
+        "cand.json", "candidate.json"
     ]
+    base_suffixes = [
+        "_base.json", "-base.json", ".base.json",
+        "_baseline.json", "-baseline.json",
+        "base.json", "baseline.json"
+    ]
+
+    all_json_files = []
 
     for results_dir in dirs_to_scan:
         if not os.path.exists(results_dir):
             continue
         for root, _, files in os.walk(results_dir):
+            json_files = [f for f in sorted(files) if f.endswith(".json")]
+            for jf in json_files:
+                all_json_files.append(os.path.join(root, jf))
             file_set = set(files)
-            for f in sorted(files):
-                for cand_suf, base_suf in replacements:
+            for f in json_files:
+                for cand_suf in cand_suffixes:
                     if f.endswith(cand_suf):
                         prefix = f[:-len(cand_suf)]
-                        base_f = prefix + base_suf
-                        if base_f in file_set:
-                            suite_name = prefix.rstrip("_-.") or "default"
-                            if suite_name not in suites:
-                                suites[suite_name] = (
-                                    os.path.join(root, base_f),
-                                    os.path.join(root, f)
-                                )
+                        for base_suf in base_suffixes:
+                            base_f = prefix + base_suf
+                            if base_f in file_set:
+                                suite_name = prefix.strip("_-.") or "default"
+                                if suite_name not in suites:
+                                    suites[suite_name] = (
+                                        os.path.join(root, base_f),
+                                        os.path.join(root, f)
+                                    )
+                                break
+                        if any(os.path.join(root, f) == cand for _, cand in suites.values()):
                             break
+
+            # Fallback: if no suite found in this directory, check for single candidate/baseline pair
+            if not suites and json_files:
+                cand_candidates = []
+                base_candidates = []
+                for f in json_files:
+                    f_lower = f.lower()
+                    is_cand = any(f_lower.endswith(s) for s in cand_suffixes) or "cand" in f_lower
+                    is_base = any(f_lower.endswith(s) for s in base_suffixes) or "base" in f_lower
+                    if is_cand and not is_base:
+                        cand_candidates.append(f)
+                    elif is_base and not is_cand:
+                        base_candidates.append(f)
+
+                if len(cand_candidates) == 1 and len(base_candidates) == 1:
+                    suites["default"] = (
+                        os.path.join(root, base_candidates[0]),
+                        os.path.join(root, cand_candidates[0])
+                    )
+
+    if not suites:
+        if all_json_files:
+            sys.stderr.write("No result pairs found in directory.\n")
+            sys.stderr.write(f"  Scanned directory contained JSON file(s): {', '.join(all_json_files)}\n")
+            sys.stderr.write("  Expected matching pair suffixes (e.g. '<prefix>_base.json' and '<prefix>_cand.json').\n")
+        else:
+            sys.stderr.write("No result pairs found in directory.\n")
+            sys.stderr.write("  No .json files were found in the scanned directory.\n")
 
     return suites
 
@@ -1209,7 +1248,6 @@ def main():
     suites = find_result_pairs(raw_inputs)
 
     if not suites:
-        sys.stderr.write("No result pairs found in directory.\n")
         sys.exit(1)
 
     sanity_inputs = {}
