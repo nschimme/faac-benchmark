@@ -1385,7 +1385,7 @@ def main():
         if not skip_graphs:
             fam_labels = [f'"{family_label(fam)}"' for fam in families_with_data]
             fam_means = [(sum(family_deltas[fam]) / len(family_deltas[fam])) for fam in families_with_data]
-            fam_vals = [f"{m:+.3f}" for m in fam_means]
+            fam_vals = [f"{m:.3f}" for m in fam_means]
             max_fam_m = max(abs(m) for m in fam_means) if fam_means else 0.1
             f_bound = max(round(max_fam_m * 1.5, 2), 0.05)
 
