@@ -1074,9 +1074,12 @@ def chart_line_label(name):
     moment that one name is shortened. Strip a trailing parenthetical
     qualifier (build hash, "(NMR experimental)", etc.) since it is
     redundant with the detail tables right below the chart and is usually
-    what pushes a name over budget.
+    what pushes a name over budget. Preserves mode tags like (Fixed) or (Float).
     """
-    return re.sub(r"\s*\([^)]*\)\s*$", "", name)
+    m = re.search(r"\((Fixed|Float|FX|FL|Fixed-Point|Floating-Point)\)", name, re.IGNORECASE)
+    mode_tag = f" ({m.group(1)})" if m else ""
+    clean = re.sub(r"\s*\([^)]*\)\s*$", "", name)
+    return f"{clean}{mode_tag}"
 
 
 def family_label(family):

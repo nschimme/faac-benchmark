@@ -51,11 +51,12 @@ def decoder_row_key(decoder):
 
 
 class Decoder:
-    def __init__(self, name, binary_path, tool_id, lib_name_substr=None, lib_override=None):
+    def __init__(self, name, binary_path, tool_id, lib_name_substr=None, lib_override=None, is_fixed_point=False):
         self.name = name
         self.binary_path = binary_path
         self.tool_id = tool_id
         self.lib_override = lib_override
+        self.is_fixed_point = is_fixed_point
 
         measure_bin = resolve_wrapper_target(binary_path) if binary_path else binary_path
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
@@ -98,8 +99,8 @@ class Decoder:
 
 
 class FAADDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="faad", lib_override=None, is_faad3=False):
-        super().__init__(name, binary_path, tool_id, lib_name_substr="libfaad", lib_override=lib_override)
+    def __init__(self, name, binary_path, tool_id="faad", lib_override=None, is_faad3=False, is_fixed_point=False):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="libfaad", lib_override=lib_override, is_fixed_point=is_fixed_point)
         self.is_faad3 = is_faad3 or "faad3" in tool_id.lower()
 
     def get_decode_cmd(self, input_path, output_path):
@@ -111,24 +112,24 @@ class FAADDecoder(Decoder):
 
 
 class FFmpegDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="ffmpeg_aac"):
-        super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+    def __init__(self, name, binary_path, tool_id="ffmpeg_aac", is_fixed_point=False):
+        super().__init__(name, binary_path, tool_id, lib_name_substr=None, is_fixed_point=is_fixed_point)
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, "-y", "-i", input_path, "-sample_fmt", "s16", output_path]
 
 
 class AFConvertDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="afconvert"):
-        super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox")
+    def __init__(self, name, binary_path, tool_id="afconvert", is_fixed_point=False):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox", is_fixed_point=is_fixed_point)
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, "-f", "WAVE", "-d", "LEI16", input_path, output_path]
 
 
 class HelixAACDecoder(Decoder):
-    def __init__(self, name, binary_path, tool_id="helix_aac"):
-        super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+    def __init__(self, name, binary_path, tool_id="helix_aac", is_fixed_point=True):
+        super().__init__(name, binary_path, tool_id, lib_name_substr=None, is_fixed_point=is_fixed_point)
         self.requires_adts = True
 
     def get_decode_cmd(self, input_path, output_path):
@@ -141,8 +142,8 @@ class FDKDecoder(Decoder):
     TT_MP4_ADTS. fdkdec writes the gapless-trimmed decode straight to
     output_path (plus an untrimmed "<stem>_raw.wav" alongside, for
     debugging), so no wrapper is needed."""
-    def __init__(self, name, binary_path, tool_id="fdk_aac_dec"):
-        super().__init__(name, binary_path, tool_id, lib_name_substr="libfdk-aac")
+    def __init__(self, name, binary_path, tool_id="fdk_aac_dec", is_fixed_point=True):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="libfdk-aac", is_fixed_point=is_fixed_point)
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, input_path, output_path]
@@ -207,8 +208,11 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
             stdout_str = res.stdout if isinstance(res.stdout, str) else str(res.stdout or "")
             m = re.search(r"ffmpeg version (\S+)", stdout_str)
             ver = m.group(1) if m else None
-        display_name = f"FFmpeg AAC {ver}" if ver else "FFmpeg AAC"
-        return FFmpegDecoder(display_name, f_bin, "ffmpeg_aac")
+        is_fixed = "fixed" in (binary_path or "").lower()
+        mode_suffix = " (Fixed)" if is_fixed else ""
+        display_name = f"FFmpeg AAC {ver}{mode_suffix}" if ver else f"FFmpeg AAC{mode_suffix}"
+        tool_id = "ffmpeg_aac_fixed" if is_fixed else "ffmpeg_aac"
+        return FFmpegDecoder(display_name, f_bin, tool_id, is_fixed_point=is_fixed)
 
     elif decoder_type in ("faad", "faad2", "faad3"):
         f_bin = binary_path or get_faad_path()
@@ -221,8 +225,9 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                 except Exception:
                     pass
         is_faad3 = bool(re.search(r"Freeware Advanced Audio Decoder|FAAD3", raw_text, re.IGNORECASE))
+        is_fixed = bool(re.search(r"Fixed\s*point", raw_text, re.IGNORECASE)) or ("fixed" in (f_bin or "").lower())
         base_name = "FAAD3" if is_faad3 else "FAAD2"
-        base_id = "faad3" if is_faad3 else "faad2"
+        base_id = f"{'faad3' if is_faad3 else 'faad2'}_{'fixed' if is_fixed else 'float'}"
         ver = version
         if not ver and f_bin and os.path.exists(f_bin):
             ver = probe_version(f_bin, ["-h", "--help", "-v"],
@@ -230,8 +235,9 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                                  r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])
-        display_name = f"{base_name} {ver}" if ver else base_name
-        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override, is_faad3=is_faad3)
+        mode_suffix = " (Fixed)" if is_fixed else " (Float)"
+        display_name = f"{base_name} {ver}{mode_suffix}" if ver else f"{base_name}{mode_suffix}"
+        return FAADDecoder(display_name, f_bin, base_id, lib_override=lib_override, is_faad3=is_faad3, is_fixed_point=is_fixed)
 
     elif decoder_type in ("helix", "helix_aac", "helix-aac-dec"):
         h_bin = binary_path
@@ -252,8 +258,8 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
         ver = version
         if not ver and h_bin and os.path.exists(h_bin):
             ver = probe_version(h_bin, ["--version", "-v", "-h"], [r"Helix AAC Decoder v?(\d+\.\d+(?:\.\d+)*)"])
-        display_name = f"Helix AAC {ver}" if ver else "Helix AAC"
-        return HelixAACDecoder(display_name, h_bin, "helix_aac")
+        display_name = f"Helix AAC {ver} (Fixed)" if ver else "Helix AAC (Fixed)"
+        return HelixAACDecoder(display_name, h_bin, "helix_aac_fixed", is_fixed_point=True)
 
     elif decoder_type in ("fdkdec", "fdk", "fdk_aac", "fdk_aac_dec"):
         f_bin = binary_path
@@ -274,8 +280,8 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
         ver = version
         if not ver and f_bin and os.path.exists(f_bin):
             ver = probe_version(f_bin, ["-v", "--version"], [r"libfdk-aac\s+(\d+\.\d+(?:\.\d+)*)"])
-        display_name = f"FDK AAC {ver}" if ver else "FDK AAC"
-        return FDKDecoder(display_name, f_bin, "fdk_aac_dec")
+        display_name = f"FDK AAC {ver} (Fixed)" if ver else "FDK AAC (Fixed)"
+        return FDKDecoder(display_name, f_bin, "fdk_aac_dec_fixed", is_fixed_point=True)
 
     elif decoder_type in ("afconvert", "apple"):
         a_bin = binary_path or shutil.which("afconvert")
@@ -291,7 +297,7 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                 except Exception:
                     pass
         display_name = f"Apple AAC {ver}" if ver else "Apple AAC"
-        return AFConvertDecoder(display_name, a_bin, "afconvert")
+        return AFConvertDecoder(display_name, a_bin, "afconvert", is_fixed_point=False)
 
     else:
         # If binary_path is provided directly or decoder_type is a file path
@@ -320,17 +326,23 @@ def detect_decoders(args):
     faad_libs = flatten_arg_list(getattr(args, "faad_lib", None))
     faad_vers = flatten_arg_list(getattr(args, "faad_bin_version", None))
     if not faad_bins:
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bin_dir = os.path.join(script_root, "bin")
+        faad_candidates = []
+        for cand_name in ["faad-float", "faad-fixed", "faad"]:
+            cand_p = os.path.join(bin_dir, cand_name)
+            if os.path.exists(cand_p):
+                faad_candidates.append(cand_p)
         faad_path = get_faad_path()
-        if faad_path:
-            faad_bins = [faad_path]
+        if faad_path and faad_path not in faad_candidates:
+            faad_candidates.append(faad_path)
+        faad_bins = faad_candidates
 
     for idx, f_bin in enumerate(faad_bins):
         f_lib = faad_libs[idx] if idx < len(faad_libs) else None
         ver = faad_vers[idx] if idx < len(faad_vers) else None
         dec = get_decoder_instance("faad", binary_path=f_bin, lib_override=f_lib, version=ver)
-        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
-                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
-                                                dec.tool_id, existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
         dec.name = name
         dec.tool_id = tool_id
         if probe_decoder_capability(dec):
@@ -344,9 +356,7 @@ def detect_decoders(args):
 
     if ffmpeg_bin and os.path.exists(ffmpeg_bin):
         dec = get_decoder_instance("ffmpeg", binary_path=ffmpeg_bin)
-        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
-                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
-                                                dec.tool_id, existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
         dec.name = name
         dec.tool_id = tool_id
         if probe_decoder_capability(dec):
@@ -355,9 +365,7 @@ def detect_decoders(args):
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
         dec = get_decoder_instance("afconvert", binary_path=afconvert_bin)
-        name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
-                                                dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
-                                                dec.tool_id, existing_names, existing_ids)
+        name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
         dec.name = name
         dec.tool_id = tool_id
         if probe_decoder_capability(dec):
@@ -382,9 +390,7 @@ def detect_decoders(args):
     for h_bin in helix_bins:
         if os.path.exists(h_bin):
             dec = get_decoder_instance("helix", binary_path=h_bin)
-            name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
-                                                    dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
-                                                    dec.tool_id, existing_names, existing_ids)
+            name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
             dec.name = name
             dec.tool_id = tool_id
             if probe_decoder_capability(dec):
@@ -409,9 +415,7 @@ def detect_decoders(args):
     for f_bin in fdkdec_bins:
         if os.path.exists(f_bin):
             dec = get_decoder_instance("fdkdec", binary_path=f_bin)
-            name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
-                                                    dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
-                                                    dec.tool_id, existing_names, existing_ids)
+            name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
             dec.name = name
             dec.tool_id = tool_id
             if probe_decoder_capability(dec):
