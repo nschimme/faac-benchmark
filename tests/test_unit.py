@@ -1041,6 +1041,34 @@ class TestCompareResultsRendering(unittest.TestCase):
             with open(out_file) as f:
                 content = f.read()
             self.assertIn("<details><summary><b>📋 View Scenario Performance Details</b></summary>", content)
+            self.assertIn("<details><summary><b>View Additional Suite Details</b></summary>", content)
+
+    def test_consolidated_report_omits_details_blocks(self):
+        import compare_results as C
+        from utils import save_results
+        with tempfile.TemporaryDirectory() as td:
+            results_dir = os.path.join(td, "results")
+            os.makedirs(results_dir)
+            save_results(os.path.join(results_dir, "abr_base.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0, "rate_control_mode": "abr"}
+            }})
+            save_results(os.path.join(results_dir, "abr_cand.json"), {"matrix": {
+                "s1": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c1.wav", "bitrate": 64.0, "time": 1.0, "rate_control_mode": "abr"}
+            }})
+            save_results(os.path.join(results_dir, "vbr_base.json"), {"matrix": {
+                "s2": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c2.wav", "bitrate": 64.0, "time": 1.0, "rate_control_mode": "vbr"}
+            }})
+            save_results(os.path.join(results_dir, "vbr_cand.json"), {"matrix": {
+                "s2": {"mos": 3.5, "scenario": "48k_stereo_64k", "filename": "c2.wav", "bitrate": 64.0, "time": 1.0, "rate_control_mode": "vbr"}
+            }})
+            out_file = os.path.join(td, "report.md")
+            with patch.object(sys, "argv", ["compare_results.py", results_dir, "--output", out_file]):
+                with self.assertRaises(SystemExit):
+                    C.main()
+            with open(out_file) as f:
+                content = f.read()
+            self.assertNotIn("<details><summary><b>📋 View Scenario Performance Details</b></summary>", content)
+            self.assertNotIn("<details><summary><b>View Additional Suite Details</b></summary>", content)
 
     def test_mermaid_charts_rendering_and_skip_graphs_option(self):
         import compare_results as C
@@ -1126,8 +1154,10 @@ class TestCompareResultsRendering(unittest.TestCase):
 
             with open(cases_file) as f:
                 cases_content = f.read()
+            self.assertIn("<details><summary><b>📋 View Individual Test Cases</b></summary>", cases_content)
             self.assertIn("# Individual Test Cases Report", cases_content)
             self.assertIn("c1.wav", cases_content)
+            self.assertIn("</details>", cases_content)
 
     def test_wins_and_opportunities_in_cases_md(self):
         import compare_results as C

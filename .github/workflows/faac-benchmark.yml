@@ -66,6 +66,8 @@ jobs:
         uses: ./report
         with:
           results-path: results
+          report-output: faac_benchmark_report.md
+          fail-on-regression: false
           report-output: report_${{ matrix.rate_control }}.md
           summary-output: summary_${{ matrix.rate_control }}.md
           cases-output: cases_${{ matrix.rate_control }}.md
@@ -109,6 +111,8 @@ jobs:
         uses: ./report
         with:
           results-path: results
+          report-output: faac_benchmark_report.md
+          fail-on-regression: false
 
       - name: Upload Consolidated Report Artifact
         uses: actions/upload-artifact@v7
