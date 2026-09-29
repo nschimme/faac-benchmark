@@ -1108,6 +1108,7 @@ class TestCompareResultsRendering(unittest.TestCase):
 
     def test_find_result_pairs_flexible_naming_and_direct_args(self):
         import compare_results as C
+        import io
         with tempfile.TemporaryDirectory() as td:
             # 1. Test direct file arguments
             f_base = os.path.join(td, "my_base.json")
@@ -1127,6 +1128,43 @@ class TestCompareResultsRendering(unittest.TestCase):
             pairs_dir = C.find_result_pairs([td])
             self.assertIn("arch", pairs_dir)
             self.assertEqual(pairs_dir["arch"], (f_hyphen_base, f_hyphen_cand))
+
+        # 3. Test cross-matched suffixes (e.g. _base.json and _candidate.json) and leading delimiter stripping
+        with tempfile.TemporaryDirectory() as td:
+            f_cross_base = os.path.join(td, "_abr_base.json")
+            f_cross_cand = os.path.join(td, "_abr_candidate.json")
+            with open(f_cross_base, "w") as f: f.write("{}")
+            with open(f_cross_cand, "w") as f: f.write("{}")
+
+            pairs_cross = C.find_result_pairs([td])
+            self.assertIn("abr", pairs_cross)
+            self.assertEqual(pairs_cross["abr"], (f_cross_base, f_cross_cand))
+
+        # 4. Test single baseline / candidate fallback with mismatched prefixes
+        with tempfile.TemporaryDirectory() as td:
+            f_fb_base = os.path.join(td, "run1_baseline.json")
+            f_fb_cand = os.path.join(td, "run2_cand.json")
+            with open(f_fb_base, "w") as f: f.write("{}")
+            with open(f_fb_cand, "w") as f: f.write("{}")
+
+            pairs_fb = C.find_result_pairs([td])
+            self.assertIn("default", pairs_fb)
+            self.assertEqual(pairs_fb["default"], (f_fb_base, f_fb_cand))
+
+        # 5. Test diagnostic stderr output when no result pairs are found
+        with tempfile.TemporaryDirectory() as td:
+            f_dummy = os.path.join(td, "random_output.json")
+            with open(f_dummy, "w") as f: f.write("{}")
+
+            buf = io.StringIO()
+            with patch.object(sys, "stderr", buf):
+                res = C.find_result_pairs([td])
+                self.assertEqual(res, {})
+
+            err_msg = buf.getvalue()
+            self.assertIn("No result pairs found in directory.", err_msg)
+            self.assertIn("Scanned directory contained JSON file(s)", err_msg)
+            self.assertIn("random_output.json", err_msg)
 
     def test_cases_output_and_report_reference(self):
         import compare_results as C

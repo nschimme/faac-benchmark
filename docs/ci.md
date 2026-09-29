@@ -53,16 +53,16 @@ jobs:
           faac-bin: ./baseline/build_base/frontend/faac
           libfaac-so: ./baseline/build_base/libfaac/libfaac.so
           rate-control: ${{ matrix.rate_control }}
-          run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_base
-          output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_base.json
+          run-name: faac_${{ matrix.rate_control }}_base
+          output-json: ./results/faac_${{ matrix.rate_control }}_base.json
       - name: Run Benchmark (Candidate)
         uses: nschimme/faac-benchmark@master
         with:
           faac-bin: ./candidate/build_cand/frontend/faac
           libfaac-so: ./candidate/build_cand/libfaac/libfaac.so
           rate-control: ${{ matrix.rate_control }}
-          run-name: ${{ matrix.arch }}_${{ matrix.rate_control }}_cand
-          output-json: ./results/${{ matrix.arch }}_${{ matrix.rate_control }}_cand.json
+          run-name: faac_${{ matrix.rate_control }}_cand
+          output-json: ./results/faac_${{ matrix.rate_control }}_cand.json
       - name: Generate Per-Rate Control Report
         uses: nschimme/faac-benchmark/report@master
         with:
