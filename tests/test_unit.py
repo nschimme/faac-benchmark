@@ -1551,6 +1551,15 @@ class TestBdRateDirection(unittest.TestCase):
             self.assertAlmostEqual(m, -10.0, delta=0.5)
 
 
+class TestReportOnlyCorpus(unittest.TestCase):
+    def test_synthetic_51_is_report_only(self):
+        from compare_results import corpus_gated, scenario_gated
+        self.assertFalse(corpus_gated("audio_51"))
+        self.assertFalse(scenario_gated("44k1_51_96k"))
+        self.assertTrue(corpus_gated("audio_48k"))
+        self.assertTrue(scenario_gated("unknown_scenario"))
+
+
 class TestBdRateDominance(unittest.TestCase):
     """A candidate with fewer bits and higher MOS at every rung is never worse.
 

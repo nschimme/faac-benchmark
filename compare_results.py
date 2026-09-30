@@ -195,6 +195,24 @@ def add_gate(suite_results, name, status, detail):
         suite_results["has_regression"] = True
 
 
+def corpus_gated(corpus):
+    """False for a corpus config marks report-only (see config.CORPORA)."""
+    try:
+        from config import CORPORA
+    except Exception:
+        return True
+    return CORPORA.get(corpus, {}).get("gated", True)
+
+
+def scenario_gated(scenario):
+    try:
+        from config import SCENARIOS
+    except Exception:
+        return True
+    cfg = SCENARIOS.get(scenario)
+    return corpus_gated(cfg["corpus"]) if cfg else True
+
+
 def check_bd_rate(suite_results, base, cand):
     """Gate the rate-quality curve rather than MOS at a fixed target bitrate.
 
@@ -233,10 +251,12 @@ def check_bd_rate(suite_results, base, cand):
     parts = []
     for seg in scored:
         ot = seg["object_type"] or "pooled"
-        parts.append(f"{seg['corpus']}/{ot} {seg['stats']['mean']:+.3f}%")
+        tag = "" if corpus_gated(seg["corpus"]) else " (report only)"
+        parts.append(f"{seg['corpus']}/{ot} {seg['stats']['mean']:+.3f}%{tag}")
     detail = ", ".join(parts)
 
-    worst = max(seg["stats"]["mean"] for seg in scored)
+    gated = [seg["stats"]["mean"] for seg in scored if corpus_gated(seg["corpus"])]
+    worst = max(gated) if gated else float("-inf")
     if worst > BD_RATE_FAIL_PCT:
         add_gate(suite_results, "bd_rate", "fail", detail)
     elif worst > BD_RATE_WARN_PCT:
@@ -657,7 +677,12 @@ def analyze_pair(base_file, cand_file):
                 elif o_mos < thresh:
                     status = "📉"  # Bad/Poor
 
-                if b_mos is not None:
+                if b_mos is not None and not scenario_gated(scenario):
+                    # Report-only corpus: the row still shows its delta,
+                    # but never counts as a regression.
+                    if delta < -0.05:
+                        status = "ℹ️"
+                elif b_mos is not None:
                     if b_mos >= thresh and o_mos < thresh:
                         status = "💀" # Critical Regression
                         suite_results["has_regression"] = True
