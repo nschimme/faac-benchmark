@@ -54,7 +54,7 @@ Evaluating quality at a fixed target bitrate can be misleading because encoders 
 - **Positive BD-rate (%)**: **Inferior efficiency.** The candidate encoder requires more bits to reach equal quality.
 
 ### Curve Fitting & Profile Segmentation
-BD-rate models rate-quality curves across bitrates using polynomial interpolation (cubic for 4+ test bitrates, quadratic for 3 test bitrates). Curves are segmented by codec profile (e.g., Low Complexity LC vs. High Efficiency HE-AAC) to ensure fair comparisons within identical coding profiles.
+BD-rate models rate-quality curves across bitrates with monotone piecewise-cubic (PCHIP) interpolation through every rung. A least-squares cubic swings between unevenly spaced rungs near MOS saturation and can score a candidate that uses fewer bits for higher MOS at every rung as a loss; PCHIP cannot. Curves are segmented by codec profile (e.g., Low Complexity LC vs. High Efficiency HE-AAC) to ensure fair comparisons within identical coding profiles.
 
 ---
 

@@ -1513,7 +1513,7 @@ class TestBdRateSelfCheck(unittest.TestCase):
         matrix = _bd_ladder(scenario_targets, clips, mos_rows)
         worst, _out = self_check(matrix)
         # Identical curves must integrate to identical areas whatever the
-        # polynomial does in between -- see self_check()'s own docstring.
+        # interpolant does in between -- see self_check()'s own docstring.
         self.assertLess(worst, 1e-9)
 
 
@@ -1558,6 +1558,33 @@ class TestReportOnlyCorpus(unittest.TestCase):
         self.assertFalse(scenario_gated("44k1_51_96k"))
         self.assertTrue(corpus_gated("audio_48k"))
         self.assertTrue(scenario_gated("unknown_scenario"))
+
+
+class TestBdRateDominance(unittest.TestCase):
+    """A candidate with fewer bits and higher MOS at every rung is never worse.
+
+    Real rungs from nschimme/faac#595's 44.1 kHz VBR ladder (Severance): the
+    old least-squares cubic scored this +11.8%.
+    """
+
+    def test_dominating_candidate_is_not_positive(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import bd_rate_curve
+        base = [(66.8, 4.5040), (123.1, 4.8745), (148.0, 4.9244),
+                (170.6, 4.9501), (213.7, 4.9747)]
+        cand = [(65.4, 4.5100), (120.0, 4.8848), (144.9, 4.9355),
+                (167.4, 4.9627), (210.7, 4.9814)]
+        bd = bd_rate_curve(base, cand)
+        self.assertIsNotNone(bd)
+        self.assertLess(bd, 0)
+
+    def test_non_monotone_rung_is_dropped_not_fatal(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        from bd_rate import bd_rate_curve
+        # The top rung scores below the one under it (saturation noise).
+        base = [(64, 4.30), (96, 4.70), (128, 4.90), (160, 4.89)]
+        cand = [(64 * 1.05, 4.30), (96 * 1.05, 4.70), (128 * 1.05, 4.90), (160 * 1.05, 4.89)]
+        self.assertAlmostEqual(bd_rate_curve(base, cand), 5.0, delta=0.01)
 
 
 class TestBdRateSegmentation(unittest.TestCase):
@@ -1631,7 +1658,7 @@ class TestBdRateMinRungs(unittest.TestCase):
             any("2 rung" in n and str(MIN_RUNGS) in n for n in notes),
             f"expected a skip note citing the rung count, got: {notes}")
 
-    def test_three_rung_ladder_uses_quadratic_fit(self):
+    def test_three_rung_ladder_is_scored(self):
         sys.path.insert(0, os.path.join(REPO, "scripts"))
         from bd_rate import analyze
         scenario_targets = [("mincorp_16", 16), ("mincorp_24", 24), ("mincorp_32", 32)]
@@ -1643,7 +1670,6 @@ class TestBdRateMinRungs(unittest.TestCase):
         out = analyze(base, cand)
         self.assertEqual(len(out["segments"]), 1)
         seg = out["segments"][0]
-        self.assertEqual(seg["order"], 2)
         self.assertAlmostEqual(seg["stats"]["mean"], 10.0, delta=1.0)
 
 
