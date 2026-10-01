@@ -99,7 +99,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Download Benchmark Results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: results-*
           path: results
