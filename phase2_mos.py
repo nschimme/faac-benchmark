@@ -31,7 +31,8 @@ import argparse
 import numpy as np
 
 from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
-                   get_cached_ref_wav, corpus_dir, scenario_channels)
+                   get_cached_ref_wav, corpus_dir, scenario_channels,
+                   WorkerPool, start_orphan_watchdog)
 from codec_bench.decoders import get_decoder_instance
 
 try:
@@ -448,7 +449,7 @@ def main():
         print(f"Computing MOS for {len(still_pending)} samples (Speech/16kHz -> visqol-python, Audio -> Zimtohrli, {num_cpus} cores)...")
 
         with tempfile.TemporaryDirectory() as ref_wav_cache_dir, \
-             concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+             WorkerPool(max_workers=num_cpus, initializer=start_orphan_watchdog) as executor:
             futures = {
                 executor.submit(compute_single_mos, key, entry, aac_dir, external_data_dir, results_path, aac_files, ref_wav_cache_dir, decoder_inst): key
                 for key, entry in still_pending.items()

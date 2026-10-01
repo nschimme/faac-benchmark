@@ -61,7 +61,8 @@ import numpy as np
 from scipy.signal import fftconvolve
 
 from config import SCENARIOS
-from utils import get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir
+from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
+                   WorkerPool, start_orphan_watchdog)
 from transient import attack_centroid_deltas
 from codec_bench.decoders import get_decoder_instance
 
@@ -348,7 +349,7 @@ def main():
                     if wav_path:
                         ref_wav_map[key_tuple] = wav_path
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+        with WorkerPool(max_workers=num_cpus, initializer=start_orphan_watchdog) as executor:
             futures = {
                 executor.submit(
                     compute_single, k, aac_path,

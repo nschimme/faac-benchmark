@@ -29,7 +29,7 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
-from utils import (corpus_dir, select_corpus_clips, expand_scenario_list,
+from utils import (WorkerPool, start_orphan_watchdog, corpus_dir, select_corpus_clips, expand_scenario_list,
                    decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
                    get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy,
@@ -159,6 +159,7 @@ def get_short_throughput_wav(input_path, target_sec=5.0):
 
 def worker_init(cpu_id_queue):
     """Pin the worker process to a specific CPU core for consistent benchmarks."""
+    start_orphan_watchdog()
     cpu_id = cpu_id_queue.get()
     if hasattr(os, "sched_setaffinity"):
         try:
@@ -393,9 +394,9 @@ def run_benchmark(
                 executor_kwargs = dict(initializer=worker_init, initargs=(cpu_id_queue,))
             else:
                 manager = None
-                executor_kwargs = {}
+                executor_kwargs = dict(initializer=start_orphan_watchdog)
 
-            with concurrent.futures.ProcessPoolExecutor(
+            with WorkerPool(
                 max_workers=num_cpus,
                 **executor_kwargs
             ) as executor:
