@@ -37,7 +37,7 @@ jobs:
 
       - name: Build FAAC HEAD from Source
         run: |
-          git clone https://github.com/knik0/faac.git ../faac_src
+          git clone https://github.com/FreewareAdvancedAudio/faac.git ../faac_src
           cd ../faac_src
           meson setup build --buildtype=release
           ninja -C build
