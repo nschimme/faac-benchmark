@@ -937,6 +937,33 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
     print(f"\nLeaderboard generated at: {output_path}")
 
 
+def _decode_seconds(res):
+    """Wall time of one decode: the serial best-of-N timing when the run has
+    one, else the single decode that ran inside the parallel worker pool."""
+    best_ms = res.get("speed_best_ms")
+    if best_ms:
+        return best_ms / 1000.0
+    return res.get("duration", 0)
+
+
+def _common_speed_clips(results):
+    """Clips every decoder decoded and timed, as (encoder_row_key, scenario,
+    filename), plus whether the timings are serial best-of-N. Comparing speed
+    on each decoder's own survivors rewards one that fails on the heavy
+    streams; the set is None when the decoders share no clip. Rows without a
+    serial timing are ignored once any row has one, so a cached single-run
+    result never mixes with best-of-N."""
+    rows = [r for r in results if r.get("decode_valid") and r.get("audio_duration") and _decode_seconds(r) > 0]
+    serial = any(r.get("speed_best_ms") for r in rows)
+    if serial:
+        rows = [r for r in rows if r.get("speed_best_ms")]
+    by_tool = defaultdict(set)
+    for r in rows:
+        by_tool[r["row_key"]].add((r.get("encoder_row_key"), r["scenario"], r.get("filename")))
+    common = set.intersection(*by_tool.values()) if len(by_tool) > 1 else set()
+    return (common or None), serial
+
+
 def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, skip_graphs=False, encoders=None, encoder_results=None, robustness_results=None, run_encoders_leaderboard=False, append_mode=False):
     if run_encoders_leaderboard and encoders and encoder_results:
         generate_leaderboard(encoders, encoder_results, output_path, scenario_list, skip_graphs=skip_graphs, has_decoders=True)
@@ -963,6 +990,7 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
     })))
 
     decoder_info = {decoder_row_key(d): d for d in decoders}
+    speed_clips, speed_serial = _common_speed_clips(results)
     clip_mos = defaultdict(dict)
     bug_flags = []
     mono_downmix_counts = defaultdict(int)
@@ -1042,8 +1070,13 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 p_stats[rk][p][s]["ram_sum"] += res["peak_ram_kb"]
                 p_stats[rk][p][s]["ram_count"] += 1
 
-            if res.get("duration", 0) > 0 and res.get("audio_duration"):
-                spd = res["audio_duration"] / res["duration"]
+            timed = _decode_seconds(res) > 0 and res.get("audio_duration")
+            if timed and speed_serial and not res.get("speed_best_ms"):
+                timed = False
+            if timed and speed_clips is not None and (res.get("encoder_row_key"), s, res.get("filename")) not in speed_clips:
+                timed = False
+            if timed:
+                spd = res["audio_duration"] / _decode_seconds(res)
                 stats[rk][s]["speed_sum"] += spd
                 stats[rk][s]["speed_count"] += 1
 

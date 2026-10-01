@@ -520,7 +520,35 @@ def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio
     std_ms = statistics.pstdev(latencies_ms) if len(latencies_ms) > 1 else 0.0
     xrt = (audio_duration * 1000.0 / mean_ms) if (audio_duration and mean_ms > 0) else None
     mbps = (pcm_bytes / (mean_ms / 1000.0) / (1024 * 1024)) if (pcm_bytes and mean_ms > 0) else None
-    return {"mean_ms": mean_ms, "std_ms": std_ms, "xrt": xrt, "mbps": mbps, "iterations": iterations}
+    return {"mean_ms": mean_ms, "std_ms": std_ms, "best_ms": min(latencies_ms), "xrt": xrt, "mbps": mbps, "iterations": iterations}
+
+
+def time_decoder_serial(decoder, res_item, output_dir, iterations):
+    """Best-of-`iterations` wall time in ms for one decode of one bitstream,
+    or None if any run fails. Meant to run one process at a time: the
+    worker-pool decode is timed beside MOS scoring on every core, so its
+    duration says more about the machine's load than the decoder."""
+    aac_path = res_item.get("aac_path")
+    if not aac_path or not os.path.exists(aac_path):
+        return None
+
+    bitstream_input = aac_path
+    temp_adts = None
+    if getattr(decoder, "requires_adts", False) and aac_path.lower().endswith((".m4a", ".mp4")):
+        temp_adts = os.path.join(output_dir, f"speed_demux_{os.getpid()}.aac")
+        res_demux = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts],
+                             capture_output=True, check=False)
+        if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
+            bitstream_input = temp_adts
+    try:
+        # the extra run absorbs the cold page cache; best-of discards it
+        stats = measure_decode_speed(decoder, bitstream_input, output_dir, iterations + 1, 0)
+        if not stats:
+            return None
+        return stats["best_ms"]
+    finally:
+        if temp_adts and os.path.exists(temp_adts):
+            os.remove(temp_adts)
 
 
 def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):
@@ -869,7 +897,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
 
     try:
         res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
-        stderr_low = (res.stderr or "").lower()
+        stderr_low = (res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")).lower()
         is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
         is_crash = (res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139)) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)
 

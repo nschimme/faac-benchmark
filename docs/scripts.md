@@ -243,3 +243,21 @@ history (nschimme/faac PR #319). Must run on real x86_64 hardware.
 ```bash
 ./scripts/amd64_denormal_perf_test.sh [path-to-wav-corpus-dir] [faac-repo-url]
 ```
+
+### `scripts/corrupt_decode_check.py`
+
+Decodes deliberately corrupted AAC streams and counts crashes and hangs. It
+applies the robustness pass's corruption (`utils.corrupt_adts_bitstream`:
+dropped frames and bit flips) with a fixed seed per run, then runs the decoder
+on the result. A decoder that rejects the stream and exits non-zero is fine; a
+signal, a sanitizer report, or a run past the timeout is a failure. Exits 1 if
+anything failed.
+
+The decoder is run as `DECODER corrupted.aac out.wav`, the command line of the
+Helix wrapper built by `scripts/build_helix_aac.sh`. Inputs must be ADTS
+(`ffmpeg -i in.m4a -c:a copy -f adts in.aac`).
+
+```bash
+python3 scripts/corrupt_decode_check.py --decoder bin/helix-aac-dec \
+    [--seeds 40] [--timeout 20] in1.aac in2.aac ...
+```

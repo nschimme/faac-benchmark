@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # Build Helix AAC Decoder binary for compare_codecs.py
-# Clones arduino-libhelix (RealNetworks Helix AAC fixed-point decoder)
-# and compiles a standalone helix-aac-dec binary.
+# Clones nschimme/BackgroundAudio, which carries the RealNetworks Helix AAC
+# fixed-point decoder in src/libhelix-aac, and compiles a standalone
+# helix-aac-dec binary.
 #
 
 set -euo pipefail
@@ -21,12 +22,12 @@ fi
 
 mkdir -p "$BUILD_DIR" "$BIN_DIR"
 
-if [[ ! -d "$BUILD_DIR/arduino-libhelix" ]]; then
-    echo "==> Cloning RealNetworks libhelix-aac repository..." >&2
-    git clone --depth 1 https://github.com/pschatzmann/arduino-libhelix.git "$BUILD_DIR/arduino-libhelix" >&2
+if [[ ! -d "$BUILD_DIR/BackgroundAudio" ]]; then
+    echo "==> Cloning BackgroundAudio (libhelix-aac)..." >&2
+    git clone --depth 1 https://github.com/nschimme/BackgroundAudio.git "$BUILD_DIR/BackgroundAudio" >&2
 fi
 
-HELIX_SRC="$BUILD_DIR/arduino-libhelix/src"
+HELIX_SRC="$BUILD_DIR/BackgroundAudio/src/libhelix-aac"
 
 cat > "$BUILD_DIR/helix_aac_dec.c" << 'CEOF'
 /*
@@ -198,9 +199,21 @@ CEOF
 echo "==> Compiling Helix AAC Decoder..." >&2
 (
     cd "$BUILD_DIR"
-    gcc -O3 -c -DARDUINO -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" helix_aac_dec.c "$HELIX_SRC/libhelix-aac"/*.c
-    g++ -O3 -c -DARDUINO -DUSE_DEFAULT_STDLIB -I "$HELIX_SRC" -I "$HELIX_SRC/utils" -I "$HELIX_SRC/libhelix-aac" "$HELIX_SRC/utils/helix_memory.cpp"
-    g++ *.o -o "$TARGET_BIN"
+    # libhelix-aac includes two Arduino/Helix platform headers; a host build
+    # only needs them to exist.
+    mkdir -p shim/hlxclib
+    cat > shim/pgmspace.h << 'EOF'
+#pragma once
+#include <stdint.h>
+#define PROGMEM
+#define pgm_read_byte(a)  (*(const uint8_t *)(a))
+#define pgm_read_word(a)  (*(const uint16_t *)(a))
+#define pgm_read_dword(a) (*(const uint32_t *)(a))
+EOF
+    printf '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n' > shim/hlxclib/stdlib.h
+    printf '#include <string.h>\n' > shim/hlxclib/string.h
+    gcc -O3 -w -c -I "$BUILD_DIR/shim" -I "$HELIX_SRC" helix_aac_dec.c "$HELIX_SRC"/*.c
+    gcc *.o -o "$TARGET_BIN" -lm
     rm -f *.o
 ) >&2
 

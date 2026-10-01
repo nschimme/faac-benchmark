@@ -72,7 +72,7 @@ from codec_bench import (
     FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder,
     OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
     detect_encoders, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder,
-    detect_decoders, process_decoder_task, process_decoder_robustness_task,
+    detect_decoders, process_decoder_task, time_decoder_serial, process_decoder_robustness_task,
     CLIP_PEER_BUG_GAP, cell_peer_gap, generate_leaderboard, generate_decoder_leaderboard,
     generate_decoder_report, get_conformance_ref_wav, CONFORMANCE_SNR_FLOOR_DB
 )
@@ -467,6 +467,8 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Reuse saved results; default is a fresh run")
     parser.add_argument("--iterations", type=int, default=1,
                         help="Repeat each decode this many times (output discarded) for mean/std latency, xRT, MB/s (default: 1 = single timed decode only)")
+    parser.add_argument("--speed-iterations", type=int, default=5,
+                        help="Serial timed decodes per decoder and bitstream after the parallel phase; the leaderboard speed is the best of these (0 = use the pooled single-run duration)")
     parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
     parser.add_argument("--muxer-bench", action="store_true",
                         help="Benchmark faam vs ffmpeg -c:a copy vs MP4Box on the largest ADTS stream from this run")
@@ -738,6 +740,30 @@ def main():
                                 print(f"    [{completed_dec}/{len(dec_tasks)}] {decoder.name} ({prof_str}) | {res['scenario']} | {res['filename']} -> {status_mark}{ch_tag}{mos_str}{snr_str}")
                     else:
                         print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
+
+            if args.speed_iterations > 0:
+                timed_items = {(i.get("row_key"), i.get("scenario"), i.get("filename")): i
+                               for i in valid_encoder_bitstreams if args.gate or id(i) in sampled_ids}
+                speed_todo = [(d, r) for d in decoders for r in decoder_results
+                              if r.get("tool") == d.name and r.get("decode_valid") and not r.get("speed_best_ms")
+                              and (r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) in timed_items]
+                print(f"\n>>> Timing {len(speed_todo)} decodes serially (best of {args.speed_iterations})...")
+                # Same as the encoder throughput pass: one pinned core, no neighbours.
+                prior_affinity = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
+                if prior_affinity:
+                    try:
+                        os.sched_setaffinity(0, [min(prior_affinity)])
+                    except OSError:
+                        pass
+                try:
+                    for decoder, r in speed_todo:
+                        item = timed_items[(r.get("encoder_row_key"), r.get("scenario"), r.get("filename"))]
+                        best_ms = time_decoder_serial(decoder, item, output_dir, args.speed_iterations)
+                        if best_ms:
+                            r["speed_best_ms"] = best_ms
+                finally:
+                    if prior_affinity:
+                        os.sched_setaffinity(0, prior_affinity)
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
             if mos_scored:
