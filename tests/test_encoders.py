@@ -44,6 +44,29 @@ class TestEncoders(unittest.TestCase):
         self.assertIn("-b", cmd)
         self.assertIn("128", cmd)
 
+    def test_exhale_encoder_commands(self):
+        exhale_enc = enc.ExhaleEncoder("xHE-AAC", "/usr/bin/exhale", tool_id="exhale")
+        cmd_low = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 24, 2, 44100)
+        self.assertEqual(cmd_low, ["/usr/bin/exhale", "1", "in.wav", "out.m4a"])
+
+        cmd_mid = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 64, 2, 44100)
+        self.assertEqual(cmd_mid, ["/usr/bin/exhale", "4", "in.wav", "out.m4a"])
+
+        cmd_high = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 192, 2, 44100)
+        self.assertEqual(cmd_high, ["/usr/bin/exhale", "9", "in.wav", "out.m4a"])
+
+        exhale_ff = enc.ExhaleEncoder("xHE-AAC (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
+        cmd_ff = exhale_ff.get_encode_cmd("in.wav", "out.m4a", 64, 2, 44100)
+        self.assertEqual(cmd_ff, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libmpeghdec", "-b:a", "64k", "-ac", "2", "out.m4a"])
+
+    def test_get_encoder_instance_exhale(self):
+        e1 = enc.get_encoder_instance("exhale", binary_path="/usr/bin/exhale")
+        self.assertIsInstance(e1, enc.ExhaleEncoder)
+        self.assertEqual(e1.binary_path, "/usr/bin/exhale")
+
+        e2 = enc.get_encoder_instance("xhe", binary_path="/usr/bin/exhale")
+        self.assertIsInstance(e2, enc.ExhaleEncoder)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")

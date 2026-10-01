@@ -22,7 +22,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    guess_lib_version_from_path, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, hosted_codec_ver)
 
-PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard"}
+PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard", "xhe": "xHE-AAC", "usac": "xHE-AAC"}
 
 def profile_label(profile):
     return PROFILE_LABELS.get(profile, profile.upper())
@@ -285,6 +285,43 @@ class LameEncoder(Encoder):
         return [self.binary_path, "-b", str(bitrate_kbps), "-s", str(sample_rate / 1000.0), input_path, output_path]
 
 
+class ExhaleEncoder(Encoder):
+    def __init__(self, name, binary_path, tool_id="exhale", profile="standard", is_ffmpeg=False):
+        base = os.path.basename(binary_path or "").lower()
+        if "ffmpeg" in base:
+            is_ffmpeg = True
+        lib_substr = "exhale" if not is_ffmpeg else None
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr=lib_substr)
+        self.is_ffmpeg = is_ffmpeg
+        self.file_ext = ".m4a"
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        if self.is_ffmpeg:
+            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libmpeghdec", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
+
+        # Map target bitrate (kbps) to exhale quality mode 1..9
+        if bitrate_kbps <= 28:
+            mode = 1
+        elif bitrate_kbps <= 40:
+            mode = 2
+        elif bitrate_kbps <= 56:
+            mode = 3
+        elif bitrate_kbps <= 72:
+            mode = 4
+        elif bitrate_kbps <= 88:
+            mode = 5
+        elif bitrate_kbps <= 112:
+            mode = 6
+        elif bitrate_kbps <= 144:
+            mode = 7
+        elif bitrate_kbps <= 176:
+            mode = 8
+        else:
+            mode = 9
+
+        return [self.binary_path, str(mode), input_path, output_path]
+
+
 def probe_faac_version(faac_path, lib_override=None):
     if not faac_path or not os.path.exists(faac_path):
         return None
@@ -403,6 +440,21 @@ def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=Non
             ver = probe_version(l_bin, ["--version", "-version"], [r"LAME\s+(?:64bits\s+)?version\s+(\d+\.\d+(?:\.\d+)*)"])
         display_name = f"LAME MP3 {ver}" if ver else "LAME MP3"
         return LameEncoder(display_name, l_bin, "lame", "standard")
+
+    elif encoder_type in ("exhale", "xhe", "xhe_aac", "xheaac", "usac"):
+        e_bin = binary_path or shutil.which("exhale") or get_ffmpeg_path()
+        is_ff = bool(e_bin and "ffmpeg" in os.path.basename(e_bin).lower())
+        ver = version
+        if not ver and e_bin and os.path.exists(e_bin):
+            if is_ff:
+                res = safe_run([e_bin, "-version"], capture_output=True, check=False)
+                m = re.search(r"ffmpeg version (\S+)", res.stdout or "")
+                ver = m.group(1) if m else None
+            else:
+                ver = probe_version(e_bin, ["-v", "--version", "-h", "-help"], [r"exhale\s+v?(\d+\.\d+(?:\.\d+)*)"])
+        tag = "exhale" if not is_ff else "FFmpeg"
+        display_name = f"xHE-AAC ({tag}) {ver}" if ver else f"xHE-AAC ({tag})"
+        return ExhaleEncoder(display_name, e_bin, "exhale", profile, is_ffmpeg=is_ff)
 
     else:
         if os.path.exists(encoder_type):
@@ -648,5 +700,20 @@ def detect_encoders(args):
             enc = LameEncoder(name, lame_bin, tool_id, "standard")
             if probe_encoder_capability(enc, bitrate_kbps=128):
                 encoders.append(enc)
+
+        exhale_bin = getattr(args, "exhale_bin", None) or getattr(args, "xhe_bin", None) or shutil.which("exhale")
+        if exhale_bin and os.path.exists(exhale_bin):
+            ver = probe_version(exhale_bin, ["-v", "--version", "-h", "-help"], [r"exhale\s+v?(\d+\.\d+(?:\.\d+)*)"])
+            name, tool_id = make_unique_name_and_id("xHE-AAC (exhale)", ver, "exhale", existing_names, existing_ids)
+            enc = ExhaleEncoder(name, exhale_bin, tool_id, "standard", is_ffmpeg=False)
+            if probe_encoder_capability(enc, bitrate_kbps=48):
+                encoders.append(enc)
+        elif ffmpeg_bin and os.path.exists(ffmpeg_bin):
+            res_codecs = safe_run([ffmpeg_bin, "-codecs"], capture_output=True, check=False)
+            if "libmpeghdec" in (res_codecs.stdout or "") or "xhe_aac" in (res_codecs.stdout or ""):
+                name, tool_id = make_unique_name_and_id("xHE-AAC (FFmpeg)", ffmpeg_ver, "exhale_ffmpeg", existing_names, existing_ids)
+                enc = ExhaleEncoder(name, ffmpeg_bin, tool_id, "standard", is_ffmpeg=True)
+                if probe_encoder_capability(enc, bitrate_kbps=48):
+                    encoders.append(enc)
 
     return encoders

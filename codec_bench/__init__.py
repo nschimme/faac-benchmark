@@ -12,7 +12,7 @@ from codec_bench.encoders import (
     PROFILE_LABELS, profile_label, encoder_row_key, row_key,
     use_he_aac, use_he_v2_aac, Encoder, FAACEncoder, FFmpegEncoder,
     FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder,
-    OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
+    OpusEncoder, LameEncoder, ExhaleEncoder, probe_faac_version, probe_encoder_capability,
     get_encoder_instance, detect_encoders
 )
 

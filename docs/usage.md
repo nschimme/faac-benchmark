@@ -41,7 +41,7 @@ Common options:
 
 | Flag | Purpose |
 | :--- | :--- |
-| `--encoder faac\|ffmpeg\|fdkaac\|aac_enc\|falabaac\|afconvert\|opus\|lame` | Pluggable encoder choice for Phase 1 encoding (default: `faac`) |
+| `--encoder faac\|ffmpeg\|fdkaac\|aac_enc\|falabaac\|afconvert\|opus\|lame\|exhale\|xhe` | Pluggable encoder choice for Phase 1 encoding (default: `faac`) |
 | `--encoder-bin <path>` / `--encoder-lib <path>` | Path overrides for pluggable encoder binary or library |
 | `--decoder ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Pluggable decoder choice for Phase 2 (MOS) and Phase 3 (Stereo/Transient) evaluation passes (default: `ffmpeg`) |
 | `--decoder-bin <path>` / `--decoder-lib <path>` | Path overrides for pluggable decoder binary or library |
