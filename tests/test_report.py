@@ -115,5 +115,41 @@ class TestReport(unittest.TestCase):
                 self.assertIn("Failure Analysis & Debugging Diagnostics", text)
                 self.assertIn("Encoding failed: exit code 1", text)
 
+    def _speed_row(self, tool, clip, seconds, best_ms=None, valid=True):
+        row = {"tool": tool, "row_key": tool, "encoder_row_key": "enc", "scenario": "48k_stereo_64k",
+               "filename": clip, "duration": seconds, "audio_duration": 10.0, "decode_valid": valid}
+        if best_ms is not None:
+            row["speed_best_ms"] = best_ms
+        return row
+
+    def test_speed_compares_decoders_on_common_clips_only(self):
+        # B fails the heavy clip; A's average must not include it either.
+        results = [self._speed_row("A", "easy.wav", 0.1), self._speed_row("A", "heavy.wav", 1.0),
+                   self._speed_row("B", "easy.wav", 0.2), self._speed_row("B", "heavy.wav", 0.0, valid=False)]
+        common, serial = rep._common_speed_clips(results)
+        self.assertEqual(common, {("enc", "48k_stereo_64k", "easy.wav")})
+        self.assertFalse(serial)
+
+    def test_speed_prefers_serial_best_over_pooled_duration(self):
+        results = [self._speed_row("A", "c.wav", 5.0, best_ms=100.0), self._speed_row("B", "c.wav", 0.01)]
+        common, serial = rep._common_speed_clips(results)
+        self.assertTrue(serial)
+        # B has no serial timing, so it cannot be compared and the set is empty -> no filter
+        self.assertIsNone(common)
+        self.assertAlmostEqual(rep._decode_seconds(results[0]), 0.1)
+        self.assertEqual(rep._decode_seconds(results[1]), 0.01)
+
+    def test_decoder_leaderboard_speed_uses_common_clips(self):
+        decs = [dec.FAADDecoder("A", "/bin/true", "A"), dec.FAADDecoder("B", "/bin/true", "B")]
+        results = [self._speed_row("A", "easy.wav", 0.5, best_ms=100.0), self._speed_row("A", "heavy.wav", 0.5, best_ms=1000.0),
+                   self._speed_row("B", "easy.wav", 0.5, best_ms=200.0), self._speed_row("B", "heavy.wav", 0.0, valid=False)]
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "lb.md")
+            rep.generate_decoder_leaderboard(decs, results, out_md, ["48k_stereo_64k"], skip_graphs=True)
+            text = open(out_md).read()
+        self.assertIn("100.0x", text)  # A: 10 s of audio in 0.1 s on the shared clip only
+        self.assertIn("50.0x", text)   # B
+        self.assertNotIn("10.0x", text)  # A's heavy clip would pull its average down
+
 if __name__ == "__main__":
     unittest.main()

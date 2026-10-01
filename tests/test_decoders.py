@@ -111,5 +111,32 @@ class TestDecoders(unittest.TestCase):
             self.assertFalse(res["crash"])
             self.assertTrue(res["crash_free"])
 
+    def _robustness_result(self, shell_cmd):
+        class ShellDecoder(dec.Decoder):
+            def __init__(self):
+                super().__init__("ShellDecoder", "/bin/sh", "shell_dec")
+
+            def get_decode_cmd(self, input_path, output_path):
+                return ["sh", "-c", shell_cmd]
+
+        with tempfile.TemporaryDirectory() as td:
+            in_aac = os.path.join(td, "in.aac")
+            with open(in_aac, "wb") as f:
+                f.write((b"\xff\xf1\x50\x80\x01\x3f\xfc" + b"\x00" * 30) * 10)
+            res_item = {"row_key": "enc_row_1", "scenario": "48k_stereo_128k",
+                        "filename": "sample.wav", "aac_path": in_aac, "profile": "lc"}
+            return dec.process_decoder_robustness_task(ShellDecoder(), res_item, td)
+
+    def test_decoder_robustness_task_rejection_message_is_not_a_crash(self):
+        for cmd in ("echo 'invalid frame' >&2; exit 1", "echo 'invalid frame' >&2; exit 0"):
+            res = self._robustness_result(cmd)
+            self.assertFalse(res["crash"], cmd)
+            self.assertTrue(res["crash_free"], cmd)
+
+    def test_decoder_robustness_task_signal_is_a_crash(self):
+        res = self._robustness_result("kill -SEGV $$")
+        self.assertTrue(res["crash"])
+        self.assertFalse(res["crash_free"])
+
 if __name__ == "__main__":
     unittest.main()
