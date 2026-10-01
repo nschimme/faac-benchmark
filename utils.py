@@ -18,9 +18,47 @@ import shutil
 import tempfile
 import time
 import math
+import threading
+import concurrent.futures
 from functools import lru_cache
 
 import numpy as np
+
+
+class WorkerPool(concurrent.futures.ProcessPoolExecutor):
+    """ProcessPoolExecutor that tears its workers down if the block exits on an exception.
+
+    The stock __exit__ waits for every queued task, and a second Ctrl-C during
+    that wait abandons the workers as orphans (PPID 1) that keep running.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            procs = list((getattr(self, "_processes", None) or {}).values())
+            self.shutdown(wait=False, cancel_futures=True)
+            for proc in procs:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            for proc in procs:
+                try:
+                    proc.join(timeout=5)
+                except Exception:
+                    pass
+            return False
+        return super().__exit__(exc_type, exc, tb)
+
+
+def _exit_when_orphaned(parent_pid):
+    while os.getppid() == parent_pid:
+        time.sleep(2)
+    os._exit(1)
+
+
+def start_orphan_watchdog():
+    """Pool-worker initializer step: exit if the parent dies (SIGKILL, closed terminal)."""
+    threading.Thread(target=_exit_when_orphaned, args=(os.getppid(),), daemon=True).start()
 
 def safe_run(cmd, env=None, capture_output=True, check=True, shell=False):
     """Safe wrapper for subprocess.run."""

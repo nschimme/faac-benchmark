@@ -24,7 +24,7 @@ from utils import (get_scenario_sort_key, safe_run, corpus_dir,
                    select_corpus_clips, scenario_channels, scenario_rate,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
-                   get_cached_ref_wav)
+                   get_cached_ref_wav, WorkerPool, start_orphan_watchdog)
 import os
 if sys.platform == "darwin":
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
@@ -38,6 +38,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 def init_worker():
     """Initializes worker process with single-threaded constraints and CPU core affinity pinning."""
+    start_orphan_watchdog()
     # Set explicitly in the initializer (not just relied on via fork
     # inheriting the parent's already-mutated os.environ) so a pool worker
     # is single-threaded regardless of process start method, and every BLAS
@@ -552,7 +553,7 @@ def main():
             os.makedirs(ref_cache_dir, exist_ok=True)
 
             completed = 0
-            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+            with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
                                           args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
@@ -600,7 +601,7 @@ def main():
             os.makedirs(ref_cache_dir, exist_ok=True)
 
             completed = 0
-            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+            with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
                                           args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
@@ -672,7 +673,7 @@ def main():
             total_dec_tasks = len(valid_encoder_bitstreams)
             print(f"\n>>> Running Decoder Benchmarks across {total_dec_tasks} bitstreams x {len(decoders)} decoders...")
 
-            with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+            with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                 for decoder in decoders:
                     dec_tasks = []
                     for item in valid_encoder_bitstreams:
@@ -765,7 +766,7 @@ def main():
                 if rob_tasks:
                     print(f"  Testing robustness for {decoder.name} ({len(rob_tasks)} pending bitstreams)...")
                     completed_rob = 0
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus, initializer=init_worker) as executor:
+                    with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                         futures = [executor.submit(process_decoder_robustness_task, decoder, item, output_dir) for item in rob_tasks]
                         for future in concurrent.futures.as_completed(futures):
                             res = future.result()
