@@ -44,6 +44,54 @@ class TestEncoders(unittest.TestCase):
         self.assertIn("-b", cmd)
         self.assertIn("128", cmd)
 
+    def test_exhale_encoder_commands(self):
+        exhale_enc = enc.ExhaleEncoder("xHE-AAC", "/usr/bin/exhale", tool_id="exhale")
+        cmd_low = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 24, 2, 44100)
+        self.assertEqual(cmd_low, ["/usr/bin/exhale", "1", "in.wav", "out.m4a"])
+
+        cmd_mid = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 64, 2, 44100)
+        self.assertEqual(cmd_mid, ["/usr/bin/exhale", "4", "in.wav", "out.m4a"])
+
+        cmd_high = exhale_enc.get_encode_cmd("in.wav", "out.m4a", 192, 2, 44100)
+        self.assertEqual(cmd_high, ["/usr/bin/exhale", "9", "in.wav", "out.m4a"])
+
+        exhale_ff = enc.ExhaleEncoder("xHE-AAC (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
+        cmd_ff = exhale_ff.get_encode_cmd("in.wav", "out.m4a", 64, 2, 44100)
+        self.assertEqual(cmd_ff, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libmpeghdec", "-b:a", "64k", "-ac", "2", "out.m4a"])
+
+    def test_get_encoder_instance_exhale(self):
+        e1 = enc.get_encoder_instance("exhale", binary_path="/usr/bin/exhale")
+        self.assertIsInstance(e1, enc.ExhaleEncoder)
+        self.assertEqual(e1.binary_path, "/usr/bin/exhale")
+
+        e2 = enc.get_encoder_instance("xhe", binary_path="/usr/bin/exhale")
+        self.assertIsInstance(e2, enc.ExhaleEncoder)
+
+    def test_generate_leaderboard_with_exhale_encoder(self):
+        import tempfile
+        import os
+        exhale_enc = enc.ExhaleEncoder("xHE-AAC (exhale)", "/usr/bin/exhale", tool_id="exhale", profile="standard")
+        encoders = [exhale_enc]
+        results = [
+            {
+                "tool": "xHE-AAC (exhale)", "profile": "standard", "row_key": "exhale_standard",
+                "scenario": "48k_stereo_64k", "filename": "s1.wav", "duration": 0.5,
+                "audio_duration": 10.0, "size": 800, "actual_bitrate": 64.0,
+                "target_bitrate": 64, "decode_valid": True, "decode_error": "",
+                "mos": 4.12, "ic_err": 0.03, "attack_centroid_ms": [0.8]
+            }
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "leaderboard.md")
+            scenario_list = ["48k_stereo_64k"]
+            cd.generate_leaderboard(encoders, results, out_md, scenario_list, skip_graphs=False)
+
+            with open(out_md) as f:
+                content = f.read()
+
+            self.assertIn("xHE-AAC (exhale)", content)
+            self.assertIn("4.120", content)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")
