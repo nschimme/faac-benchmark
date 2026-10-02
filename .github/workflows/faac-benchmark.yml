@@ -46,7 +46,6 @@ jobs:
         uses: ./
         with:
           faac-bin: /usr/bin/faac
-          libfaac-so: /usr/lib/x86_64-linux-gnu/libfaac.so.0
           run-name: faac_${{ matrix.rate_control }}_base
           output-json: results/faac_${{ matrix.rate_control }}_base.json
           rate-control: ${{ matrix.rate_control }}

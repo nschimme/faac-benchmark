@@ -775,7 +775,10 @@ def main():
                     core = core_q.get() if cores else None
                     try:
                         if core is not None:
-                            os.sched_setaffinity(0, [core])
+                            try:
+                                os.sched_setaffinity(0, [core])
+                            except Exception:
+                                pass
                         item = timed_items[(r.get("encoder_row_key"), r.get("scenario"), r.get("filename"))]
                         return r, time_decoder_serial(decoder, item, output_dir, args.speed_iterations)
                     finally:

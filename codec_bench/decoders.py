@@ -575,7 +575,10 @@ def time_decoder_serial(decoder, res_item, output_dir, iterations):
     finally:
         for f in (temp_adts, looped, locals().get("candidate")):
             if f and os.path.exists(f):
-                os.remove(f)
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
 
 def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):

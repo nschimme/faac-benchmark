@@ -212,7 +212,7 @@ echo "==> Compiling Helix AAC Decoder..." >&2
 EOF
     printf '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n' > shim/hlxclib/stdlib.h
     printf '#include <string.h>\n' > shim/hlxclib/string.h
-    gcc -O3 -w -c -I "$BUILD_DIR/shim" -I "$HELIX_SRC" helix_aac_dec.c "$HELIX_SRC"/*.c
+    gcc -O3 -w -DARDUINO -c -I "$BUILD_DIR/shim" -I "$HELIX_SRC" helix_aac_dec.c "$HELIX_SRC"/*.c
     gcc *.o -o "$TARGET_BIN" -lm
     rm -f *.o
 ) >&2
