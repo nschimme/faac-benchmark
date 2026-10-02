@@ -6,7 +6,8 @@ inputs:
     required: true
   libfaac-so:
     description: 'Path to the libfaac.so library'
-    required: true
+    required: false
+    default: ''
   run-name:
     description: 'Identifier for this benchmark run'
     required: true
@@ -164,11 +165,16 @@ runs:
           EXTRA_ARGS="$EXTRA_ARGS --build-dir ${{ inputs.build-dir }}"
         fi
 
+        ENC_LIB_ARG=""
+        if [ -n "${{ inputs.libfaac-so }}" ]; then
+          ENC_LIB_ARG="--encoder-lib ${{ inputs.libfaac-so }}"
+        fi
+
         python3 ${{ github.action_path }}/run_benchmark.py \
           "${{ inputs.run-name }}" \
           "${{ inputs.output-json }}" \
           --encoder-bin "${{ inputs.faac-bin }}" \
-          --encoder-lib "${{ inputs.libfaac-so }}" \
+          $ENC_LIB_ARG \
           --coverage "${{ inputs.coverage }}" \
           $EXTRA_ARGS
 

@@ -9,6 +9,8 @@
 """
 
 import os
+import math
+import threading
 import sys
 import subprocess
 import shutil
@@ -498,7 +500,7 @@ def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio
     case) or when any repeat fails."""
     if iterations <= 1:
         return None
-    scratch = os.path.join(output_dir, f"speed_scratch_{os.getpid()}.wav")
+    scratch = os.path.join(output_dir, f"speed_scratch_{os.getpid()}_{threading.get_ident()}.wav")
     latencies_ms = []
     pcm_bytes = None
     try:
@@ -523,6 +525,10 @@ def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio
     return {"mean_ms": mean_ms, "std_ms": std_ms, "best_ms": min(latencies_ms), "xrt": xrt, "mbps": mbps, "iterations": iterations}
 
 
+# Length each timed decode is stretched to (see time_decoder_serial).
+SPEED_TARGET_SEC = 60.0
+
+
 def time_decoder_serial(decoder, res_item, output_dir, iterations):
     """Best-of-`iterations` wall time in ms for one decode of one bitstream,
     or None if any run fails. Meant to run one process at a time: the
@@ -535,20 +541,44 @@ def time_decoder_serial(decoder, res_item, output_dir, iterations):
     bitstream_input = aac_path
     temp_adts = None
     if getattr(decoder, "requires_adts", False) and aac_path.lower().endswith((".m4a", ".mp4")):
-        temp_adts = os.path.join(output_dir, f"speed_demux_{os.getpid()}.aac")
+        temp_adts = os.path.join(output_dir, f"speed_demux_{os.getpid()}_{threading.get_ident()}.aac")
         res_demux = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts],
                              capture_output=True, check=False)
         if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
             bitstream_input = temp_adts
+    looped = None
+    scale = 1.0
     try:
+        # Corpus clips are a few seconds, so a decode is mostly process
+        # startup. Like run_benchmark.py's looped throughput signals, stream-
+        # copy the bitstream up to SPEED_TARGET_SEC and time that; the result
+        # is scaled back to one pass of the clip, which is what the report
+        # divides the source duration by.
+        one_pass = ffmpeg_probe(bitstream_input)
+        if one_pass and one_pass < SPEED_TARGET_SEC:
+            candidate = os.path.join(output_dir, f"speed_loop_{os.getpid()}_{threading.get_ident()}"
+                                     f"{os.path.splitext(bitstream_input)[1]}")
+            loops = math.ceil(SPEED_TARGET_SEC / one_pass)
+            res_loop = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-stream_loop", str(loops - 1),
+                                 "-i", bitstream_input, "-c:a", "copy", candidate],
+                                capture_output=True, check=False)
+            long_dur = ffmpeg_probe(candidate) if res_loop.returncode == 0 else None
+            if long_dur and long_dur > one_pass:
+                looped = candidate
+                scale = one_pass / long_dur
+                bitstream_input = candidate
         # the extra run absorbs the cold page cache; best-of discards it
         stats = measure_decode_speed(decoder, bitstream_input, output_dir, iterations + 1, 0)
         if not stats:
             return None
-        return stats["best_ms"]
+        return stats["best_ms"] * scale
     finally:
-        if temp_adts and os.path.exists(temp_adts):
-            os.remove(temp_adts)
+        for f in (temp_adts, looped, locals().get("candidate")):
+            if f and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
 
 def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):

@@ -9,6 +9,7 @@
 """
 
 import os
+import queue
 import sys
 import json
 import time
@@ -743,28 +744,51 @@ def main():
                         print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
 
             if args.speed_iterations > 0:
-                timed_items = {(i.get("row_key"), i.get("scenario"), i.get("filename")): i
-                               for i in valid_encoder_bitstreams if args.gate or id(i) in sampled_ids}
+                # Like the encoder throughput pass, time a small fixed set, not
+                # the corpus: one clip per encoder row and scenario, the longest
+                # (bitrate is fixed within a scenario, so bitstream size tracks
+                # duration) since a long decode drowns process-startup noise,
+                # as run_benchmark.py's full-length throughput clips do. The
+                # choice ignores the decoder, so all of them time the same clip.
+                timed_items = {}
+                for i in sorted(valid_encoder_bitstreams,
+                                key=lambda r: (-os.path.getsize(r["aac_path"]), r.get("filename") or "")):
+                    timed_items.setdefault((i.get("row_key"), i.get("scenario")), i)
+                timed_items = {(k[0], k[1], i.get("filename")): i for k, i in timed_items.items()}
                 speed_todo = [(d, r) for d in decoders for r in decoder_results
                               if r.get("tool") == d.name and r.get("decode_valid") and not r.get("speed_best_ms")
                               and (r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) in timed_items]
                 print(f"\n>>> Timing {len(speed_todo)} decodes serially (best of {args.speed_iterations})...")
-                # Same as the encoder throughput pass: one pinned core, no neighbours.
-                prior_affinity = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
-                if prior_affinity:
+                # One timing thread per core, each pinned to its own (affinity
+                # is per-thread on Linux and inherited by the decoder it
+                # spawns). Core 0 stays free for this process; best-of-N
+                # absorbs the residual cross-core noise.
+                avail = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
+                cores = avail[1:] if len(avail) > 2 else avail
+                n_workers = max(1, len(cores))
+                core_q = queue.Queue()
+                for c in cores:
+                    core_q.put(c)
+
+                def _time_one(job):
+                    decoder, r = job
+                    core = core_q.get() if cores else None
                     try:
-                        os.sched_setaffinity(0, [min(prior_affinity)])
-                    except OSError:
-                        pass
-                try:
-                    for decoder, r in speed_todo:
+                        if core is not None:
+                            try:
+                                os.sched_setaffinity(0, [core])
+                            except Exception:
+                                pass
                         item = timed_items[(r.get("encoder_row_key"), r.get("scenario"), r.get("filename"))]
-                        best_ms = time_decoder_serial(decoder, item, output_dir, args.speed_iterations)
+                        return r, time_decoder_serial(decoder, item, output_dir, args.speed_iterations)
+                    finally:
+                        if core is not None:
+                            core_q.put(core)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as tpool:
+                    for r, best_ms in tpool.map(_time_one, speed_todo):
                         if best_ms:
                             r["speed_best_ms"] = best_ms
-                finally:
-                    if prior_affinity:
-                        os.sched_setaffinity(0, prior_affinity)
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
             if mos_scored:
