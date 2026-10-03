@@ -222,8 +222,8 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
                     raw_text += (res.stdout or "") + (res.stderr or "")
                 except Exception:
                     pass
-        is_faad3 = bool(re.search(r"Freeware Advanced Audio Decoder|FAAD3", raw_text, re.IGNORECASE))
-        base_name = "FAAD3" if is_faad3 else "FAAD2"
+        is_faad3 = bool(re.search(r"FAAD 3", raw_text, re.IGNORECASE))
+        base_name = "FAAD3" if is_faad3 else "FAAD"
         base_id = "faad3" if is_faad3 else "faad2"
         ver = version
         if not ver and f_bin and os.path.exists(f_bin):
