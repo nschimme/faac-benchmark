@@ -151,5 +151,54 @@ class TestReport(unittest.TestCase):
         self.assertIn("50.0x", text)   # B
         self.assertNotIn("10.0x", text)  # A's heavy clip would pull its average down
 
+    def test_mono_downmix_is_excluded_from_decoder_speed(self):
+        decs = [dec.FAADDecoder("FAAD3", "/bin/true", "FAAD3"),
+                dec.HelixAACDecoder("Helix", "/bin/true", "Helix")]
+        faad = self._speed_row("FAAD3", "mof.wav", 0.1, best_ms=100.0)
+        helix = self._speed_row("Helix", "mof.wav", 0.0001, best_ms=0.1)
+        helix.update({"mono_downmix": True, "dec_channels": 1,
+                      "gapless_length_delta": -429736})
+        results = [faad, helix]
+
+        common, serial = rep._common_speed_clips(results)
+        self.assertTrue(serial)
+        self.assertIsNone(common)
+
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "lb.md")
+            rep.generate_decoder_leaderboard(decs, results, out_md,
+                                             ["48k_stereo_64k"], skip_graphs=True)
+            with open(out_md) as report_file:
+                text = report_file.read()
+        self.assertIn("100.0x", text)
+        self.assertNotIn("100000.0x", text)
+
+    def test_channel_mismatch_is_excluded_from_decoder_speed(self):
+        decs = [dec.FAADDecoder("FAAD6", "/bin/true", "FAAD6"),
+                dec.HelixAACDecoder("Helix", "/bin/true", "Helix")]
+        faad = self._speed_row("FAAD6", "mof.wav", 0.1, best_ms=100.0)
+        faad.update({"scenario": "44k1_51_448k", "dec_channels": 6})
+        helix = self._speed_row("Helix", "mof.wav", 0.0001, best_ms=0.1)
+        helix.update({"scenario": "44k1_51_448k", "dec_channels": 2,
+                      "gapless_length_delta": -436904})
+        results = [faad, helix]
+
+        self.assertTrue(rep._speed_output_matches(faad))
+        self.assertFalse(rep._speed_output_matches(helix))
+        legacy = self._speed_row("legacy", "legacy.wav", 0.1, best_ms=100.0)
+        self.assertTrue(rep._speed_output_matches(legacy))
+        common, serial = rep._common_speed_clips(results)
+        self.assertTrue(serial)
+        self.assertIsNone(common)
+
+        with tempfile.TemporaryDirectory() as td:
+            out_md = os.path.join(td, "lb.md")
+            rep.generate_decoder_leaderboard(decs, results, out_md,
+                                             ["44k1_51_448k"], skip_graphs=True)
+            with open(out_md) as report_file:
+                text = report_file.read()
+        self.assertIn("100.0x", text)
+        self.assertNotIn("100000.0x", text)
+
 if __name__ == "__main__":
     unittest.main()

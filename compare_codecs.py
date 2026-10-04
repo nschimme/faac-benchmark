@@ -471,6 +471,8 @@ def main():
                         help="Repeat each decode this many times (output discarded) for mean/std latency, xRT, MB/s (default: 1 = single timed decode only)")
     parser.add_argument("--speed-iterations", type=int, default=5,
                         help="Serial timed decodes per decoder and bitstream after the parallel phase; the leaderboard speed is the best of these (0 = use the pooled single-run duration)")
+    parser.add_argument("--speed-workers", type=int, default=0,
+                        help="Concurrent decoder timing jobs (default: 0 = available cores; 1 = serial)")
     parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
     parser.add_argument("--muxer-bench", action="store_true",
                         help="Benchmark faam vs ffmpeg -c:a copy vs MP4Box on the largest ADTS stream from this run")
@@ -479,6 +481,8 @@ def main():
                         help="Keep each decoder's decoded WAV on disk instead of deleting it once its metrics are computed")
 
     args = parser.parse_args()
+    if args.speed_workers < 0:
+        parser.error("--speed-workers must be nonnegative")
 
     if args.gate:
         args.iterations = max(args.iterations, 3)
@@ -759,15 +763,12 @@ def main():
                               if r.get("tool") == d.name and r.get("decode_valid") and not r.get("speed_best_ms")
                               and (r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) in timed_items]
                 print(f"\n>>> Timing {len(speed_todo)} decodes (best of {args.speed_iterations})...")
-                # One timing thread per core, each pinned to its own (affinity
-                # is per-thread on Linux and inherited by the decoder it
-                # spawns). Core 0 stays free for this process; best-of-N
-                # absorbs the residual cross-core noise.
+                # Use the full timing pool by default; one worker isolates timing
+                # for a small baseline/candidate check.
                 avail = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
                 cores = avail[1:] if len(avail) > 2 else avail
-                # No affinity API (macOS): can't pin, but still run one timing
-                # thread per core, leaving one for this process.
-                n_workers = len(cores) if cores else max(1, num_cpus - 1)
+                available_workers = len(cores) if cores else max(1, num_cpus - 1)
+                n_workers = min(args.speed_workers, available_workers) if args.speed_workers else available_workers
                 core_q = queue.Queue()
                 for c in cores:
                     core_q.put(c)

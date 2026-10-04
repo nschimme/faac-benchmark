@@ -946,6 +946,16 @@ def _decode_seconds(res):
     return res.get("duration", 0)
 
 
+def _speed_output_matches(res):
+    """Whether decoded channel count matches the source scenario for speed."""
+    if res.get("mono_downmix"):
+        return False
+    decoded_channels = res.get("dec_channels")
+    if decoded_channels is None or res.get("scenario") is None:
+        return True
+    return decoded_channels == scenario_channels(res["scenario"])
+
+
 def _common_speed_clips(results):
     """Clips every decoder decoded and timed, as (encoder_row_key, scenario,
     filename), plus whether the timings are serial best-of-N. Comparing speed
@@ -953,7 +963,8 @@ def _common_speed_clips(results):
     streams; the set is None when the decoders share no clip. Rows without a
     serial timing are ignored once any row has one, so a cached single-run
     result never mixes with best-of-N."""
-    rows = [r for r in results if r.get("decode_valid") and r.get("audio_duration") and _decode_seconds(r) > 0]
+    rows = [r for r in results if r.get("decode_valid") and _speed_output_matches(r)
+            and r.get("audio_duration") and _decode_seconds(r) > 0]
     serial = any(r.get("speed_best_ms") for r in rows)
     if serial:
         rows = [r for r in rows if r.get("speed_best_ms")]
@@ -1070,7 +1081,8 @@ def generate_decoder_leaderboard(decoders, results, output_path, scenario_list, 
                 p_stats[rk][p][s]["ram_sum"] += res["peak_ram_kb"]
                 p_stats[rk][p][s]["ram_count"] += 1
 
-            timed = _decode_seconds(res) > 0 and res.get("audio_duration")
+            timed = (_speed_output_matches(res) and _decode_seconds(res) > 0
+                     and res.get("audio_duration"))
             if timed and speed_serial and not res.get("speed_best_ms"):
                 timed = False
             if timed and speed_clips is not None and (res.get("encoder_row_key"), s, res.get("filename")) not in speed_clips:
