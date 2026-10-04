@@ -221,8 +221,9 @@ SCENARIOS = {
     # -- 32 kHz stereo -----------------------------------------------------
     # 8 kbps/channel is HE-AAC's design floor. On the reference build AUTO
     # refuses HE below 24 kbps total and falls back to LC, which physically
-    # cannot reach this rate (+28.5%, bottoming out near 20 kbps); faac has no
-    # HE-AAC v2 to escalate to either. nschimme/faac#451 removes that floor and
+    # cannot reach this rate (+28.5%, bottoming out near 20 kbps). AUTO only
+    # escalates to HE-AAC v2 at <= 12 kbps total at 32 kHz, so 16 kbps does not
+    # reach it. nschimme/faac#451 removes that floor and
     # AUTO resolves this to HE-AAC v1 at +11.9% -- measured, not assumed. The
     # scenario is therefore listed in PENDING_UPSTREAM in
     # scripts/validate_scenarios.py until that lands.

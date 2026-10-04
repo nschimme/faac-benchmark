@@ -142,6 +142,8 @@ class FAACEncoder(Encoder):
         if not self.legacy:
             if self.profile == "he":
                 cmd.extend(["--object-type", "he-aac-v1"])
+            elif self.profile == "hev2":
+                cmd.extend(["--object-type", "he-aac-v2"])
             elif self.profile == "lc":
                 cmd.extend(["--object-type", "lc"])
             if not self.pns:
@@ -540,19 +542,23 @@ def detect_encoders(args):
         if probe_encoder_capability(enc_lc):
             encoders.append(enc_lc)
 
+        # hev2 is probed with --object-type he-aac-v2 forced, so a build without
+        # encoder-ps (which rejects it) drops out here instead of AUTO quietly
+        # encoding the probe as LC/v1.
         if not legacy:
-            enc_he = FAACEncoder(name, f_bin, tool_id, "he", lib_override=f_lib)
-            if probe_encoder_capability(enc_he):
-                encoders.append(enc_he)
+            for p in ("he", "hev2"):
+                enc_p = FAACEncoder(name, f_bin, tool_id, p, lib_override=f_lib)
+                if probe_encoder_capability(enc_p):
+                    encoders.append(enc_p)
 
         if include_pns_off:
-            for p in (("lc", "he") if not legacy else ("lc",)):
+            for p in (("lc", "he", "hev2") if not legacy else ("lc",)):
                 enc = FAACEncoder(name + " (PNS off)", f_bin, tool_id + "_nopns", p, lib_override=f_lib, pns=False)
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
 
         if include_adts:
-            for p in (("lc", "he") if not legacy else ("lc",)):
+            for p in (("lc", "he", "hev2") if not legacy else ("lc",)):
                 if include_pns_off:
                     enc = FAACEncoder(name + " (PNS off, ADTS)", f_bin, tool_id + "_nopns_adts", p, lib_override=f_lib, pns=False, adts=True)
                 else:

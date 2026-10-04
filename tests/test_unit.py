@@ -116,6 +116,9 @@ class TestFAACEncodeCommands(unittest.TestCase):
         he = self._encoder("he").get_encode_cmd("in.wav", "out.m4a", 32, 2, 48000)
         self.assertEqual(he[he.index("--object-type") + 1], "he-aac-v1")
 
+        hev2 = self._encoder("hev2").get_encode_cmd("in.wav", "out.m4a", 24, 2, 48000)
+        self.assertEqual(hev2[hev2.index("--object-type") + 1], "he-aac-v2")
+
     def test_legacy_uses_w_flag(self):
         from unittest.mock import patch
         from codec_bench.encoders import FAACEncoder
