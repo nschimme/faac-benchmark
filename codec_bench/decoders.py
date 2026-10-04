@@ -505,6 +505,10 @@ def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio
     pcm_bytes = None
     try:
         for _ in range(iterations):
+            # FAAD3 refuses to write over an existing output (needs --overwrite),
+            # which would fail every repeat after the first.
+            if os.path.exists(scratch):
+                os.remove(scratch)
             res, dur, _ram = measure_peak_ram(decoder.get_decode_cmd(bitstream_input, scratch), env=decoder.get_run_env() or None)
             if res.returncode != 0 or not os.path.exists(scratch):
                 return None
