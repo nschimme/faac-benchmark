@@ -758,14 +758,16 @@ def main():
                 speed_todo = [(d, r) for d in decoders for r in decoder_results
                               if r.get("tool") == d.name and r.get("decode_valid") and not r.get("speed_best_ms")
                               and (r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) in timed_items]
-                print(f"\n>>> Timing {len(speed_todo)} decodes serially (best of {args.speed_iterations})...")
+                print(f"\n>>> Timing {len(speed_todo)} decodes (best of {args.speed_iterations})...")
                 # One timing thread per core, each pinned to its own (affinity
                 # is per-thread on Linux and inherited by the decoder it
                 # spawns). Core 0 stays free for this process; best-of-N
                 # absorbs the residual cross-core noise.
                 avail = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
                 cores = avail[1:] if len(avail) > 2 else avail
-                n_workers = max(1, len(cores))
+                # No affinity API (macOS): can't pin, but still run one timing
+                # thread per core, leaving one for this process.
+                n_workers = len(cores) if cores else max(1, num_cpus - 1)
                 core_q = queue.Queue()
                 for c in cores:
                     core_q.put(c)
@@ -786,9 +788,14 @@ def main():
                             core_q.put(core)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as tpool:
-                    for r, best_ms in tpool.map(_time_one, speed_todo):
+                    futs = {tpool.submit(_time_one, job): job for job in speed_todo}
+                    for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
+                        r, best_ms = fut.result()
                         if best_ms:
                             r["speed_best_ms"] = best_ms
+                        prof_str = profile_label(r.get('profile', 'lc'))
+                        timing = f"{best_ms:.0f} ms" if best_ms else "Failed"
+                        print(f"    [{n_done}/{len(futs)}] {r['tool']} ({prof_str}) | {r['scenario']} | {r['filename']} -> {timing}")
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)
             if mos_scored:
