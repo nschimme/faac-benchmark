@@ -68,6 +68,23 @@ class TestCompareDecoders(unittest.TestCase):
             snr = utils.compute_snr(wav1, wav2)
             self.assertEqual(snr, float("inf"))
 
+    def test_compute_snr_aligns_periodic_multichannel(self):
+        # Pure tones whose period divides the delay's neighbourhood make the
+        # mono-downmix correlation peak at several lags; the tallest is the
+        # one nearest zero (triangular window), not the true 962.
+        import soundfile as sf
+        import numpy as np
+        sr, delay = 44100, 962
+        t = np.arange(sr * 4) / sr
+        ref = np.stack([0.5 * np.sin(2 * np.pi * f * t)
+                        for f in (441, 882, 1323, 441, 882, 1323)], axis=1).astype(np.float32)
+        cand = np.concatenate([np.zeros((delay, 6), np.float32), ref])[:len(ref)]
+        with tempfile.TemporaryDirectory() as td:
+            wav1, wav2 = os.path.join(td, "r.wav"), os.path.join(td, "c.wav")
+            sf.write(wav1, ref, sr)
+            sf.write(wav2, cand, sr)
+            self.assertGreater(utils.compute_snr(wav1, wav2), 60.0)
+
     def test_decoder_detection(self):
         class DummyArgs:
             faad_bin = [shutil.which("faad")] if shutil.which("faad") else None
@@ -92,8 +109,8 @@ class TestCompareDecoders(unittest.TestCase):
         decoders = cd.detect_decoders(args)
         faad_decs = [d for d in decoders if isinstance(d, cd.FAADDecoder)]
         self.assertEqual(len(faad_decs), 2)
-        self.assertEqual(faad_decs[0].name, "FAAD2 2.10.0")
-        self.assertEqual(faad_decs[1].name, "FAAD2 2.11.1")
+        self.assertEqual(faad_decs[0].name, "FAAD 2.10.0")
+        self.assertEqual(faad_decs[1].name, "FAAD 2.11.1")
 
     def test_generate_decoder_leaderboard(self):
         with tempfile.TemporaryDirectory() as td:

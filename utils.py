@@ -441,21 +441,32 @@ def compute_snr(ref_wav_path, cand_wav_path):
         r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
         c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
         corr = scipy.signal.correlate(r_norm, c_norm, mode='full')
-        lag = int(np.argmax(corr)) - (n_search - 1)
 
-        if lag < 0:
-            c_aligned = c_data[-lag:]
-            r_aligned = r_data[:len(r_data) + lag]
-        elif lag > 0:
-            r_aligned = r_data[lag:]
-            c_aligned = c_data[:len(c_data) - lag]
-        else:
-            r_aligned, c_aligned = r_data, c_data
+        def _align(lag):
+            if lag < 0:
+                return r_data[:len(r_data) + lag], c_data[-lag:]
+            if lag > 0:
+                return r_data[lag:], c_data[:len(c_data) - lag]
+            return r_data, c_data
 
-        n = min(len(r_aligned), len(c_aligned))
-        if n <= 0:
+        # On loud periodic/tonal clips (e.g. the 5.1 channel-ID tones) the
+        # correlation has many near-equal peaks and the tallest is often a
+        # wrong lag, so pick among the top peaks by actual residual.
+        n_peaks = min(32, len(corr))
+        best_lag, best_err = None, None
+        for idx in np.argpartition(corr, -n_peaks)[-n_peaks:]:
+            ra, ca = _align(int(idx) - (n_search - 1))
+            m = min(len(ra), len(ca))
+            if m <= 0:
+                continue
+            err = float(np.mean((ra[:m] - ca[:m]) ** 2))
+            if best_err is None or err < best_err:
+                best_lag, best_err = int(idx) - (n_search - 1), err
+        if best_lag is None:
             return None
 
+        r_aligned, c_aligned = _align(best_lag)
+        n = min(len(r_aligned), len(c_aligned))
         r_aligned = r_aligned[:n]
         c_aligned = c_aligned[:n]
 
