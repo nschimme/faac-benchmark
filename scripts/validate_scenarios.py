@@ -41,10 +41,14 @@ from utils import (is_faac_legacy, corpus_dir, expand_scenario_list,
 
 DATA_DIR = "data/external"
 
-# The one documented, expected exception: for 48 kHz stereo, libfaac's AUTO
-# object-type resolution in VBR mode picks HE-AAC at quantqual <= 75 and forces
-# LC-AAC above it, leaving no -q value in the 42-70 kbps gap. See config.py.
-VBR_DEAD_ZONE = {"48k_stereo_48k", "48k_stereo_56k"}
+# The documented, expected exception: libfaac's AUTO object-type resolution in
+# VBR mode picks HE-AAC at quantqual <= 75 and forces LC-AAC above it, leaving
+# no -q value in the gap between HE-AAC's ceiling and LC-AAC's floor. The gap
+# is build-dependent: on FAAC 2.2.0 (278ab5bc) it spans roughly 52-77 kbps at
+# 48 kHz and 44.1 kHz, and HE tops out at 37.5 kbps at 32 kHz, so these three are
+# unreachable and 48k_stereo_48k/56k (the old entries) now land in range.
+# See config.py.
+VBR_DEAD_ZONE = {"32k_stereo_48k", "44k1_stereo_64k", "48k_stereo_64k"}
 
 # Scenarios that are out of range only because of a known encoder defect with a
 # fix in flight. These are reported but do not fail the run: the scenario is

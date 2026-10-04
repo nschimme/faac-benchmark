@@ -178,13 +178,13 @@ SCENARIOS = {
         "mode": "speech",
         "corpus": "speech_clean_16k",
         "bitrate": 20,
-        "vbr_q": 220,   # PROVISIONAL
+        "vbr_q": 106,
         "thresh": 2.5},  # PROVISIONAL
     "16k_mono_24k": {
         "mode": "speech",
         "corpus": "speech_clean_16k",
         "bitrate": 24,
-        "vbr_q": 300,   # PROVISIONAL
+        "vbr_q": 163,
         "thresh": 3.0},  # PROVISIONAL
     # Deliberately at 24 kbps, the same rate and bitrate as 16k_mono_24k: the
     # only difference from it is the content, which is what makes the
@@ -194,7 +194,7 @@ SCENARIOS = {
         "mode": "speech",
         "corpus": "speech_voip_16k",
         "bitrate": 24,
-        "vbr_q": 300,   # PROVISIONAL
+        "vbr_q": 166,
         "thresh": 2.5},  # PROVISIONAL
     # -- 24 kHz mono speech ------------------------------------------------
     # Scored in AUDIO mode (Zimtohrli at 48 kHz), not ViSQOL speech mode:
@@ -210,13 +210,13 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "speech_clean_24k",
         "bitrate": 28,
-        "vbr_q": 420,   # PROVISIONAL
+        "vbr_q": 132,
         "thresh": 3.0},  # PROVISIONAL
     "24k_mono_32k": {
         "mode": "audio",
         "corpus": "speech_clean_24k",
         "bitrate": 32,
-        "vbr_q": 500,   # PROVISIONAL
+        "vbr_q": 166,
         "thresh": 3.2},  # PROVISIONAL
     # -- 32 kHz stereo -----------------------------------------------------
     # 8 kbps/channel is HE-AAC's design floor. On the reference build AUTO
@@ -231,13 +231,13 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "audio_32k",
         "bitrate": 16,
-        "vbr_q": 20,    # PROVISIONAL
+        "vbr_q": 14,
         "thresh": 1.8},  # PROVISIONAL
     "32k_stereo_48k": {
         "mode": "audio",
         "corpus": "audio_32k",
         "bitrate": 48,
-        "vbr_q": 75,    # PROVISIONAL
+        "vbr_q": 75,
         "thresh": 3.0},  # PROVISIONAL
     # 64k and 80k exist to make the 32 kHz family measurable by BD-rate, which
     # needs four rungs at ONE object type. Probed against master rather than
@@ -249,32 +249,32 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "audio_32k",
         "bitrate": 64,
-        "vbr_q": 95,    # PROVISIONAL
+        "vbr_q": 83,
         "thresh": 3.4},  # PROVISIONAL
     "32k_stereo_80k": {
         "mode": "audio",
         "corpus": "audio_32k",
         "bitrate": 80,
-        "vbr_q": 114,   # PROVISIONAL
+        "vbr_q": 120,
         "thresh": 3.7},  # PROVISIONAL
     "32k_stereo_96k": {
         "mode": "audio",
         "corpus": "audio_32k",
         "bitrate": 96,
-        "vbr_q": 133,   # PROVISIONAL
+        "vbr_q": 158,
         "thresh": 4.0},  # PROVISIONAL
     # -- 44.1 kHz stereo ---------------------------------------------------
     "44k1_stereo_64k": {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 64,
-        "vbr_q": 76,    # PROVISIONAL
+        "vbr_q": 76,
         "thresh": 3.5},  # PROVISIONAL
     "44k1_stereo_128k": {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 128,
-        "vbr_q": 203,   # PROVISIONAL
+        "vbr_q": 172,
         "thresh": 4.0},  # PROVISIONAL
     # 160k and 256k complete a four-rung LC ladder (128/160/192/256) so this
     # family is measurable by BD-rate. Probed against master: 64k and 96k
@@ -285,38 +285,51 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 160,
-        "vbr_q": 284,   # PROVISIONAL
+        "vbr_q": 255,
         "thresh": 4.1},  # PROVISIONAL
     "44k1_stereo_192k": {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 192,
-        "vbr_q": 369,   # PROVISIONAL
+        "vbr_q": 365,
         "thresh": 4.25},  # PROVISIONAL
     "44k1_stereo_256k": {
         "mode": "audio",
         "corpus": "audio_44k1",
         "bitrate": 256,
-        "vbr_q": 569,   # PROVISIONAL
+        "vbr_q": 718,
         "thresh": 4.3},  # PROVISIONAL
     # -- 48 kHz stereo -----------------------------------------------------
+    # 8 kbps/channel at 48 kHz is where AUTO escalates to HE-AAC v2 (parametric
+    # stereo) in ABR: probed on the gate clips it resolves to HE-AAC v2 here but
+    # only to v1 at 32 and 44.1 kHz, so this is the family's PS scenario.
+    # VBR does not reach PS on this build -- every -q from 1 up resolves to v1
+    # -- so the vbr_q only matches the bitrate, not the object type. q=1 is
+    # the bottom of the range: calibrate_vbr_q.py lands on 16.0 kbps there
+    # (-0.1%), so there is no room to go lower if a build's curve shifts up.
+    "48k_stereo_16k": {
+        "mode": "audio",
+        "corpus": "audio_48k",
+        "bitrate": 16,
+        "vbr_q": 1,
+        "thresh": 1.6},  # PROVISIONAL
     "48k_stereo_24k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 24,
-        "vbr_q": 30,
+        "vbr_q": 16,
         "thresh": 2.0},
     "48k_stereo_32k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 32,
-        "vbr_q": 50,
+        "vbr_q": 29,
         "thresh": 2.4},
     "48k_stereo_40k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 40,
-        "vbr_q": 71,
+        "vbr_q": 46,
         "thresh": 2.8},
     "48k_stereo_48k": {
         "mode": "audio",
@@ -324,7 +337,7 @@ SCENARIOS = {
         "bitrate": 48,
         # Unreachable target -- see the module-level note above. Closest
         # achievable is HE-AAC's ceiling at q=75 (~41 kbps, -15%).
-        "vbr_q": 75,
+        "vbr_q": 64,
         "thresh": 3.0},
     "48k_stereo_56k": {
         "mode": "audio",
@@ -338,37 +351,37 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 64,
-        "vbr_q": 76,
+        "vbr_q": 75,
         "thresh": 3.5},
     "48k_stereo_96k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 96,
-        "vbr_q": 133,
+        "vbr_q": 103,
         "thresh": 3.8},
     "48k_stereo_128k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 128,
-        "vbr_q": 203,
+        "vbr_q": 160,
         "thresh": 4.0},
     "48k_stereo_160k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 160,
-        "vbr_q": 284,
+        "vbr_q": 238,
         "thresh": 4.2},
     "48k_stereo_192k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 192,
-        "vbr_q": 369,
+        "vbr_q": 342,
         "thresh": 4.25},
     "48k_stereo_256k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 256,
-        "vbr_q": 569,
+        "vbr_q": 680,
         "thresh": 4.3},
     # The top of the format's usable range. On the reference build the -b
     # ceiling divides a per-channel bound by the channel count, so everything
@@ -380,44 +393,44 @@ SCENARIOS = {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 320,
-        "vbr_q": 700,   # PROVISIONAL
+        "vbr_q": 1323,
         "thresh": 4.3},  # PROVISIONAL
     # -- 44.1 kHz 5.1 surround --------------------------------------------
     "44k1_51_96k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 96,
-        "vbr_q": 50,     # PROVISIONAL
+        "vbr_q": 201,
         "thresh": 2.5},  # PROVISIONAL
     "44k1_51_160k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 160,
-        "vbr_q": 100,    # PROVISIONAL
+        "vbr_q": 662,
         "thresh": 3.0},  # PROVISIONAL
     "44k1_51_224k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 224,
-        "vbr_q": 180,    # PROVISIONAL
+        "vbr_q": 1177,
         "thresh": 3.5},  # PROVISIONAL
     "44k1_51_256k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 256,
-        "vbr_q": 220,    # PROVISIONAL
+        "vbr_q": 1459,
         "thresh": 3.8},  # PROVISIONAL
     "44k1_51_384k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 384,
-        "vbr_q": 350,    # PROVISIONAL
+        "vbr_q": 2672,
         "thresh": 4.1},  # PROVISIONAL
     "44k1_51_448k": {
         "mode": "audio",
         "corpus": "audio_51",
         "bitrate": 448,
-        "vbr_q": 500,    # PROVISIONAL
+        "vbr_q": 3286,
         "thresh": 4.3}}  # PROVISIONAL
 
 # Scoring rates are a property of the METRIC ENGINE, not of the content:

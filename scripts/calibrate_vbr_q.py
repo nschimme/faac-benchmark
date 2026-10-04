@@ -58,14 +58,17 @@ def get_dur(path, cache={}):
 def avg_kbps_for_q(q, samples, tmp):
     total_bits, total_dur = 0, 0
     faac_bin = shutil.which("faac") or "faac"
-    cmd = [faac_bin]
+    base = [faac_bin]
     if is_faac_legacy(faac_bin):
-        cmd.append("-w")
-    cmd.extend(["-q", str(q), "-o", tmp, "-X", "--overwrite"])
+        base.append("-w")
     for s in samples:
-        full_cmd = list(cmd)
-        full_cmd.insert(-3, s)
-        subprocess.run(full_cmd, capture_output=True)
+        # Input file goes last. (It used to be spliced in with insert(-3, ...),
+        # which landed between "-o" and the output path, and -X is a raw-PCM
+        # byte swap that has no business here.)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        subprocess.run(base + ["-q", str(q), "-o", tmp, "--overwrite", s],
+                       capture_output=True, check=True)
         total_bits += os.path.getsize(tmp) * 8
         total_dur += get_dur(s)
     return (total_bits / 1000) / total_dur
@@ -100,12 +103,14 @@ def calibrate(name, cfg, tmp):
     # at the HE-AAC/LC-AAC AUTO threshold (quantqual=75) instead of rising
     # smoothly.
     best_q, best_err = None, float("inf")
-    for q in range(10, 1001, 5):
+    # Starts at 1, not 10: the lowest-rate scenarios (48k_stereo_16k) sit at
+    # q < 10, and a grid that starts above them silently picks the floor.
+    for q in sorted({1, 2, 3, 4, *range(5, 5001, 5)}):
         err = abs(avg_kbps_for_q(q, samples, tmp) - target)
         if err < best_err:
             best_err, best_q = err, q
 
-    for q in range(max(10, best_q - 5), best_q + 6):
+    for q in range(max(1, best_q - 5), best_q + 6):
         err = abs(avg_kbps_for_q(q, samples, tmp) - target)
         if err < best_err:
             best_err, best_q = err, q

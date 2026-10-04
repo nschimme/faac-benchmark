@@ -54,6 +54,7 @@ from the corpus and the mode — never set them by hand.
 | `44k1_stereo_64k` | audio_44k1 | 44.1k stereo | 64k | 32k/ch | 44.1k SFB tables, low rate |
 | `44k1_stereo_128k` | audio_44k1 | 44.1k stereo | 128k | 64k/ch | the common real-world config |
 | `44k1_stereo_192k` | audio_44k1 | 44.1k stereo | 192k | 96k/ch | near transparency |
+| `48k_stereo_16k` | audio_48k | 48k stereo | 16k | **8k/ch** | HE-AAC v2 / parametric stereo (ABR; VBR stays v1) |
 | `48k_stereo_24k` | audio_48k | 48k stereo | 24k | 12k/ch | HE-AAC Floor |
 | `48k_stereo_32k` | audio_48k | 48k stereo | 32k | 16k/ch | |
 | `48k_stereo_40k` | audio_48k | 48k stereo | 40k | 20k/ch | low-rate music |
