@@ -45,13 +45,12 @@ import sys
 import json
 import wave
 import argparse
-import subprocess
 import tempfile
 
 import numpy as np
 
 from codec_bench.encoders import get_encoder_instance
-from utils import get_ffmpeg_path
+from utils import get_ffmpeg_path, safe_run
 
 SR = 48000
 LEAD_S = 1.0                    # digital silence before the bass
@@ -143,6 +142,8 @@ def adts_window_info(data):
             break
         length = ((data[i + 3] & 3) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
         header = 7 if data[i + 1] & 1 else 9
+        if length < header:
+            break                       # corrupt header; a zero length would never advance
         payload = data[i + header:i + length]
         i += length
         if not payload:
@@ -197,10 +198,16 @@ def span_fractions(info, he, span=SPAN_S):
 
 
 def decode_left(path):
-    cmd = [get_ffmpeg_path(), "-nostdin", "-v", "error", "-i", path,
-           "-f", "f64le", "-ac", "2", "-ar", str(SR), "-"]
-    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
-    return np.frombuffer(raw, "<f8").reshape(-1, 2)[:, 0]
+    """Left channel of the decoded stream as floats. ffmpeg writes raw samples to a
+    file rather than a pipe, because safe_run decodes its output as text."""
+    raw = path + ".f64"
+    try:
+        safe_run([get_ffmpeg_path(), "-nostdin", "-v", "error", "-y", "-i", path,
+                  "-f", "f64le", "-ac", "2", "-ar", str(SR), raw])
+        return np.fromfile(raw, "<f8").reshape(-1, 2)[:, 0]
+    finally:
+        if os.path.exists(raw):
+            os.remove(raw)
 
 
 def run_case(encoder_cache, tmp, clips, case, encoder_bin, encoder_lib):
@@ -209,18 +216,35 @@ def run_case(encoder_cache, tmp, clips, case, encoder_bin, encoder_lib):
         encoder_cache[profile] = get_encoder_instance(
             "faac", binary_path=encoder_bin, lib_override=encoder_lib, profile=profile)
     enc = encoder_cache[profile]
+    if profile != "lc" and getattr(enc, "legacy", False):
+        return None                     # a legacy faac has no --object-type: it would encode LC
     out = os.path.join(tmp, f"{name}.aac")
     cmd = enc.get_encode_cmd(clips[clip][0], out, value, 2, SR,
                              rate_control=rc, vbr_q=value if rc == "vbr" else None)
     cmd.insert(len(cmd) - 1, "-a")          # ADTS: the window syntax is read from it
-    subprocess.run(cmd, env=enc.get_run_env() or None, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    safe_run(cmd, env=enc.get_run_env() or None)
     with open(out, "rb") as f:
         data = f.read()
     span = ATTACK_SPAN_S if role == "attack" else SPAN_S
     short, kbd = span_fractions(adts_window_info(data), profile == "he", span)
     haze = None if role == "attack" else haze_db(clips[clip][1][:, 0], decode_left(out))
     return {"role": role, "bytes": len(data), "short_frac": short, "kbd_frac": kbd, "haze_db": haze}
+
+
+def store_block(path, block):
+    """Add the haze block to the results JSON. The file is replaced only once the new
+    content is fully written, so an interrupted run cannot leave a truncated file."""
+    with open(path, "r") as f:
+        data = json.load(f)
+    data["haze"] = block
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def main():
@@ -230,8 +254,13 @@ def main():
     parser.add_argument("--encoder-lib", help="Path to a libfaac override")
     args = parser.parse_args()
 
+    if not get_ffmpeg_path():
+        print("  Phase 4 needs ffmpeg to decode the test streams and found none")
+        sys.exit(1)
+
     clips = {}
     cases = {}
+    failed = 0
     with tempfile.TemporaryDirectory() as tmp:
         for key, x in (("bass", bass_clip()), ("control", bass_clip(True)), ("attack", attack_clip())):
             path = os.path.join(tmp, f"{key}.wav")
@@ -240,23 +269,25 @@ def main():
         cache = {}
         for case in CASES:
             try:
-                cases[case[0]] = run_case(cache, tmp, clips, case, args.encoder_bin, args.encoder_lib)
+                m = run_case(cache, tmp, clips, case, args.encoder_bin, args.encoder_lib)
             except Exception as e:      # one case failing must not hide the others
                 print(f"  haze case {case[0]} failed: {e}")
+                failed += 1
                 continue
-            m = cases[case[0]]
+            if m is None:
+                print(f"  haze case {case[0]} skipped: the encoder cannot produce this profile")
+                continue
+            cases[case[0]] = m
             haze = "" if m["haze_db"] is None else f"  haze {m['haze_db']:+.1f} dB"
             print(f"  {case[0]:12s} bytes {m['bytes']:7d}  short {m['short_frac']:.2f}  "
                   f"kbd {m['kbd_frac']:.2f}{haze}")
 
     if not cases:
         print("  no haze case ran; results left untouched")
-        return
-    with open(args.results_json, "r") as f:
-        data = json.load(f)
-    data["haze"] = {"span_s": list(SPAN_S), "band_hz": list(BAND_HZ), "cases": cases}
-    with open(args.results_json, "w") as f:
-        json.dump(data, f, indent=2)
+        sys.exit(1)
+    store_block(args.results_json, {"span_s": list(SPAN_S), "band_hz": list(BAND_HZ), "cases": cases})
+    if failed:
+        sys.exit(1)                     # the partial block is kept; the runner warns
 
 
 if __name__ == "__main__":

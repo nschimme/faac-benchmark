@@ -2,8 +2,11 @@
  * FAAC Benchmark Suite - Unit Tests for the bass-haze phase and gate
 """
 
+import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -69,16 +72,50 @@ class TestMetrics(unittest.TestCase):
         data = adts_frame(2, 1) + adts_frame(0, 0) + adts_frame(1, 1, common_window=0)
         self.assertEqual(haze.adts_window_info(data), [(2, 1), (0, 0), (1, 1)])
 
+    def test_window_info_does_not_hang_on_a_zero_length_frame(self):
+        zero = bytes([0xFF, 0xF1, 0x4C, 0x00, 0x00, 0x1F, 0xFC]) * 3
+        self.assertEqual(haze.adts_window_info(adts_frame(2, 1) + zero), [(2, 1)])
+
     def test_window_info_stops_at_garbage(self):
         self.assertEqual(haze.adts_window_info(adts_frame(2, 0) + b"\x00" * 16), [(2, 0)])
 
     def test_span_fractions_use_the_core_frame_rate(self):
-        lc = [(2, 0)] * 300
-        short, kbd = haze.span_fractions(lc, he=False)
-        self.assertEqual((short, kbd), (1.0, 0.0))
-        mixed = [(0, 1)] * 200 + [(2, 0)] * 200
-        short, kbd = haze.span_fractions(mixed, he=True)    # HE: 23.4 frames/s
-        self.assertTrue(0.0 <= short <= 1.0 and 0.0 <= kbd <= 1.0)
+        # 100 short frames, then 300 long KBD ones. The span 2.5-5.5 s is frames
+        # 117-257 at the LC rate (46.9/s) and 58-128 at the HE core rate (23.4/s).
+        info = [(2, 0)] * 100 + [(0, 1)] * 300
+        self.assertEqual(haze.span_fractions(info, he=False), (0.0, 1.0))
+        short, kbd = haze.span_fractions(info, he=True)
+        self.assertAlmostEqual(short, 42 / 70)          # frames 58-99 are short
+        self.assertAlmostEqual(kbd, 28 / 70)            # frames 100-127 are KBD
+
+    def test_span_fractions_of_an_empty_span(self):
+        self.assertEqual(haze.span_fractions([], he=False), (None, None))
+
+
+class TestStoreBlock(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "results.json")
+        with open(self.path, "w") as f:
+            json.dump({"matrix": {"a": 1}}, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_adds_the_block_and_keeps_the_rest(self):
+        haze.store_block(self.path, {"cases": {"x": 1}})
+        with open(self.path) as f:
+            data = json.load(f)
+        self.assertEqual(data["matrix"], {"a": 1})
+        self.assertEqual(data["haze"], {"cases": {"x": 1}})
+        self.assertEqual(os.listdir(self.dir), ["results.json"])
+
+    def test_a_failed_write_leaves_the_original_intact(self):
+        with self.assertRaises(TypeError):
+            haze.store_block(self.path, {"cases": object()})        # not serialisable
+        with open(self.path) as f:
+            self.assertEqual(json.load(f), {"matrix": {"a": 1}})
+        self.assertEqual(os.listdir(self.dir), ["results.json"])
 
 
 class TestHazeGate(unittest.TestCase):
