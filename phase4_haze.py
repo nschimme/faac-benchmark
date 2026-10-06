@@ -22,7 +22,7 @@
  download) with fixed options, decodes them and measures the decoded audio, with
  no perceptual model and no knowledge of the stream's syntax:
 
-   haze_db     power of the decoded span between 1.2 and 19 kHz minus the
+   haze_db     power of the decoded span between 1.2 and 8 kHz minus the
                source's, in dB (0 = no excess; the clip's own floor is the
                24-bit rounding of the source)
    pre_db      for the attack clip: the error energy (decoded minus source,
@@ -59,7 +59,8 @@ ATTACK_ONSETS_S = (1.0, 2.0, 3.0, 4.0, 5.0)
 PRE_ONSET_N = 960               # 20 ms before each kick
 PRE_ONSET_LP_HZ = 8000.0        # the HE core's band; SBR is not waveform-matched above it
 PRE_ONSET_CONTEXT = 4096
-BAND_HZ = (1200.0, 19000.0)     # the haze band
+BAND_HZ = (1200.0, 8000.0)      # the haze band: the waveform-coded core, not SBR (HE codes
+                                # the band above it parametrically, so its level is not leakage)
 BASS_HZ = 58.0                  # period (827 samples) is longer than the 256-sample
                                 # block-switching window, which the HE core's
                                 # first-difference test trips on
@@ -166,11 +167,14 @@ def pre_onset_db(source, decoded):
     out = []
     for onset in ATTACK_ONSETS_S:
         t = int(onset * SR)
-        lo, hi = t - PRE_ONSET_CONTEXT, t + PRE_ONSET_CONTEXT // 4
-        err = decoded[lo + lag:hi + lag] - source[lo:hi]
+        lo = t - PRE_ONSET_CONTEXT
+        # Only samples before the kick go into the filter: a zero-phase low-pass
+        # spreads energy both ways, and the coding error of the kick itself would
+        # otherwise bleed backwards into the window being measured.
+        err = decoded[lo + lag:t + lag] - source[lo:t]
         spec = np.fft.rfft(err)
         spec[np.fft.rfftfreq(len(err), 1.0 / SR) > PRE_ONSET_LP_HZ] = 0
-        err = np.fft.irfft(spec, len(err))[PRE_ONSET_CONTEXT - PRE_ONSET_N:PRE_ONSET_CONTEXT]
+        err = np.fft.irfft(spec, len(err))[-PRE_ONSET_N:]
         out.append(float(10 * np.log10((err ** 2).sum() + 1e-12)))
     return out
 

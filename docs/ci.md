@@ -253,12 +253,18 @@ shape for LC, block switching for HE), which is why both are covered.
 
 **Measured per case**, from the decoded left channel:
 
-- *haze*: the decoded power between 1.2 and 19 kHz minus the source's, in dB, over
-  2.5-5.5 s (inside the bass, past the onset).
+- *haze*: the decoded power between 1.2 and 8 kHz minus the source's, in dB, over
+  2.5-5.5 s (inside the bass, past the onset). The band stops at 8 kHz because that is
+  the waveform-coded core: HE-AAC codes what lies above parametrically (SBR), so its
+  level there follows the SBR noise floor and envelope, not the window leakage this
+  gate guards.
 - *pre-onset error* (attack clip): the error (decoded minus source, below 8 kHz,
   after aligning the codec delay) in the 20 ms before each of the five kicks, in dB.
   The kicks are at known times, so no onset detection is needed, and the cut at
-  8 kHz keeps out the SBR band, which is not waveform-matched.
+  8 kHz keeps out the SBR band, which is not waveform-matched. Only samples before
+  the kick go into the filter: a zero-phase low-pass spreads energy both ways, and
+  the coding error of the kick itself would otherwise bleed backwards into the
+  window (by up to 1.5 dB per kick on the clip).
 
 The block is stored under `haze` in the results JSON.
 
@@ -272,19 +278,20 @@ The block is stored under `haze` in the results JSON.
   skips.
 
 The attack thresholds come from a known-answer run: an encoder forced to code every
-frame long raises the pre-onset error by 2.7 dB on average (worst kick 5.4 dB),
+frame long raises the pre-onset error by 2.9 dB on average (worst kick 5.5 dB),
 which fails on the mean; a change that lets only bass-heavy frames go long measures
-+0.05 dB on average (worst kick 0.5 dB), which passes. This catches an
+-0.03 dB on average (worst kick +0.4 dB), which passes. This catches an
 all-long regression, not a mild one. The share of short windows is deliberately not
 gated: it moves with legitimate changes to block switching that leave the audio no
 worse.
 
 **Reference values** (an encoder with the defect, then one without it): haze LC
-`-q 200` +38 dB then +16 dB; HE `-q 50` +55 dB then +21 dB; HE `-b 32` +54 dB then
-+22 dB; both treble controls +0.3 dB and -0.8 dB, unchanged. The pre-onset error is
--13.9, -8.9, -10.7, -9.0 and -9.8 dB at the five kicks and moves by at most 0.5 dB.
-These agree on macOS clang and on Linux GCC 13 for amd64 and arm64: the haze to
-within half a dB, and the pre-onset error to within 0.6 dB per kick (identical for the encoder with the defect).
+`-q 200` +37.5 dB then +15.6 dB; HE `-q 50` +55.5 dB then +13.7 dB; HE `-b 32`
++54.2 dB then +7.3 dB; both treble controls 0.0 dB, unchanged. The pre-onset error
+is -13.9, -8.9, -10.7, -9.3 and -11.3 dB at the five kicks and moves by at most
+0.7 dB. These agree on macOS clang and on Linux GCC 13 for amd64 and arm64: the
+haze to within 0.3 dB, and the pre-onset error to within 0.6 dB per kick (identical
+for the encoder with the defect).
 
 **Limits**: one synthetic passage at one pitch. A bass with many strong harmonics,
 or at another pitch, exercises different paths (the HE core already codes a pure
