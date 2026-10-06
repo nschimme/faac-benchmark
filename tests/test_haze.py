@@ -19,7 +19,7 @@ import compare_results
 import phase4_haze as haze
 
 
-def adts_frame(window_sequence, window_shape, common_window=1):
+def adts_frame(window_sequence, window_shape, common_window=1, rate_index=3):
     """One ADTS frame holding only the start of a channel pair element."""
     bits = "001" + "0000" + str(common_window)
     if common_window:
@@ -29,7 +29,7 @@ def adts_frame(window_sequence, window_shape, common_window=1):
     bits += "0" * (-len(bits) % 8)
     payload = int(bits, 2).to_bytes(len(bits) // 8, "big")
     length = 7 + len(payload)
-    header = bytes([0xFF, 0xF1, 0x4C, (length >> 11) & 3, (length >> 3) & 0xFF,
+    header = bytes([0xFF, 0xF1, 0x40 | (rate_index << 2), (length >> 11) & 3, (length >> 3) & 0xFF,
                     ((length & 7) << 5) | 0x1F, 0xFC])
     return header + payload
 
@@ -71,6 +71,22 @@ class TestMetrics(unittest.TestCase):
     def test_window_info_reads_both_common_window_cases(self):
         data = adts_frame(2, 1) + adts_frame(0, 0) + adts_frame(1, 1, common_window=0)
         self.assertEqual(haze.adts_window_info(data), [(2, 1), (0, 0), (1, 1)])
+
+    def test_core_rate_comes_from_the_adts_header(self):
+        self.assertEqual(haze.adts_core_rate(adts_frame(0, 0)), 48000)                 # LC at 48 kHz
+        self.assertEqual(haze.adts_core_rate(adts_frame(0, 0, rate_index=6)), 24000)   # HE core
+        with self.assertRaises(ValueError):
+            haze.adts_core_rate(b"\x00" * 16)
+        with self.assertRaises(ValueError):
+            haze.adts_core_rate(adts_frame(0, 0, rate_index=15))
+
+    def test_profile_must_match_what_the_encoder_wrote(self):
+        haze.check_profile("lc", 48000)
+        haze.check_profile("he", 24000)
+        with self.assertRaises(ValueError):
+            haze.check_profile("he", 48000)       # a binary that fell back to LC
+        with self.assertRaises(ValueError):
+            haze.check_profile("lc", 24000)
 
     def test_window_info_does_not_hang_on_a_zero_length_frame(self):
         zero = bytes([0xFF, 0xF1, 0x4C, 0x00, 0x00, 0x1F, 0xFC]) * 3

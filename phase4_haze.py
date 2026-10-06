@@ -167,6 +167,29 @@ def adts_window_info(data):
     return out
 
 
+ADTS_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+              16000, 12000, 11025, 8000, 7350)
+
+
+def adts_core_rate(data):
+    """Sample rate the first ADTS header declares. An HE stream codes its core at half
+    the output rate, so this says which profile the encoder actually produced."""
+    if len(data) < 7 or data[0] != 0xFF or (data[1] & 0xF0) != 0xF0:
+        raise ValueError("not an ADTS stream")
+    index = (data[2] >> 2) & 0xF
+    if index >= len(ADTS_RATES):
+        raise ValueError(f"bad ADTS sampling index {index}")
+    return ADTS_RATES[index]
+
+
+def check_profile(requested, core_rate):
+    """The cases are labelled LC or HE, but what counts is what the encoder wrote:
+    a binary that falls back to LC would otherwise be measured at the HE frame rate."""
+    produced = "he" if core_rate == SR // 2 else "lc" if core_rate == SR else None
+    if produced != requested:
+        raise ValueError(f"asked for {requested} but the stream's core rate is {core_rate} Hz")
+
+
 def band_power_db(x, lo, hi, n=2048):
     """Mean Hann-windowed power of x between lo and hi Hz, in dB."""
     w = np.hanning(n)
@@ -225,8 +248,10 @@ def run_case(encoder_cache, tmp, clips, case, encoder_bin, encoder_lib):
     safe_run(cmd, env=enc.get_run_env() or None)
     with open(out, "rb") as f:
         data = f.read()
+    core_rate = adts_core_rate(data)
+    check_profile(profile, core_rate)
     span = ATTACK_SPAN_S if role == "attack" else SPAN_S
-    short, kbd = span_fractions(adts_window_info(data), profile == "he", span)
+    short, kbd = span_fractions(adts_window_info(data), core_rate != SR, span)
     haze = None if role == "attack" else haze_db(clips[clip][1][:, 0], decode_left(out))
     return {"role": role, "bytes": len(data), "short_frac": short, "kbd_frac": kbd, "haze_db": haze}
 
