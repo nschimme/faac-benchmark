@@ -114,7 +114,7 @@ class TestStoreBlock(unittest.TestCase):
 
 
 class TestHazeGate(unittest.TestCase):
-    PRE = [-13.9, -8.9, -10.7, -9.0, -9.8]
+    PRE = [-13.9, -8.9, -10.7, -9.3, -11.3]        # pre-onset error at the five kicks, dB
 
     def suite(self):
         return {"gates": [], "has_regression": False}
@@ -156,7 +156,7 @@ class TestHazeGate(unittest.TestCase):
         self.assertEqual(g["status"], "pass")
 
     def test_attack_error_rising_on_average_fails(self):
-        rise = [v + 2.7 for v in self.PRE]            # an all-long encoder measured +2.7 on average
+        rise = [v + 2.9 for v in self.PRE]            # about what an encoder that codes every frame long adds
         _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(rise)))
         self.assertEqual(g["status"], "fail")
         self.assertIn("attacks smeared (mean)", g["detail"])
@@ -169,7 +169,7 @@ class TestHazeGate(unittest.TestCase):
         self.assertIn("attacks smeared (one kick)", g["detail"])
 
     def test_the_measured_change_passes(self):
-        measured = [-13.9, -8.8, -11.1, -9.0, -9.3]     # mean +0.05, worst kick +0.5
+        measured = [-13.9, -8.8, -11.3, -9.3, -10.9]    # a change that leaves attacks alone: mean about 0, worst kick +0.4
         _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(measured)))
         self.assertEqual(g["status"], "pass")
 

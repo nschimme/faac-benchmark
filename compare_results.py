@@ -400,7 +400,7 @@ def check_throughput(suite_results, base, cand):
 # silence. Everything is read from the decoded audio and judged against the
 # baseline run, never against an absolute level, so a change that lowers the
 # haze passes and one that raises it fails.
-HAZE_FAIL_DB = 3.0              # decoded 1.2-19 kHz power above the baseline's
+HAZE_FAIL_DB = 3.0              # decoded 1.2-8 kHz power above the baseline's
 PRE_ONSET_MEAN_DB = 1.3         # mean rise of the error before the kicks
 PRE_ONSET_MAX_DB = 6.0          # rise at any single kick
 
