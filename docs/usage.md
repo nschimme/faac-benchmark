@@ -52,14 +52,16 @@ Common options:
 | `--include-tests` / `--exclude-tests` | Filename globs to include/exclude |
 | `--extra-args "--tns"` | Pass extra flags through to the faac encoder |
 | `--skip-mos` / `--skip-stereo` | Skip the perceptual MOS / stereo-image phases |
+| `--skip-haze` | Skip the bass-haze phase (Phase 4) |
 | `--sha $(git rev-parse HEAD)` | Stamp results with a commit SHA |
 
-The script runs three phases:
+The script runs four phases:
 
 1. **Phase 1** — encodes samples, measures throughput (via deterministic Cachegrind instruction counts when `valgrind` is installed, or wall-clock timing fallback), library size, and decode-validates each encode (supporting ABR `-b` or VBR `-q` modes).
 2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for `speech`-mode scenarios) or `Zimtohrli` (for `audio`-mode ones); the engine follows the scenario's mode, not its sample rate.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
+4. **Phase 4** — bass haze (`phase4_haze.py`): a short synthetic clip of a loud bass over digital silence, encoded with fixed options (LC and HE), measuring the window decisions and the decoded spectrum above 1.2 kHz. It needs only the `faac` binary, is skipped for other encoders and with `--skip-encode` or `--skip-haze`, and a failure leaves the block out rather than failing the run. See [Bass Haze](metrics.md#bass-haze).
 
 ### Filtering tests and scenarios
 

@@ -43,6 +43,17 @@ Percussive attacks (percussion, drum hits, acoustic guitar plucks) are prone to 
 
 ---
 
+## Bass Haze
+
+A loud, steady bass that plays on its own (nothing else above about 1 kHz comes close to its level) can leave a faint broadband hiss in the encoded file, because the transform windows spread the bass energy across the whole spectrum and the encoder then quantizes that spread badly. It is audible on clean recordings and invisible to the music corpora, which never contain such a passage. It also barely moves MOS: the same defect costs about 0.9 MOS when the content above 1 kHz is scored alone and about 0.1 when it is scored together with the bass. So this metric measures it directly.
+
+- **Measurement**: a short synthetic test clip, a deep bass tone over digital silence, is encoded with fixed settings (LC and HE-AAC) and the result is inspected, with no perceptual model involved. It records how much extra energy the decoded audio carries between 1.2 and 19 kHz compared with the source (the haze), and how often the encoder chose its short or its low-leakage (KBD) window shapes.
+- **Scale**: haze is in dB above the source; 0 dB means none. The number is only meaningful against the baseline, not as an absolute level: on the bass clip an encoder with the defect sits roughly 40-55 dB above the source and one without it roughly 15-20 dB, while the control clips sit near 0 dB.
+- **Interpretation**: lower is better. A negative delta against the baseline means the candidate removes haze; a positive one means it has come back. Two control clips keep the result honest: the same bass under quiet treble, where nothing should change, and a series of kick drums, where real attacks must keep their short windows.
+- **Reporting**: unlike the metrics above, it is not an average over the corpus. It is a pass/fail regression guard, reported as the `haze` gate in the summary, so a change to window selection or block switching cannot bring the haze back unnoticed. It does not replace MOS or a listening test, and the clips and thresholds are described under [CI](ci.md#the-haze-gate).
+
+---
+
 ## Bjontegaard-Delta Bitrate (BD-rate)
 
 Evaluating quality at a fixed target bitrate can be misleading because encoders often slightly overshoot or undershoot their target. A codec that overshoots spends extra bits to gain quality, appearing "better" than it actually is.
