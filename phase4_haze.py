@@ -168,9 +168,8 @@ def pre_onset_db(source, decoded):
     for onset in ATTACK_ONSETS_S:
         t = int(onset * SR)
         lo = t - PRE_ONSET_CONTEXT
-        # Only samples before the kick go into the filter: a zero-phase low-pass
-        # spreads energy both ways, and the coding error of the kick itself would
-        # otherwise bleed backwards into the window being measured.
+        # Only samples before the kick are filtered: a zero-phase low-pass spreads
+        # energy backwards, so the coding error of the kick itself must stay out.
         err = decoded[lo + lag:t + lag] - source[lo:t]
         spec = np.fft.rfft(err)
         spec[np.fft.rfftfreq(len(err), 1.0 / SR) > PRE_ONSET_LP_HZ] = 0

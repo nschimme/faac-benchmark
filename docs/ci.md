@@ -262,9 +262,8 @@ shape for LC, block switching for HE), which is why both are covered.
   after aligning the codec delay) in the 20 ms before each of the five kicks, in dB.
   The kicks are at known times, so no onset detection is needed, and the cut at
   8 kHz keeps out the SBR band, which is not waveform-matched. Only samples before
-  the kick go into the filter: a zero-phase low-pass spreads energy both ways, and
-  the coding error of the kick itself would otherwise bleed backwards into the
-  window (by up to 1.5 dB per kick on the clip).
+  the kick are filtered: a zero-phase low-pass spreads energy backwards, so the
+  kick's own coding error must stay out of the window.
 
 The block is stored under `haze` in the results JSON.
 
@@ -281,9 +280,8 @@ The attack thresholds come from a known-answer run: an encoder forced to code ev
 frame long raises the pre-onset error by 2.9 dB on average (worst kick 5.5 dB),
 which fails on the mean; a change that lets only bass-heavy frames go long measures
 -0.03 dB on average (worst kick +0.4 dB), which passes. This catches an
-all-long regression, not a mild one. The share of short windows is deliberately not
-gated: it moves with legitimate changes to block switching that leave the audio no
-worse.
+all-long regression, not a mild one. The share of short windows is not gated: it
+moves with block-switching changes that leave the audio no worse.
 
 **Reference values** (an encoder with the defect, then one without it): haze LC
 `-q 200` +37.5 dB then +15.6 dB; HE `-q 50` +55.5 dB then +13.7 dB; HE `-b 32`

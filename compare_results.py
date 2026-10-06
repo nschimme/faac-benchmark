@@ -435,8 +435,8 @@ def check_haze(suite_results, base, cand):
     20 ms before each kick must not rise by more than PRE_ONSET_MEAN_DB on
     average or PRE_ONSET_MAX_DB at any kick, so a rule that lets bass go long
     does not smear real attacks. That catches an all-long regression, not a
-    mild one; the window count was dropped because it fails changes that leave
-    the audio no worse.
+    mild one. The share of short windows is not gated: it moves with
+    block-switching changes that leave the audio no worse.
 
     A case the baseline measured but the candidate did not (a crashed encode, a
     missing block) fails: a gate that quietly drops the cases it cannot read
