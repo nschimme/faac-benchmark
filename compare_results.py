@@ -396,46 +396,52 @@ def check_throughput(suite_results, base, cand):
 
 
 # Haze gate (phase4_haze.py). The clips are a loud bass playing alone, the same
-# bass under quiet treble (a control) and kicks over silence (an attack control).
-# Judged against the baseline run, never against an absolute level, so a change
-# that lowers the haze passes and one that raises it fails.
-HAZE_FAIL_DB = 3.0          # decoded 1.2-19 kHz power above the baseline's
-HAZE_SHORT_FAIL = 0.10      # change in the share of short windows, as a share of frames
-HAZE_KBD_FAIL = 0.05        # more KBD frames than the baseline on a control clip
+# bass under quiet treble (a known answer: no haze to remove) and kicks over
+# silence. Everything is read from the decoded audio and judged against the
+# baseline run, never against an absolute level, so a change that lowers the
+# haze passes and one that raises it fails.
+HAZE_FAIL_DB = 3.0              # decoded 1.2-19 kHz power above the baseline's
+PRE_ONSET_MEAN_DB = 1.3         # mean rise of the error before the kicks
+PRE_ONSET_MAX_DB = 6.0          # rise at any single kick
 
 
 def _haze_regressions(role, b, c):
     """What got worse between two cases of one role, as short phrases."""
-    out = []
     if role == "attack":
-        # Real attacks must keep their short windows. Only window selection moves
-        # this number, so it carries no measurement noise.
-        if b["short_frac"] - c["short_frac"] > HAZE_SHORT_FAIL:
-            out.append("attacks lost short windows")
+        rises = [cv - bv for bv, cv in zip(b["pre_db"], c["pre_db"])]
+        out = []
+        if sum(rises) / len(rises) > PRE_ONSET_MEAN_DB:
+            out.append("attacks smeared (mean)")
+        if max(rises) > PRE_ONSET_MAX_DB:
+            out.append("attacks smeared (one kick)")
         return out
-    if c["haze_db"] - b["haze_db"] > HAZE_FAIL_DB:
-        out.append("more haze")
-    if c["short_frac"] - b["short_frac"] > HAZE_SHORT_FAIL:
-        out.append("more short windows")
-    if role == "control" and c["kbd_frac"] - b["kbd_frac"] > HAZE_KBD_FAIL:
-        out.append("KBD fires where bass does not dominate")
-    return out
+    return ["more haze"] if c["haze_db"] - b["haze_db"] > HAZE_FAIL_DB else []
+
+
+def _haze_measure(role, m):
+    """The measurement a role is judged on, or None if the case lacks it."""
+    if role == "attack":
+        pre = m.get("pre_db")
+        return pre if pre and all(v is not None for v in pre) else None
+    return m.get("haze_db")
 
 
 def check_haze(suite_results, base, cand):
     """Gate the bass-haze metrics against the baseline run.
 
-    Cases carry a role. "bass": the haze must not grow by more than
-    HAZE_FAIL_DB and the share of short windows must not grow by more than
-    HAZE_SHORT_FAIL. "control" (the bass under quiet treble): the same, and KBD
-    must not start firing. "attack" (kicks over silence): the share of short
-    windows must not fall by more than HAZE_SHORT_FAIL, so a rule that lets bass
-    go long does not take real attacks with it.
+    "bass": the haze must not grow by more than HAZE_FAIL_DB. "control" (the
+    same bass under quiet treble) is judged the same way; it is a known answer
+    that reads about 0 dB. "attack" (kicks over silence): the error in the
+    20 ms before each kick must not rise by more than PRE_ONSET_MEAN_DB on
+    average or PRE_ONSET_MAX_DB at any kick, so a rule that lets bass go long
+    does not smear real attacks. That catches an all-long regression, not a
+    mild one; the window count was dropped because it fails changes that leave
+    the audio no worse.
 
-    A case the baseline measured but the candidate did not (a crashed encode, an
-    empty span, a missing block) fails: a gate that quietly drops the cases it
-    cannot read passes exactly when something broke. Only a baseline without the
-    metric (for example a cached result) skips.
+    A case the baseline measured but the candidate did not (a crashed encode, a
+    missing block) fails: a gate that quietly drops the cases it cannot read
+    passes exactly when something broke. Only a baseline without the metric
+    (for example a cached result) skips.
     """
     b_cases = (base.get("haze") or {}).get("cases") or {}
     c_cases = (cand.get("haze") or {}).get("cases") or {}
@@ -448,20 +454,20 @@ def check_haze(suite_results, base, cand):
     for name in sorted(b_cases):
         b, c = b_cases[name], c_cases.get(name)
         role = (c or {}).get("role") or b.get("role") or "bass"
-        keys = ("short_frac",) if role == "attack" else ("haze_db", "short_frac")
-        if any(b.get(k) is None for k in keys):
+        b_val = _haze_measure(role, b)
+        if b_val is None:
             continue                        # the baseline could not measure it either
-        if c is None or any(c.get(k) is None for k in keys):
+        c_val = _haze_measure(role, c) if c else None
+        if c_val is None:
             worse.append(f"{name} (candidate produced no measurement)")
             continue
-        text = f"{name} short {b['short_frac'] * 100:.0f}%->{c['short_frac'] * 100:.0f}%"
-        if role != "attack":
-            text = f"{name} haze {b['haze_db']:+.1f}->{c['haze_db']:+.1f} dB, " + text[len(name) + 1:]
-        if role == "control":
-            text += f", kbd {(b.get('kbd_frac') or 0) * 100:.0f}%->{(c.get('kbd_frac') or 0) * 100:.0f}%"
-        parts.append(text)
-        bad = _haze_regressions(role, {**b, "kbd_frac": b.get("kbd_frac") or 0.0},
-                                {**c, "kbd_frac": c.get("kbd_frac") or 0.0})
+        if role == "attack":
+            rises = [cv - bv for bv, cv in zip(b_val, c_val)]
+            parts.append(f"{name} pre-onset error {sum(rises) / len(rises):+.1f} dB mean, "
+                         f"{max(rises):+.1f} dB worst kick")
+        else:
+            parts.append(f"{name} haze {b_val:+.1f}->{c_val:+.1f} dB")
+        bad = _haze_regressions(role, {**b, "haze_db": b.get("haze_db"), "pre_db": b.get("pre_db")}, c)
         if bad:
             worse.append(f"{name} ({', '.join(bad)})")
     if not parts and not worse:

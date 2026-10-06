@@ -18,22 +18,21 @@
  MOS when the content above 1 kHz is scored alone and 0.10 when scored with the
  bass. So neither the corpus nor MOS can see it.
 
- This phase encodes a small deterministic synthetic clip (generated here, no
- download) with fixed options and measures what the window decisions and the
- decoded spectrum do, with no perceptual model in the loop:
+ This phase encodes small deterministic synthetic clips (generated here, no
+ download) with fixed options, decodes them and measures the decoded audio, with
+ no perceptual model and no knowledge of the stream's syntax:
 
-   short_frac  share of core frames in the span that use short windows
-   kbd_frac    share of core frames whose ics_info window_shape is KBD
    haze_db     power of the decoded span between 1.2 and 19 kHz minus the
                source's, in dB (0 = no excess; the clip's own floor is the
                24-bit rounding of the source)
+   pre_db      for the attack clip: the error energy (decoded minus source,
+               below 8 kHz) in the 20 ms before each kick, in dB
 
- Two controls pin the other directions. The treble control (the same bass plus
- quiet broadband treble) must see no change in what gates on bass dominance:
- KBD must not start firing and short windows must not appear. The attack
- control (kicks over silence) is the reverse risk: a rule that lets bass-heavy
- frames go long must not take real attacks with it, so its share of short
- windows must not fall.
+ The treble control (the same bass plus quiet broadband treble) is a known
+ answer: it has no haze to remove, so it must read about 0 dB. The attack clip
+ (kicks over silence) guards the opposite risk: a change that lets bass-heavy
+ frames go long must not smear real attacks, so the error just before each kick
+ must not grow.
 
  Like Phase 3 this is a regression guard for a property the other phases are
  blind to, not a perceptual ground truth. The gate (compare_results.check_haze)
@@ -56,7 +55,10 @@ SR = 48000
 LEAD_S = 1.0                    # digital silence before the bass
 BASS_S = 6.0
 SPAN_S = (2.5, 5.5)             # analysed span: inside the bass, past the onset
-ATTACK_SPAN_S = (0.5, 6.0)      # the whole attack clip
+ATTACK_ONSETS_S = (1.0, 2.0, 3.0, 4.0, 5.0)
+PRE_ONSET_N = 960               # 20 ms before each kick
+PRE_ONSET_LP_HZ = 8000.0        # the HE core's band; SBR is not waveform-matched above it
+PRE_ONSET_CONTEXT = 4096
 BAND_HZ = (1200.0, 19000.0)     # the haze band
 BASS_HZ = 58.0                  # period (827 samples) is longer than the 256-sample
                                 # block-switching window, which the HE core's
@@ -65,8 +67,8 @@ TREBLE_FLOOR_DB = -50.0         # control clip: broadband treble, dB re full sca
 TREBLE_CUTOFF_HZ = 1500.0
 
 # (name, role, clip, profile, rate_control, value). "vbr" values are -q, "abr" -b (total kbps).
-# Roles: "bass" must not get hazier or shorter-windowed; "control" must not change;
-# "attack" must keep its short windows.
+# Roles: "bass" must not get hazier; "control" has no haze and must read about 0 dB;
+# "attack" must not smear its kicks.
 CASES = [
     ("lc_q200",      "bass",    "bass",    "lc", "vbr", 200),
     ("he_q50",       "bass",    "bass",    "he", "vbr", 50),
@@ -128,75 +130,13 @@ def write_wav24(path, x):
         w.writeframes(packed)
 
 
-def adts_window_info(data):
-    """(window_sequence, window_shape) of the first channel of every ADTS frame.
-
-    Right after the element id and tag, a channel pair carries common_window;
-    ics_info follows at once only when it is 1 (otherwise global_gain comes
-    first), and a single-channel element always has global_gain first.
-    """
-    out = []
-    i = 0
-    while i + 7 <= len(data):
-        if data[i] != 0xFF or (data[i + 1] & 0xF0) != 0xF0:
-            break
-        length = ((data[i + 3] & 3) << 11) | (data[i + 4] << 3) | (data[i + 5] >> 5)
-        header = 7 if data[i + 1] & 1 else 9
-        if length < header:
-            break                       # corrupt header; a zero length would never advance
-        payload = data[i + header:i + length]
-        i += length
-        if not payload:
-            continue
-
-        def bit(p):
-            return (payload[p >> 3] >> (7 - (p & 7))) & 1
-
-        element = payload[0] >> 5
-        if element not in (0, 1):
-            continue
-        pos = 7
-        if element == 1:
-            common = bit(pos)
-            pos += 1
-            if not common:
-                pos += 8
-        else:
-            pos += 8
-        out.append(((bit(pos + 1) << 1) | bit(pos + 2), bit(pos + 3)))
-    return out
-
-
-ADTS_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
-              16000, 12000, 11025, 8000, 7350)
-
-
-def adts_core_rate(data):
-    """Sample rate the first ADTS header declares. An HE stream codes its core at half
-    the output rate, so this says which profile the encoder actually produced."""
-    if len(data) < 7 or data[0] != 0xFF or (data[1] & 0xF0) != 0xF0:
-        raise ValueError("not an ADTS stream")
-    index = (data[2] >> 2) & 0xF
-    if index >= len(ADTS_RATES):
-        raise ValueError(f"bad ADTS sampling index {index}")
-    return ADTS_RATES[index]
-
-
-def check_profile(requested, core_rate):
-    """The cases are labelled LC or HE, but what counts is what the encoder wrote:
-    a binary that falls back to LC would otherwise be measured at the HE frame rate."""
-    produced = "he" if core_rate == SR // 2 else "lc" if core_rate == SR else None
-    if produced != requested:
-        raise ValueError(f"asked for {requested} but the stream's core rate is {core_rate} Hz")
-
-
 def band_power_db(x, lo, hi, n=2048):
     """Mean Hann-windowed power of x between lo and hi Hz, in dB."""
     w = np.hanning(n)
     acc = np.zeros(n // 2 + 1)
     frames = 0
-    for s in range(0, len(x) - n, n // 2):
-        acc += np.abs(np.fft.rfft(x[s:s + n] * w)) ** 2
+    for start in range(0, len(x) - n, n // 2):
+        acc += np.abs(np.fft.rfft(x[start:start + n] * w)) ** 2
         frames += 1
     f = np.fft.rfftfreq(n, 1.0 / SR)
     power = acc[(f >= lo) & (f < hi)].sum() / max(frames, 1) / (w ** 2).sum()
@@ -205,19 +145,34 @@ def band_power_db(x, lo, hi, n=2048):
 
 def haze_db(source, decoded):
     """Decoded minus source power in the haze band over the span, left channel."""
-    a, b = (int(s * SR) for s in SPAN_S)
+    a, b = (int(t * SR) for t in SPAN_S)
     return float(band_power_db(decoded[a:b], *BAND_HZ) - band_power_db(source[a:b], *BAND_HZ))
 
 
-def span_fractions(info, he, span=SPAN_S):
-    """Share of short and of KBD frames in the span. Core frames are 1024 samples
-    at the output rate for LC and at half of it for HE."""
-    fps = (SR / 2 if he else SR) / 1024.0
-    frames = info[int(span[0] * fps):int(span[1] * fps)]
-    if not frames:
-        return None, None
-    return (sum(1 for ws, _ in frames if ws == 2) / len(frames),
-            sum(1 for _, sh in frames if sh == 1) / len(frames))
+def decode_lag(source, decoded, search=8192):
+    """Samples by which the decoded stream trails the source (codec delay)."""
+    n = min(len(source), len(decoded) - search)
+    size = 1 << int(np.ceil(np.log2(n + search)))
+    xc = np.fft.irfft(np.fft.rfft(decoded[:n + search], size)
+                      * np.conj(np.fft.rfft(source[:n], size)), size)[:search]
+    return int(np.argmax(xc))
+
+
+def pre_onset_db(source, decoded):
+    """Error energy (decoded minus source, below PRE_ONSET_LP_HZ) in the 20 ms before
+    each kick, in dB, one value per kick. A transform codec that spreads an attack
+    backwards leaves energy there: pre-echo."""
+    lag = decode_lag(source, decoded)
+    out = []
+    for onset in ATTACK_ONSETS_S:
+        t = int(onset * SR)
+        lo, hi = t - PRE_ONSET_CONTEXT, t + PRE_ONSET_CONTEXT // 4
+        err = decoded[lo + lag:hi + lag] - source[lo:hi]
+        spec = np.fft.rfft(err)
+        spec[np.fft.rfftfreq(len(err), 1.0 / SR) > PRE_ONSET_LP_HZ] = 0
+        err = np.fft.irfft(spec, len(err))[PRE_ONSET_CONTEXT - PRE_ONSET_N:PRE_ONSET_CONTEXT]
+        out.append(float(10 * np.log10((err ** 2).sum() + 1e-12)))
+    return out
 
 
 def decode_left(path):
@@ -233,6 +188,18 @@ def decode_left(path):
             os.remove(raw)
 
 
+def measure_case(role, source, encoded_path):
+    """Metrics of one encoded stream against its source clip (left channel)."""
+    decoded = decode_left(encoded_path)
+    result = {"role": role, "bytes": os.path.getsize(encoded_path),
+              "haze_db": None, "pre_db": None}
+    if role == "attack":
+        result["pre_db"] = pre_onset_db(source[:, 0], decoded)
+    else:
+        result["haze_db"] = haze_db(source[:, 0], decoded)
+    return result
+
+
 def run_case(encoder_cache, tmp, clips, case, encoder_bin, encoder_lib):
     name, role, clip, profile, rc, value = case
     if profile not in encoder_cache:
@@ -241,19 +208,11 @@ def run_case(encoder_cache, tmp, clips, case, encoder_bin, encoder_lib):
     enc = encoder_cache[profile]
     if profile != "lc" and getattr(enc, "legacy", False):
         return None                     # a legacy faac has no --object-type: it would encode LC
-    out = os.path.join(tmp, f"{name}.aac")
+    out = os.path.join(tmp, f"{name}{enc.file_ext}")
     cmd = enc.get_encode_cmd(clips[clip][0], out, value, 2, SR,
                              rate_control=rc, vbr_q=value if rc == "vbr" else None)
-    cmd.insert(len(cmd) - 1, "-a")          # ADTS: the window syntax is read from it
     safe_run(cmd, env=enc.get_run_env() or None)
-    with open(out, "rb") as f:
-        data = f.read()
-    core_rate = adts_core_rate(data)
-    check_profile(profile, core_rate)
-    span = ATTACK_SPAN_S if role == "attack" else SPAN_S
-    short, kbd = span_fractions(adts_window_info(data), core_rate != SR, span)
-    haze = None if role == "attack" else haze_db(clips[clip][1][:, 0], decode_left(out))
-    return {"role": role, "bytes": len(data), "short_frac": short, "kbd_frac": kbd, "haze_db": haze}
+    return measure_case(role, clips[clip][1], out)
 
 
 def store_block(path, block):
@@ -272,6 +231,12 @@ def store_block(path, block):
             os.remove(tmp)
 
 
+def describe(m):
+    if m["pre_db"] is not None:
+        return "pre-onset " + " ".join(f"{v:+.1f}" for v in m["pre_db"]) + " dB"
+    return f"haze {m['haze_db']:+.1f} dB"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Phase 4: bass haze regression guard")
     parser.add_argument("results_json", help="Path to results JSON file (the block is added in place)")
@@ -283,10 +248,10 @@ def main():
         print("  Phase 4 needs ffmpeg to decode the test streams and found none")
         sys.exit(1)
 
-    clips = {}
     cases = {}
     failed = 0
     with tempfile.TemporaryDirectory() as tmp:
+        clips = {}
         for key, x in (("bass", bass_clip()), ("control", bass_clip(True)), ("attack", attack_clip())):
             path = os.path.join(tmp, f"{key}.wav")
             write_wav24(path, x)
@@ -303,14 +268,13 @@ def main():
                 print(f"  haze case {case[0]} skipped: the encoder cannot produce this profile")
                 continue
             cases[case[0]] = m
-            haze = "" if m["haze_db"] is None else f"  haze {m['haze_db']:+.1f} dB"
-            print(f"  {case[0]:12s} bytes {m['bytes']:7d}  short {m['short_frac']:.2f}  "
-                  f"kbd {m['kbd_frac']:.2f}{haze}")
+            print(f"  {case[0]:12s} bytes {m['bytes']:7d}  {describe(m)}")
 
     if not cases:
         print("  no haze case ran; results left untouched")
         sys.exit(1)
-    store_block(args.results_json, {"span_s": list(SPAN_S), "band_hz": list(BAND_HZ), "cases": cases})
+    store_block(args.results_json, {"span_s": list(SPAN_S), "band_hz": list(BAND_HZ),
+                                    "onsets_s": list(ATTACK_ONSETS_S), "cases": cases})
     if failed:
         sys.exit(1)                     # the partial block is kept; the runner warns
 

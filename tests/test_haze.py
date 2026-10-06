@@ -19,21 +19,6 @@ import compare_results
 import phase4_haze as haze
 
 
-def adts_frame(window_sequence, window_shape, common_window=1, rate_index=3):
-    """One ADTS frame holding only the start of a channel pair element."""
-    bits = "001" + "0000" + str(common_window)
-    if common_window:
-        bits += "0" + format(window_sequence, "02b") + str(window_shape)
-    else:                                   # global_gain precedes ics_info
-        bits += "00000000" + "0" + format(window_sequence, "02b") + str(window_shape)
-    bits += "0" * (-len(bits) % 8)
-    payload = int(bits, 2).to_bytes(len(bits) // 8, "big")
-    length = 7 + len(payload)
-    header = bytes([0xFF, 0xF1, 0x40 | (rate_index << 2), (length >> 11) & 3, (length >> 3) & 0xFF,
-                    ((length & 7) << 5) | 0x1F, 0xFC])
-    return header + payload
-
-
 class TestBassClip(unittest.TestCase):
     def test_deterministic_and_on_the_24_bit_grid(self):
         a, b = haze.bass_clip(), haze.bass_clip()
@@ -68,44 +53,38 @@ class TestMetrics(unittest.TestCase):
         noisy = x + rng.standard_normal(len(x)) * 10 ** (-80 / 20)
         self.assertGreater(haze.haze_db(x, noisy), 10.0)
 
-    def test_window_info_reads_both_common_window_cases(self):
-        data = adts_frame(2, 1) + adts_frame(0, 0) + adts_frame(1, 1, common_window=0)
-        self.assertEqual(haze.adts_window_info(data), [(2, 1), (0, 0), (1, 1)])
+    def test_decode_lag_finds_the_codec_delay(self):
+        src = haze.attack_clip()[:, 0]
+        delayed = np.concatenate([np.zeros(1234), src])
+        self.assertEqual(haze.decode_lag(src, delayed), 1234)
 
-    def test_core_rate_comes_from_the_adts_header(self):
-        self.assertEqual(haze.adts_core_rate(adts_frame(0, 0)), 48000)                 # LC at 48 kHz
-        self.assertEqual(haze.adts_core_rate(adts_frame(0, 0, rate_index=6)), 24000)   # HE core
-        with self.assertRaises(ValueError):
-            haze.adts_core_rate(b"\x00" * 16)
-        with self.assertRaises(ValueError):
-            haze.adts_core_rate(adts_frame(0, 0, rate_index=15))
+    def delayed(self, src, lag=1105):
+        return np.concatenate([np.zeros(lag), src])
 
-    def test_profile_must_match_what_the_encoder_wrote(self):
-        haze.check_profile("lc", 48000)
-        haze.check_profile("he", 24000)
-        with self.assertRaises(ValueError):
-            haze.check_profile("he", 48000)       # a binary that fell back to LC
-        with self.assertRaises(ValueError):
-            haze.check_profile("lc", 24000)
+    def test_pre_onset_error_is_tiny_for_a_clean_copy(self):
+        src = haze.attack_clip()[:, 0]
+        values = haze.pre_onset_db(src, self.delayed(src))
+        self.assertEqual(len(values), len(haze.ATTACK_ONSETS_S))
+        self.assertTrue(all(v < -80 for v in values))
 
-    def test_window_info_does_not_hang_on_a_zero_length_frame(self):
-        zero = bytes([0xFF, 0xF1, 0x4C, 0x00, 0x00, 0x1F, 0xFC]) * 3
-        self.assertEqual(haze.adts_window_info(adts_frame(2, 1) + zero), [(2, 1)])
+    def test_pre_onset_error_sees_energy_smeared_before_one_kick(self):
+        src = haze.attack_clip()[:, 0]
+        dec = self.delayed(src)
+        t = int(3 * haze.SR) + 1105
+        rng = np.random.default_rng(5)
+        dec[t - 900:t - 100] += rng.standard_normal(800) * 10 ** (-40 / 20)    # pre-echo before the third kick
+        values = haze.pre_onset_db(src, dec)
+        self.assertGreater(values[2], values[1] + 30)
+        self.assertGreater(values[2], values[3] + 30)
 
-    def test_window_info_stops_at_garbage(self):
-        self.assertEqual(haze.adts_window_info(adts_frame(2, 0) + b"\x00" * 16), [(2, 0)])
-
-    def test_span_fractions_use_the_core_frame_rate(self):
-        # 100 short frames, then 300 long KBD ones. The span 2.5-5.5 s is frames
-        # 117-257 at the LC rate (46.9/s) and 58-128 at the HE core rate (23.4/s).
-        info = [(2, 0)] * 100 + [(0, 1)] * 300
-        self.assertEqual(haze.span_fractions(info, he=False), (0.0, 1.0))
-        short, kbd = haze.span_fractions(info, he=True)
-        self.assertAlmostEqual(short, 42 / 70)          # frames 58-99 are short
-        self.assertAlmostEqual(kbd, 28 / 70)            # frames 100-127 are KBD
-
-    def test_span_fractions_of_an_empty_span(self):
-        self.assertEqual(haze.span_fractions([], he=False), (None, None))
+    def test_pre_onset_error_ignores_content_above_the_core_band(self):
+        src = haze.attack_clip()[:, 0]
+        dec = self.delayed(src)
+        t = int(2 * haze.SR) + 1105
+        n = np.arange(900)
+        burst = 0.1 * np.hanning(900) * np.sin(2 * np.pi * 12000 * n / haze.SR)    # tapered, so it does not leak down
+        dec[t - 1000:t - 100] += burst                                              # SBR territory
+        self.assertLess(haze.pre_onset_db(src, dec)[1], -80)
 
 
 class TestStoreBlock(unittest.TestCase):
@@ -135,11 +114,16 @@ class TestStoreBlock(unittest.TestCase):
 
 
 class TestHazeGate(unittest.TestCase):
+    PRE = [-13.9, -8.9, -10.7, -9.0, -9.8]
+
     def suite(self):
         return {"gates": [], "has_regression": False}
 
-    def case(self, role="bass", haze_db=0.0, short=0.0, kbd=0.0):
-        return {"role": role, "haze_db": haze_db, "short_frac": short, "kbd_frac": kbd, "bytes": 1}
+    def bass(self, haze_db, role="bass"):
+        return {"role": role, "haze_db": haze_db, "pre_db": None, "bytes": 1}
+
+    def attack(self, pre=None):
+        return {"role": "attack", "haze_db": None, "pre_db": pre or list(self.PRE), "bytes": 1}
 
     def results(self, **cases):
         return {"haze": {"cases": cases}}
@@ -149,96 +133,89 @@ class TestHazeGate(unittest.TestCase):
         compare_results.check_haze(s, base, cand)
         return s, s["gates"][-1]
 
-    def test_improvement_passes(self):
-        s, g = self.gate(self.results(lc=self.case(haze_db=38.4, short=1.0)),
-                         self.results(lc=self.case(haze_db=16.3, short=0.0, kbd=1.0)))
+    def test_less_haze_passes(self):
+        s, g = self.gate(self.results(lc=self.bass(38.4)), self.results(lc=self.bass(16.3)))
         self.assertEqual(g["status"], "pass")
         self.assertFalse(s["has_regression"])
 
     def test_more_haze_fails(self):
-        s, g = self.gate(self.results(lc=self.case(haze_db=16.3)), self.results(lc=self.case(haze_db=38.4)))
+        s, g = self.gate(self.results(lc=self.bass(16.3)), self.results(lc=self.bass(38.4)))
         self.assertEqual(g["status"], "fail")
         self.assertIn("lc (more haze)", g["detail"])
         self.assertTrue(s["has_regression"])
 
-    def test_more_short_windows_fails(self):
-        _, g = self.gate(self.results(he=self.case(short=0.0)), self.results(he=self.case(short=0.5)))
-        self.assertEqual(g["status"], "fail")
-
-    def test_small_noise_passes(self):
-        _, g = self.gate(self.results(lc=self.case(haze_db=16.3)),
-                         self.results(lc=self.case(haze_db=17.9, short=0.05)))
+    def test_small_haze_noise_passes(self):
+        _, g = self.gate(self.results(lc=self.bass(16.3)), self.results(lc=self.bass(17.9)))
         self.assertEqual(g["status"], "pass")
 
-    def test_control_fails_when_kbd_starts_firing(self):
-        base = self.results(ctl=self.case("control", 0.3, 0.0, 0.0))
-        cand = self.results(ctl=self.case("control", 0.3, 0.0, 0.4))   # haze unchanged: only kbd moved
-        _, g = self.gate(base, cand)
+    def test_control_is_judged_on_haze(self):
+        base = self.results(ctl=self.bass(0.3, "control"))
+        _, g = self.gate(base, self.results(ctl=self.bass(8.0, "control")))
         self.assertEqual(g["status"], "fail")
-        self.assertIn("KBD fires where bass does not dominate", g["detail"])
-
-    def test_kbd_on_a_bass_case_is_not_a_regression(self):
-        _, g = self.gate(self.results(lc=self.case(haze_db=38.4, kbd=0.0)),
-                         self.results(lc=self.case(haze_db=16.3, kbd=1.0)))
+        _, g = self.gate(base, self.results(ctl=self.bass(0.4, "control")))
         self.assertEqual(g["status"], "pass")
 
-    def test_attack_case_fails_when_short_windows_vanish(self):
-        base = self.results(atk=self.case("attack", None, 0.21))
-        _, g = self.gate(base, self.results(atk=self.case("attack", None, 0.02)))
+    def test_attack_error_rising_on_average_fails(self):
+        rise = [v + 2.7 for v in self.PRE]            # an all-long encoder measured +2.7 on average
+        _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(rise)))
         self.assertEqual(g["status"], "fail")
-        self.assertIn("attacks lost short windows", g["detail"])
+        self.assertIn("attacks smeared (mean)", g["detail"])
 
-    def test_attack_case_tolerates_the_designed_drop(self):
-        base = self.results(atk=self.case("attack", None, 0.21))
-        _, g = self.gate(base, self.results(atk=self.case("attack", None, 0.13)))      # -8 points
+    def test_one_kick_rising_a_lot_fails(self):
+        worse = list(self.PRE)
+        worse[3] += 6.5                                  # mean +1.3: only the single-kick rule trips
+        _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(worse)))
+        self.assertEqual(g["status"], "fail")
+        self.assertIn("attacks smeared (one kick)", g["detail"])
+
+    def test_the_measured_change_passes(self):
+        measured = [-13.9, -8.8, -11.1, -9.0, -9.3]     # mean +0.05, worst kick +0.5
+        _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(measured)))
         self.assertEqual(g["status"], "pass")
 
-    def test_attack_case_needs_no_haze_value(self):
-        base = self.results(atk=self.case("attack", None, 0.21))
-        _, g = self.gate(base, self.results(atk=self.case("attack", None, 0.21)))
+    def test_attack_error_falling_passes(self):
+        better = [v - 3.0 for v in self.PRE]
+        _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(better)))
         self.assertEqual(g["status"], "pass")
 
     def test_missing_baseline_skips(self):
-        s, g = self.gate({}, self.results(lc=self.case()))
+        s, g = self.gate({}, self.results(lc=self.bass(16.3)))
         self.assertEqual(g["status"], "skip")
         self.assertFalse(s["has_regression"])
 
-    def test_cases_without_measurements_skip(self):
-        _, g = self.gate(self.results(lc=self.case(haze_db=None, short=None)),
-                         self.results(lc=self.case(haze_db=None, short=None)))
+    def test_baseline_without_measurements_skips(self):
+        base = self.results(lc=self.bass(None))
+        _, g = self.gate(base, self.results(lc=self.bass(None)))
         self.assertEqual(g["status"], "skip")
 
     def test_case_the_candidate_did_not_measure_fails(self):
-        base = self.results(lc=self.case(haze_db=16.3), he=self.case(haze_db=21.5))
-        cand = self.results(lc=self.case(haze_db=16.3))             # the HE encode crashed
-        s, g = self.gate(base, cand)
+        base = self.results(lc=self.bass(16.3), he=self.bass(21.5))
+        s, g = self.gate(base, self.results(lc=self.bass(16.3)))          # the HE encode crashed
         self.assertEqual(g["status"], "fail")
         self.assertIn("he (candidate produced no measurement)", g["detail"])
         self.assertTrue(s["has_regression"])
 
     def test_candidate_with_an_empty_measurement_fails(self):
-        base = self.results(lc=self.case(haze_db=16.3))
-        _, g = self.gate(base, self.results(lc=self.case(haze_db=None, short=None)))
+        _, g = self.gate(self.results(lc=self.bass(16.3)), self.results(lc=self.bass(None)))
+        self.assertEqual(g["status"], "fail")
+
+    def test_attack_with_a_partial_measurement_fails(self):
+        partial = list(self.PRE)
+        partial[2] = None
+        _, g = self.gate(self.results(atk=self.attack()), self.results(atk=self.attack(partial)))
         self.assertEqual(g["status"], "fail")
 
     def test_candidate_without_a_haze_block_fails_when_the_baseline_has_one(self):
-        _, g = self.gate(self.results(lc=self.case()), {})
+        _, g = self.gate(self.results(lc=self.bass(16.3)), {})
         self.assertEqual(g["status"], "fail")
 
-    def test_control_with_an_empty_kbd_share_does_not_raise(self):
-        base = self.results(ctl=self.case("control", 0.3, 0.0, None))
-        cand = self.results(ctl=self.case("control", 0.3, 0.0, None))
-        _, g = self.gate(base, cand)
-        self.assertEqual(g["status"], "pass")
-
     def test_a_case_new_in_the_candidate_is_ignored(self):
-        base = self.results(lc=self.case(haze_db=16.3))
-        cand = self.results(lc=self.case(haze_db=16.3), extra=self.case(haze_db=99.0))
-        _, g = self.gate(base, cand)
+        base = self.results(lc=self.bass(16.3))
+        _, g = self.gate(base, self.results(lc=self.bass(16.3), extra=self.bass(99.0)))
         self.assertEqual(g["status"], "pass")
 
     def test_case_without_role_counts_as_bass(self):
-        legacy = {"haze_db": 16.3, "short_frac": 0.0, "bytes": 1}
+        legacy = {"haze_db": 16.3, "bytes": 1}
         _, g = self.gate({"haze": {"cases": {"lc": legacy}}},
                          {"haze": {"cases": {"lc": {**legacy, "haze_db": 40.0}}}})
         self.assertEqual(g["status"], "fail")

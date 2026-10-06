@@ -221,8 +221,10 @@ half of what either segment actually shows.
 ## The haze gate
 
 Phase 4 (`phase4_haze.py`) builds three deterministic test clips in memory (no
-download) and encodes them with fixed options. The gate compares the candidate's
-measurements with the baseline's; it asserts no absolute level.
+download), encodes them with fixed options, decodes them and measures the decoded
+audio. It reads nothing from the stream's syntax, so it measures whatever the
+encoder wrote. The gate compares the candidate's measurements with the baseline's
+and asserts no absolute level.
 
 **Clips**
 
@@ -231,7 +233,7 @@ measurements with the baseline's; it asserts no absolute level.
   The 58 Hz period (827 samples) is longer than the encoder's 256-sample
   block-switching window, which the HE core's attack test trips on.
 - *Treble control*: the same bass under broadband treble at -50 dB re full scale.
-  Anything gated on bass dominance must stay silent here.
+  It has no haze to remove, so it must read about 0 dB.
 - *Attack control*: five kicks over digital silence, one a second, each with a
   short click.
 
@@ -246,31 +248,43 @@ measurements with the baseline's; it asserts no absolute level.
 | `ctl_he_q50` | treble control | HE-AAC, `-q 50` | control |
 | `atk_he_q50` | attack control | HE-AAC, `-q 50` | attack |
 
-**Measured per case** (over 2.5-5.5 s for the bass clips, the whole clip for the
-attack one): the share of core frames that use short windows, the share whose
-`window_shape` is KBD, and the haze, the decoded power between 1.2 and 19 kHz
-minus the source's in dB. They are read from the ADTS stream and the decoded
-audio. The block is stored under `haze` in the results JSON.
+LC and HE only select the encoder options: they are different code paths (window
+shape for LC, block switching for HE), which is why both are covered.
+
+**Measured per case**, from the decoded left channel:
+
+- *haze*: the decoded power between 1.2 and 19 kHz minus the source's, in dB, over
+  2.5-5.5 s (inside the bass, past the onset).
+- *pre-onset error* (attack clip): the error (decoded minus source, below 8 kHz,
+  after aligning the codec delay) in the 20 ms before each of the five kicks, in dB.
+  The kicks are at known times, so no onset detection is needed, and the cut at
+  8 kHz keeps out the SBR band, which is not waveform-matched.
+
+The block is stored under `haze` in the results JSON.
 
 **What fails**
 
-- `bass`: haze up by more than 3 dB, or the share of short windows up by more than
-  10 points.
-- `control`: the same, or the share of KBD frames up by more than 5 points.
-- `attack`: the share of short windows down by more than 10 points, so a rule that
-  lets bass-heavy frames go long does not take real attacks with it.
-- A case the baseline measured but the candidate did not (a crashed encode, an
-  empty measurement) fails. A baseline without the metric (a cache from before it
-  existed) skips.
+- `bass` and `control`: haze up by more than 3 dB against the baseline.
+- `attack`: the pre-onset error up by more than 1.3 dB on average over the kicks, or
+  by more than 6 dB at any one kick.
+- A case the baseline measured but the candidate did not (a crashed encode, a
+  missing block) fails. A baseline without the metric (for example a cached result)
+  skips.
 
-**Reference values** (an encoder with the defect, then one without it; haze and
-share of short windows): LC `-q 200` +38 dB / 0%, then +16 dB / 0%; HE `-q 50`
-+55 dB / 100%, then +21 dB / 0%; HE `-b 32` +54 dB / 100%, then +22 dB / 0%. Both
-treble controls are unchanged by the fix (+0.3 dB and -0.8 dB). On the attack clip
-the share of short windows goes from 21% to 13%: the fix ends the short run a frame
-or two earlier, in each kick's decay, and the 20 ms before each onset does not move.
-These agree on macOS clang and on Linux GCC 13 for amd64 and arm64: the window
-decisions are identical and the haze agrees to within half a dB.
+The attack thresholds come from a known-answer run: an encoder forced to code every
+frame long raises the pre-onset error by 2.7 dB on average (worst kick 5.4 dB),
+which fails on the mean; a change that lets only bass-heavy frames go long measures
++0.05 dB on average (worst kick 0.5 dB), which passes. This catches an
+all-long regression, not a mild one. The share of short windows is deliberately not
+gated: it moves with legitimate changes to block switching that leave the audio no
+worse.
+
+**Reference values** (an encoder with the defect, then one without it): haze LC
+`-q 200` +38 dB then +16 dB; HE `-q 50` +55 dB then +21 dB; HE `-b 32` +54 dB then
++22 dB; both treble controls +0.3 dB and -0.8 dB, unchanged. The pre-onset error is
+-13.9, -8.9, -10.7, -9.0 and -9.8 dB at the five kicks and moves by at most 0.5 dB.
+These agree on macOS clang and on Linux GCC 13 for amd64 and arm64: the haze to
+within half a dB, and the pre-onset error to within 0.6 dB per kick (identical for the encoder with the defect).
 
 **Limits**: one synthetic passage at one pitch. A bass with many strong harmonics,
 or at another pitch, exercises different paths (the HE core already codes a pure
@@ -278,6 +292,7 @@ or at another pitch, exercises different paths (the HE core already codes a pure
 Phase 4 does not depend on the rate-control mode, so each of the three
 rate-control jobs per architecture repeats the same measurement; it takes a few
 seconds.
+
 ## Multi-Encoder Leaderboard (`leaderboard.yml`)
 
 The repository includes an automated workflow to compare `faac` against other

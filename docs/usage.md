@@ -61,7 +61,7 @@ The script runs four phases:
 2. **Phase 2** — perceptual quality (MOS) automatically evaluated via `visqol-python` (for `speech`-mode scenarios) or `Zimtohrli` (for `audio`-mode ones); the engine follows the scenario's mode, not its sample rate.
 3. **Phase 3** — stereo image fidelity (inter-channel coherence error), so joint
    stereo doesn't silently degrade the stereo image.
-4. **Phase 4** — bass haze (`phase4_haze.py`): a short synthetic clip of a loud bass over digital silence, encoded with fixed options (LC and HE), measuring the window decisions and the decoded spectrum above 1.2 kHz. It needs only the `faac` binary, is skipped for other encoders and with `--skip-encode` or `--skip-haze`, and a failure leaves the block out rather than failing the run. See [Bass Haze](metrics.md#bass-haze).
+4. **Phase 4** — bass haze (`phase4_haze.py`): short synthetic clips (a loud bass over digital silence, the same bass under quiet treble, and kick drums) encoded with fixed options (LC and HE), measuring the decoded spectrum above 1.2 kHz and the error just before each kick. It needs only the `faac` binary, is skipped for other encoders and with `--skip-encode` or `--skip-haze`, and a failure leaves the block out rather than failing the run. See [Bass Haze](metrics.md#bass-haze).
 
 ### Filtering tests and scenarios
 
