@@ -143,7 +143,7 @@ Summary, and writes `summary.md` for a PR comment.
 | `summary-output` | Output filename for the Markdown summary. | No | `summary.md` |
 | `cases-output` | Output filename for per-clip test cases details (optional). | No | |
 | `strict-decode` | Treat candidate decode validation failures as hard regressions. | No | `false` |
-| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`). | No | |
+| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`, `haze`). | No | |
 | `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
 | `skip-graphs` | Skip generating Mermaid.js charts in the report. | No | `false` |
 | `fail-on-regression` | Fail job if compare_results detects regressions. | No | `true` |
@@ -180,9 +180,13 @@ validation. The report always shows a **Decode Errors** count.
 ## Choosing gates (`--gates`)
 
 `compare_results.py` records every verdict as a named gate — `mos`,
-`footprint`, `throughput`, `bd_rate` — and `--gates NAMES` selects which of
+`footprint`, `throughput`, `bd_rate`, `haze` — and `--gates NAMES` selects which of
 them may fail the run. Unselected gates still appear in the report, as skips,
 so narrowing the selection never hides an axis.
+
+The `haze` gate (see [Bass Haze](metrics.md#bass-haze); details [below](#the-haze-gate))
+guards a defect the corpora and MOS cannot see, so a change to window selection
+or block switching cannot bring it back without any other gate moving.
 
 **For rate-control work, gate on `bd_rate` and read `mos` as context:**
 
@@ -212,6 +216,87 @@ The third row is why `object_type` is recorded per encode (see
 `phase1_encode.py`): without it the ladder cannot be segmented, the fit runs
 across AUTO's HE→LC switch between 96k and 128k, and the loss reads as roughly
 half of what either segment actually shows.
+
+
+## The haze gate
+
+Phase 4 (`phase4_haze.py`) builds three deterministic test clips in memory (no
+download), encodes them with fixed options, decodes them and measures the decoded
+audio. It reads nothing from the stream's syntax, so it measures whatever the
+encoder wrote. The gate compares the candidate's measurements with the baseline's
+and asserts no absolute level.
+
+**Clips**
+
+- *Bass*: one second of digital silence, then six seconds of a 58 Hz bass with a
+  little second and third harmonic and a slow amplitude swell, on the 24-bit grid.
+  The 58 Hz period (827 samples) is longer than the encoder's 256-sample
+  block-switching window, which the HE core's attack test trips on.
+- *Treble control*: the same bass under broadband treble at -50 dB re full scale.
+  It has no haze to remove, so it must read about 0 dB.
+- *Attack control*: five kicks over digital silence, one a second, each with a
+  short click.
+
+**Cases and roles**
+
+| Case | Clip | Encoder settings | Role |
+| :--- | :--- | :--- | :--- |
+| `lc_q200` | bass | LC, `-q 200` (high-quality VBR) | bass |
+| `he_q50` | bass | HE-AAC, `-q 50` | bass |
+| `he_b32` | bass | HE-AAC, `-b 32` (total kbps) | bass |
+| `ctl_lc_q200` | treble control | LC, `-q 200` | control |
+| `ctl_he_q50` | treble control | HE-AAC, `-q 50` | control |
+| `atk_he_q50` | attack control | HE-AAC, `-q 50` | attack |
+
+LC and HE only select the encoder options: they are different code paths (window
+shape for LC, block switching for HE), which is why both are covered.
+
+**Measured per case**, from the decoded left channel:
+
+- *haze*: the decoded power between 1.2 and 8 kHz minus the source's, in dB, over
+  2.5-5.5 s (inside the bass, past the onset). The band stops at 8 kHz because that is
+  the waveform-coded core: HE-AAC codes what lies above parametrically (SBR), so its
+  level there follows the SBR noise floor and envelope, not the window leakage this
+  gate guards.
+- *pre-onset error* (attack clip): the error (decoded minus source, below 8 kHz,
+  after aligning the codec delay) in the 20 ms before each of the five kicks, in dB.
+  The kicks are at known times, so no onset detection is needed, and the cut at
+  8 kHz keeps out the SBR band, which is not waveform-matched. Only samples before
+  the kick are filtered: a zero-phase low-pass spreads energy backwards, so the
+  kick's own coding error must stay out of the window.
+
+The block is stored under `haze` in the results JSON.
+
+**What fails**
+
+- `bass` and `control`: haze up by more than 3 dB against the baseline.
+- `attack`: the pre-onset error up by more than 1.3 dB on average over the kicks, or
+  by more than 6 dB at any one kick.
+- A case the baseline measured but the candidate did not (a crashed encode, a
+  missing block) fails. A baseline without the metric (for example a cached result)
+  skips.
+
+The attack thresholds come from a known-answer run: an encoder forced to code every
+frame long raises the pre-onset error by 2.9 dB on average (worst kick 5.5 dB),
+which fails on the mean; a change that lets only bass-heavy frames go long measures
+-0.03 dB on average (worst kick +0.4 dB), which passes. This catches an
+all-long regression, not a mild one. The share of short windows is not gated: it
+moves with block-switching changes that leave the audio no worse.
+
+**Reference values** (an encoder with the defect, then one without it): haze LC
+`-q 200` +37.5 dB then +15.6 dB; HE `-q 50` +55.5 dB then +13.7 dB; HE `-b 32`
++54.2 dB then +7.3 dB; both treble controls 0.0 dB, unchanged. The pre-onset error
+is -13.9, -8.9, -10.7, -9.3 and -11.3 dB at the five kicks and moves by at most
+0.7 dB. These agree on macOS clang and on Linux GCC 13 for amd64 and arm64: the
+haze to within 0.3 dB, and the pre-onset error to within 0.6 dB per kick (identical
+for the encoder with the defect).
+
+**Limits**: one synthetic passage at one pitch. A bass with many strong harmonics,
+or at another pitch, exercises different paths (the HE core already codes a pure
+45 or 70 Hz bass long). It is a regression guard, not a perceptual ground truth.
+Phase 4 does not depend on the rate-control mode, so each of the three
+rate-control jobs per architecture repeats the same measurement; it takes a few
+seconds.
 
 ## Multi-Encoder Leaderboard (`leaderboard.yml`)
 

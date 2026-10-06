@@ -395,6 +395,90 @@ def check_throughput(suite_results, base, cand):
         add_gate(suite_results, "throughput", "pass", detail)
 
 
+# Haze gate (phase4_haze.py). The clips are a loud bass playing alone, the same
+# bass under quiet treble (a known answer: no haze to remove) and kicks over
+# silence. Everything is read from the decoded audio and judged against the
+# baseline run, never against an absolute level, so a change that lowers the
+# haze passes and one that raises it fails.
+HAZE_FAIL_DB = 3.0              # decoded 1.2-8 kHz power above the baseline's
+PRE_ONSET_MEAN_DB = 1.3         # mean rise of the error before the kicks
+PRE_ONSET_MAX_DB = 6.0          # rise at any single kick
+
+
+def _haze_regressions(role, b, c):
+    """What got worse between two cases of one role, as short phrases."""
+    if role == "attack":
+        rises = [cv - bv for bv, cv in zip(b["pre_db"], c["pre_db"])]
+        out = []
+        if sum(rises) / len(rises) > PRE_ONSET_MEAN_DB:
+            out.append("attacks smeared (mean)")
+        if max(rises) > PRE_ONSET_MAX_DB:
+            out.append("attacks smeared (one kick)")
+        return out
+    return ["more haze"] if c["haze_db"] - b["haze_db"] > HAZE_FAIL_DB else []
+
+
+def _haze_measure(role, m):
+    """The measurement a role is judged on, or None if the case lacks it."""
+    if role == "attack":
+        pre = m.get("pre_db")
+        return pre if pre and all(v is not None for v in pre) else None
+    return m.get("haze_db")
+
+
+def check_haze(suite_results, base, cand):
+    """Gate the bass-haze metrics against the baseline run.
+
+    "bass": the haze must not grow by more than HAZE_FAIL_DB. "control" (the
+    same bass under quiet treble) is judged the same way; it is a known answer
+    that reads about 0 dB. "attack" (kicks over silence): the error in the
+    20 ms before each kick must not rise by more than PRE_ONSET_MEAN_DB on
+    average or PRE_ONSET_MAX_DB at any kick, so a rule that lets bass go long
+    does not smear real attacks. That catches an all-long regression, not a
+    mild one. The share of short windows is not gated: it moves with
+    block-switching changes that leave the audio no worse.
+
+    A case the baseline measured but the candidate did not (a crashed encode, a
+    missing block) fails: a gate that quietly drops the cases it cannot read
+    passes exactly when something broke. Only a baseline without the metric
+    (for example a cached result) skips.
+    """
+    b_cases = (base.get("haze") or {}).get("cases") or {}
+    c_cases = (cand.get("haze") or {}).get("cases") or {}
+    if not b_cases:
+        add_gate(suite_results, "haze", "skip",
+                 "no haze cases in the baseline (produced without the metric?)")
+        return
+
+    parts, worse = [], []
+    for name in sorted(b_cases):
+        b, c = b_cases[name], c_cases.get(name)
+        role = (c or {}).get("role") or b.get("role") or "bass"
+        b_val = _haze_measure(role, b)
+        if b_val is None:
+            continue                        # the baseline could not measure it either
+        c_val = _haze_measure(role, c) if c else None
+        if c_val is None:
+            worse.append(f"{name} (candidate produced no measurement)")
+            continue
+        if role == "attack":
+            rises = [cv - bv for bv, cv in zip(b_val, c_val)]
+            parts.append(f"{name} pre-onset error {sum(rises) / len(rises):+.1f} dB mean, "
+                         f"{max(rises):+.1f} dB worst kick")
+        else:
+            parts.append(f"{name} haze {b_val:+.1f}->{c_val:+.1f} dB")
+        bad = _haze_regressions(role, {**b, "haze_db": b.get("haze_db"), "pre_db": b.get("pre_db")}, c)
+        if bad:
+            worse.append(f"{name} ({', '.join(bad)})")
+    if not parts and not worse:
+        add_gate(suite_results, "haze", "skip", "haze cases carry no measurements")
+        return
+    detail = "; ".join(parts)
+    if worse:
+        add_gate(suite_results, "haze", "fail", f"{detail}; regressed: {', '.join(worse)}")
+    else:
+        add_gate(suite_results, "haze", "pass", detail)
+
 def get_fp_key(results, field):
     """Stable string identity from a fingerprint dict in a results file."""
     fp = results.get(field) or {}
@@ -804,6 +888,7 @@ def analyze_pair(base_file, cand_file):
     check_footprint(suite_results, base, cand)
     check_throughput(suite_results, base, cand)
     check_bd_rate(suite_results, base, cand)
+    check_haze(suite_results, base, cand)
 
     return suite_results
 

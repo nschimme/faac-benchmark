@@ -39,6 +39,7 @@ def main():
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) computation")
+    parser.add_argument("--skip-haze", action="store_true", help="Skip the bass-haze check (synthetic clip, faac only)")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
     parser.add_argument("--include-tests", help="Comma-separated list of test filename globs to include")
@@ -86,6 +87,7 @@ def main():
     phase1_script = os.path.join(script_dir, "phase1_encode.py")
     phase2_script = os.path.join(script_dir, "phase2_mos.py")
     phase3_script = os.path.join(script_dir, "phase3_stereo.py")
+    phase4_script = os.path.join(script_dir, "phase4_haze.py")
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(script_dir, "data", "external")
 
     # Logic for A/B or Sweep
@@ -213,6 +215,21 @@ def main():
             if args.skip_transient:
                 cmd_phase3.append("--skip-transient")
             subprocess.run(cmd_phase3, check=True)
+
+        # Phase 4: bass haze. A synthetic clip encoded with fixed options; it only
+        # reads the faac binary, so other encoders and refresh-only runs skip it.
+        if (args.encoder == "faac" and not args.skip_encode and not args.skip_haze
+                and os.path.exists(run["output"])):
+            print(">>> Phase 4: Bass Haze")
+            cmd_phase4 = [sys.executable, phase4_script, run["output"]]
+            if args.encoder_bin:
+                cmd_phase4.extend(["--encoder-bin", args.encoder_bin])
+            if args.encoder_lib:
+                cmd_phase4.extend(["--encoder-lib", args.encoder_lib])
+            # A measurement that cannot run (no faac, a stub binary) leaves the haze
+            # block out and the gate skips; it must not take the whole run down.
+            if subprocess.run(cmd_phase4, env=run_env).returncode != 0:
+                print("Warning: Phase 4 (bass haze) failed; the haze gate will skip.")
 
         # Update JSON with decoder metadata
         if os.path.exists(run["output"]):
