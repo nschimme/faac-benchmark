@@ -314,3 +314,31 @@ Go to **Actions** -> **Multi-Encoder Leaderboard** -> **Run workflow**.
 
 Pass `--faac-git-sha` to `run_benchmark.py` to stamp the
 result JSON with build provenance (`faac_git_sha`, `faac_args`), so CI artifacts are self-describing and comparable across runs.
+
+### Decoder output gate
+
+Supply `faad-bin` (candidate) and `faad-ref-bin` (baseline), both defaulting to
+empty, to enable Phase 5. The equivalent runner options are `--decoder-bin` and
+`--decoder-ref-bin`; `--skip-decoder-diff` disables it. No change to the scoring
+`--decoder` selection is needed.
+
+The candidate's `decoder_diff` block compares both binaries on the same Phase 1
+matrix streams, sorted by path and capped at 200. Missing binaries or a missing
+candidate block skip the `decoder` gate with a reason. A candidate decode failure
+where the baseline succeeds, a frame-count difference, or any PCM difference
+fails. Baseline decode failures are recorded in cases, not counted as candidate
+regressions. The PR summary contains one decoder-output line; changed and failed
+stream details appear only in the cases document.
+
+`--gates` lists gates permitted to fail the job, exactly as for `haze` and
+`footprint`. Include `decoder` to enforce it. To acknowledge an intentional decoder
+change, explicitly select the other gates and omit `decoder`, for example
+`--gates mos,footprint,throughput,bd_rate,haze`. The change remains visible.
+
+To check an existing directory independently (start with an empty JSON object):
+
+```sh
+printf '{}\n' > results/decoder-smoke.json
+python3 phase5_decoder_diff.py results/decoder-smoke.json path/to/streams \
+  --all-streams --decoder-ref-bin path/to/base/faad --decoder-bin path/to/cand/faad
+```

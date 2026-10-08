@@ -479,6 +479,34 @@ def check_haze(suite_results, base, cand):
     else:
         add_gate(suite_results, "haze", "pass", detail)
 
+def check_decoder(suite_results, base, cand):
+    """Exact output gate; the candidate block already compares both binaries."""
+    block = cand.get("decoder_diff")
+    if block is not None and "error" in block:
+        add_gate(suite_results, "decoder", "fail", f"decoder diff did not run: {block['error']}")
+        return
+    if block is not None and "skipped" in block:
+        add_gate(suite_results, "decoder", "skip", block["skipped"])
+        return
+    if not block:
+        baseline = base.get("decoder_diff")
+        if baseline is not None and "skipped" not in baseline:
+            add_gate(suite_results, "decoder", "fail", "candidate produced no decoder diff")
+        else:
+            add_gate(suite_results, "decoder", "skip", "no candidate decoder_diff block; baseline faad unavailable or phase not run")
+        return
+    base_failed = {x["file"] for x in block["failed"] if x["side"] == "base"}
+    regressions = [x["file"] for x in block["failed"]
+                   if x["side"] == "cand" and x["file"] not in base_failed]
+    regressions.extend(x["file"] for x in block["changed"])
+    from phase5_decoder_diff import summary
+    detail = summary(block)
+    if regressions:
+        detail += "; " + ", ".join(sorted(set(regressions)))
+    add_gate(suite_results, "decoder", "fail" if regressions else "pass", detail)
+    suite_results["decoder_diff"] = block
+
+
 def get_fp_key(results, field):
     """Stable string identity from a fingerprint dict in a results file."""
     fp = results.get(field) or {}
@@ -889,6 +917,7 @@ def analyze_pair(base_file, cand_file):
     check_throughput(suite_results, base, cand)
     check_bd_rate(suite_results, base, cand)
     check_haze(suite_results, base, cand)
+    check_decoder(suite_results, base, cand)
 
     return suite_results
 
@@ -1301,7 +1330,7 @@ def main():
                              "(default: report only, do not fail the run)")
     parser.add_argument("--gates", metavar="NAMES",
                         help="Comma-separated gate names allowed to fail "
-                             "(mos, footprint, throughput). Default: all. "
+                             "(mos, footprint, throughput, bd_rate, haze, decoder). Default: all. "
                              "Unselected gates are reported as skips.")
     parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
                         help="Accept up to BYTES of .text+.rodata+.data growth without failing. "
@@ -1513,6 +1542,21 @@ def main():
                         summary_lines.append(f"\n_...and {len(data['regressions']) - 3} additional regressed clips collapsed below._\n")
 
     # Build the full report
+    from phase5_decoder_diff import summary as decoder_summary
+    decoder_blocks = [c.get("decoder_diff") for b, c in sanity_inputs.values()]
+    measured = [b for b in decoder_blocks if b and "skipped" not in b]
+    errors = [b["error"] for b in decoder_blocks if b and "error" in b]
+    if errors:
+        summary_lines.append("\n" + decoder_summary({"error": "; ".join(errors)}))
+    elif measured:
+        combined = {"streams": sum(b["streams"] for b in measured),
+                    "unchanged": sum(b["unchanged"] for b in measured),
+                    "changed": [x for b in measured for x in b["changed"]],
+                    "failed": [x for b in measured for x in b["failed"]]}
+        summary_lines.append("\n" + decoder_summary(combined))
+    else:
+        summary_lines.append("\n" + decoder_summary(next((b for b in decoder_blocks if b), None)))
+
     report = list(summary_lines)
 
     if not summary_only and (final_base_sha or final_cand_sha):
@@ -1669,6 +1713,8 @@ def main():
                     icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
                     report.append("\n**Gates**")
                     for g in data["gates"]:
+                        if g["name"] == "decoder":
+                            continue  # one summary line; stream details belong only in cases
                         if g["name"] == "footprint":
                             fp_key = f"{g['status']}:{g['detail']}"
                             if fp_key in seen_footprint_details and len(all_suite_data) > 1:
@@ -1716,6 +1762,15 @@ def main():
 
     # Build individual test cases document
     cases_lines = ["<details><summary><b>📋 View Individual Test Cases</b></summary>\n", "# Individual Test Cases Report\n"]
+    for name, (base, cand) in sorted(sanity_inputs.items()):
+        block = cand.get("decoder_diff") or {}
+        if block.get("changed") or block.get("failed"):
+            cases_lines.append(f"\n### Decoder output: {name}\n")
+            for case in block.get("changed", []):
+                cases_lines.append("- " + json.dumps(case, ensure_ascii=False))
+            for case in block.get("failed", []):
+                cases_lines.append("- " + json.dumps(case, ensure_ascii=False))
+
     total_cases_count = sum(len(d["all_cases"]) for d in all_suite_data.values())
     cases_filename = args.cases_output
 

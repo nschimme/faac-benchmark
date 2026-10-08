@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library override")
     parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
+    parser.add_argument("--decoder-ref-bin", help="Baseline faad binary for exact decoder comparison")
+    parser.add_argument("--skip-decoder-diff", action="store_true", help="Skip Phase 5 decoder comparison")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     parser.add_argument("--coverage", type=int, default=100, help="Coverage percentage (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual quality (MOS) computation")
@@ -230,6 +232,26 @@ def main():
             # block out and the gate skips; it must not take the whole run down.
             if subprocess.run(cmd_phase4, env=run_env).returncode != 0:
                 print("Warning: Phase 4 (bass haze) failed; the haze gate will skip.")
+
+        # Phase 5 compares both faad binaries on this run's phase 1 streams.
+        if (args.decoder_ref_bin and args.decoder_bin and not args.skip_decoder_diff
+                and not args.skip_encode and os.path.exists(run["output"])):
+            from phase5_decoder_diff import store_block
+            try:
+                subprocess.run(
+                    [sys.executable, os.path.join(script_dir, "phase5_decoder_diff.py"),
+                     run["output"], os.path.join(script_dir, "output"),
+                     "--decoder-ref-bin", args.decoder_ref_bin,
+                     "--decoder-bin", args.decoder_bin],
+                    check=True, stderr=subprocess.PIPE, text=True)
+            except Exception as exc:
+                code = getattr(exc, "returncode", None)
+                stderr = getattr(exc, "stderr", None) or ""
+                lines = (stderr.strip() or str(exc) or type(exc).__name__).splitlines()
+                last_line = lines[-1]
+                reason = f"exit code {code}: {last_line}" if code is not None else f"{type(exc).__name__}: {last_line}"
+                store_block(run["output"], {"error": reason})
+                print(f"Warning: Phase 5 (decoder diff) failed: {reason}")
 
         # Update JSON with decoder metadata
         if os.path.exists(run["output"]):

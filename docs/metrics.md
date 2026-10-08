@@ -135,3 +135,19 @@ Evaluating library memory requirements separates non-volatile code storage (Flas
 - **Flash / Code Footprint (ROM)**: Calculated as `.text + .rodata + .data`. Includes executable instructions (`.text`), read-only constants/tables (`.rodata`), and initial values for writable variables (`.data` stored in Flash before startup).
 - **Static Process RAM Footprint**: Calculated as `.data + .bss`. Initialized and uninitialized writable variables allocated in RAM when loaded into process memory. Converting mutable tables to `const` reduces `.data`, directly saving RAM.
 - **Peak Dynamic RAM (Max RSS)**: Measured in isolated single-process runs during throughput benchmark passes to track peak physical memory high-water marks (in KB/MB) free from parallel worker pool overhead.
+
+## Decoder output equality
+
+Phase 5 (`phase5_decoder_diff.py`) decodes each selected `.m4a` stream once with
+baseline faad and once with candidate faad into fresh temporary WAV paths. It
+compares signed 16-bit PCM samples exactly, excluding WAV headers. It performs no
+alignment, truncation, tolerance, MOS scoring, or reference-decoder comparison.
+Frame counts are samples per channel; `first_diff_sample` is a zero-based
+interleaved sample index (the common-prefix length for a pure length change).
+`max_abs_diff` is in PCM integer units, and `snr_db_vs_base` uses the baseline
+energy and zero-pads unequal lengths for diagnostics only. Undefined SNR is null.
+Channel-count or sample-rate changes also count as changed output.
+
+The JSON `decoder_diff` block counts `streams` and `unchanged`, retaining details
+only in `changed` and `failed`; missing binaries produce `{"skipped": "reason"}`.
+The `decoder` gate answers exact equality, with no thresholds.
