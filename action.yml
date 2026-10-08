@@ -4,6 +4,14 @@ inputs:
   faac-bin:
     description: 'Path to the faac binary'
     required: true
+  faad-bin:
+    description: 'Candidate faad binary for the decoder output gate'
+    required: false
+    default: ''
+  faad-ref-bin:
+    description: 'Baseline faad binary for the decoder output gate'
+    required: false
+    default: ''
   libfaac-so:
     description: 'Path to the libfaac.so library'
     required: false
@@ -165,6 +173,14 @@ runs:
           EXTRA_ARGS="$EXTRA_ARGS --build-dir ${{ inputs.build-dir }}"
         fi
 
+        DEC_ARGS=()
+        if [ -n "${{ inputs.faad-bin }}" ]; then
+          DEC_ARGS+=(--decoder-bin "${{ inputs.faad-bin }}")
+        fi
+        if [ -n "${{ inputs.faad-ref-bin }}" ]; then
+          DEC_ARGS+=(--decoder-ref-bin "${{ inputs.faad-ref-bin }}")
+        fi
+
         ENC_LIB_ARG=""
         if [ -n "${{ inputs.libfaac-so }}" ]; then
           ENC_LIB_ARG="--encoder-lib ${{ inputs.libfaac-so }}"
@@ -174,6 +190,7 @@ runs:
           "${{ inputs.run-name }}" \
           "${{ inputs.output-json }}" \
           --encoder-bin "${{ inputs.faac-bin }}" \
+          "${DEC_ARGS[@]}" \
           $ENC_LIB_ARG \
           --coverage "${{ inputs.coverage }}" \
           $EXTRA_ARGS

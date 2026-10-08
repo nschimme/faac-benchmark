@@ -54,6 +54,10 @@ def render_job_summary(data, name_override=None):
     if meta_bits:
         lines.append(" | ".join(meta_bits) + "\n")
 
+    if "decoder_diff" in data:
+        from phase5_decoder_diff import summary
+        lines.append(summary(data["decoder_diff"]) + "\n")
+
     # 1. Code Footprint Section
     lib_size = data.get("lib_size")
     lib_sections = data.get("lib_sections", {})
