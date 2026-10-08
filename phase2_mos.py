@@ -290,11 +290,17 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                 else:
                     env.setdefault("NUMBA_THREADING_LAYER", "omp")
 
-                proc = subprocess.run([sys.executable, "-c", _ZIMTOHRLI_SUBPROCESS_SCRIPT, v_ref, v_deg],
-                                      capture_output=True, text=True, timeout=30, env=env)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    data = json.loads(proc.stdout.strip())
-                    return data.get("mos"), data.get("backend", "zimtohrli")
+                proc = None
+                for _attempt in range(2):
+                    proc = subprocess.run([sys.executable, "-c", _ZIMTOHRLI_SUBPROCESS_SCRIPT, v_ref, v_deg],
+                                          capture_output=True, text=True, timeout=30, env=env)
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        data = json.loads(proc.stdout.strip())
+                        return data.get("mos"), data.get("backend", "zimtohrli")
+                tail = proc.stderr.strip().splitlines()[-3:] if proc.stderr else []
+                print(f"  ERROR: zimtohrli scoring subprocess failed twice (exit {proc.returncode}): "
+                      f"{' | '.join(tail) or 'no output'}")
+                return None, "zimtohrli"
             except Exception as e:
                 print(f"  Zimtohrli evaluation failed: {e}")
                 return None, "zimtohrli"
