@@ -261,3 +261,78 @@ Helix wrapper built by `scripts/build_helix_aac.sh`. Inputs must be ADTS
 python3 scripts/corrupt_decode_check.py --decoder bin/helix-aac-dec \
     [--seeds 40] [--timeout 20] in1.aac in2.aac ...
 ```
+
+## On-device decoder benchmark
+
+Results, methodology and tested versions are in [esp32.md](esp32.md).
+
+### `scripts/esp32/esp32_dec_bench.py`
+
+Decode speed, memory and flash cost of AAC decoders running on real ESP32
+boards: libhelix (fixed point) vs FAAD2 (`FIXED_POINT`). Other decoders (FAAD3,
+FAAC's own) plug in by adding an entry to the `CODECS` table in
+`esp32_dec_bench.py` plus an adapter under `scripts/esp32/firmware_dec/` (see its
+`README.md` for the build switches and the serial protocol). Decoder sources
+are referenced in place, not copied.
+
+Prerequisite: a pinned ESP-IDF (v5.5.5) installed under
+`scripts/esp32/.toolchain`, never system-wide.
+
+```bash
+scripts/esp32/setup_idf.sh                                    # once
+python3 scripts/esp32/esp32_dec_bench.py build  --target esp32s3 [--codec helix,faad2] [--sbr 0|1]
+python3 scripts/esp32/esp32_dec_bench.py run    --target esp32s3 --port /dev/serial/by-id/... \
+    [--gate] [--scenarios A,B] [--profiles lc,he] [--limit N] [--loops 3] [--verify N] \
+    [--bitstreams comparison_results.json] [--encoder faac]
+python3 scripts/esp32/esp32_dec_bench.py report --target esp32s3 [--output summary.md]
+```
+
+`build` compiles one firmware per codec and records each codec archive's flash
+footprint from the IDF map. `run` flashes each codec in turn and sends it the
+bitstreams; `report` prints a markdown table (and writes it with `--output`).
+`--target` is `esp32`, `esp32s3` (default) or `esp32c6`; `--sbr 0` builds
+AAC-LC only.
+
+What is measured, per clip:
+
+- **Cycles** — best of `--loops` passes (default 3) of the CPU cycle count
+  around the decode calls only; the decoder is closed and reopened between
+  passes outside the timed region. Reported as x real time and as MHz needed
+  for 1x real time.
+- **Heap and stack** — internal-heap high-water use and main-task stack use.
+- **Flash footprint** — the codec adapter's archive (text + rodata + data) from
+  the IDF map.
+- **SNR vs ffmpeg** (optional) — with `--verify N` the device returns its PCM
+  for every Nth clip and it is compared with ffmpeg's decode, searching
+  whole-frame alignment offsets. Slow (PCM crosses the serial link), so off by
+  default.
+
+Bitstreams come from the encoder-phase results JSON (`comparison_results.json`
+by default): one per (scenario, clip, profile) of the chosen `--encoder`,
+converted from M4A to raw ADTS with ffmpeg. `--gate` restricts to the fixed
+gate clips. Clips larger than the target can hold are skipped.
+
+Results go to `results/esp32_dec_<target>.json`. `run` saves after every clip and
+skips clips already recorded with status 0 for that codec, so an interrupted
+run resumes by re-running the same command; delete the file (or the rows) to
+re-measure. `report` only compares bitstreams that every codec decoded.
+
+Caveats:
+
+- Only the S3 is a benchmark target. The ESP32 and C6 have too little RAM for
+  the larger clips and exist as smoke tests of the firmware.
+- Boards are reached through their USB-UART bridges on UART0 at 921600 baud;
+  pass that bridge's port. Don't run `idf.py monitor` while the harness owns
+  the port.
+- FAAD2 builds with SBR keep PS enabled: fixed point plus `SBR_LOW_POWER` does
+  not compile.
+- FAAD2 needs about 46 KB of stack.
+- Run from the repo root. Needs `ffmpeg` on `PATH`, and `numpy` for `--verify`.
+
+### `scripts/esp32/esp32_enc_bench.py` (work in progress)
+
+On-device FAAC encoder benchmark (LC and HE-AAC v1): xRT, MHz for 1x RT, bitrate accuracy, heap, stack and
+flash on ESP32 / S3 / C6, with the bitstream checked and decoded by ffmpeg. Separate firmware
+(`scripts/esp32/firmware_enc/`) and results (`results/esp32_enc_<target>.json`) from the decoder tool;
+usage and smoke numbers are in [esp32.md](esp32.md#faac-encoder-work-in-progress), tests in
+`tests/test_esp32_enc_bench.py`.

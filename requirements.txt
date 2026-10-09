@@ -1,4 +1,5 @@
 ffmpeg-python
+pyserial
 scipy
 visqol-python[accel,lattice]>=3.8.0
 zimtohrli
