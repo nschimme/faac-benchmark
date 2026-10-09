@@ -78,6 +78,36 @@ python3 scripts/winseq.py out.aac [more.aac ...]
 python3 scripts/winseq.py --frames out.aac
 ```
 
+## Full-CLI decoder A/B timing
+
+`scripts/decoder_ab.py` compares two FAAD executables on the original AAC
+inputs, after requiring byte-identical WAV output at 16-bit integer and
+32-bit float. It uses the shared stream-copy preparation and one-decode timing
+primitives from `codec_bench.decoders`; each input gets one warmup per decoder
+followed by serial, rotating decoder order for every measured round. The
+default workload is 600 seconds and seven rounds. The JSON retains executable
+and resolved `libfaad` hashes, preparation metadata, commands, every timed
+attempt, medians and spreads, and per-round paired speed changes. A control
+decoder is optional and serves as a run-to-run noise reference; the report
+does not claim statistical significance.
+
+```bash
+python3 scripts/decoder_ab.py \
+  --baseline /path/to/base/faad \
+  --candidate /path/to/candidate/faad \
+  --control /path/to/control/faad \
+  --inputs data/external/audio/clip-a.wav data/external/audio/clip-b.wav \
+  --iterations 7 --audio-seconds 600 --bits 16 32f \
+  --json /tmp/faad-decoder-ab.json
+```
+
+Use `--baseline-lib`, `--candidate-lib`, and `--control-lib` when the intended
+`libfaad` cannot be resolved from the executable's linked libraries. The
+preflight decodes each original input before the timing workload is prepared;
+any output mismatch stops the timing run.
+
+The helper's unit tests run with `python3 -m unittest discover -s tests -p test_decoder_ab.py`.
+
 ## Transient fidelity / TNS tooling
 
 ### `scripts/score_transient.py`
@@ -261,3 +291,20 @@ Helix wrapper built by `scripts/build_helix_aac.sh`. Inputs must be ADTS
 python3 scripts/corrupt_decode_check.py --decoder bin/helix-aac-dec \
     [--seeds 40] [--timeout 20] in1.aac in2.aac ...
 ```
+
+## Decoder timing protocol
+
+`compare_codecs.py` retains its concurrent timing default (`--speed-workers 0`,
+all available cores). Use `--speed-workers 1` for an isolated timing pass and
+`--speed-audio-seconds 600` to extend the timing workload. Current leaderboards
+use median latency after a separate warmup; results retain the minimum and every
+raw latency in `speed_timing`. Reports label concurrent timing, which includes
+contention. Old result files remain readable using their minimum latency.
+The dedicated speed pass is remeasured even with `--resume`; quality results
+can be reused, but cached baseline timing is not mixed with fresh candidate timing.
+
+For loader-setting executable wrappers, supply explicit `--baseline-lib`,
+`--candidate-lib` and (when used) `--control-lib`: the helper hashes the wrapper
+and target executable, but cannot infer arbitrary wrapper loader settings.
+Automatic workload calibration is not implemented; choose the same explicit
+audio duration for all compared builds and inspect actual elapsed samples.
