@@ -38,7 +38,7 @@ DEFAULT_BITRATES = [20, 32, 48, 64, 96, 128]
 
 def encode_lc(bin_path, wav_path, aac_path, bitrate):
     return sp.encode_aac(bin_path, wav_path, aac_path, bitrate,
-                          extra_args=['--object-type=lc'])
+                          extra_args=['--object-type=lc', '--overwrite'])
 
 
 def binary_ab(bin_a, bin_b, clips, bitrates):
