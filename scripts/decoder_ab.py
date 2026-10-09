@@ -2,7 +2,6 @@
 """Paired full-CLI FAAD decoder comparison on original AAC inputs."""
 
 import argparse
-import filecmp
 import hashlib
 import json
 import math
@@ -19,6 +18,7 @@ if str(ROOT) not in sys.path:
 from codec_bench.decoders import (FAADDecoder, prepared_decode_input, time_decode_once,
                                   resolved_decoder_library, timing_file_identity)
 from utils import resolve_wrapper_target, safe_run
+from codec_bench.wav_pcm import wav_pcm_identity
 
 
 def sha256_file(path):
@@ -93,13 +93,15 @@ def preflight_pcm(decoders, input_paths, output_dir, bit_depths):
                         "sha256": file_sha256(output),
                         "bytes": output.stat().st_size,
                         "command": command,
+                        **wav_pcm_identity(output),
                     }
 
                 baseline = outputs[decoders[0].tool_id]
                 for decoder in decoders[1:]:
                     candidate = outputs[decoder.tool_id]
-                    same = (baseline["bytes"] == candidate["bytes"] and
-                            filecmp.cmp(baseline["path"], candidate["path"], shallow=False))
+                    same = (baseline["format"] == candidate["format"] and
+                            baseline["pcm_bytes"] == candidate["pcm_bytes"] and
+                            baseline["pcm_sha256"] == candidate["pcm_sha256"])
                     if not same:
                         raise RuntimeError(f"PCM mismatch at {bits}-bit for {source}: "
                                            f"{decoders[0].name}={baseline['sha256']} "

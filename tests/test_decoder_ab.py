@@ -1,3 +1,4 @@
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.decoder_ab as decoder_ab
+
+
+def wav_bytes(payload, junk=False):
+    fmt = struct.pack('<4sIHHIIHH', b'fmt ', 16, 1, 1, 48000, 96000, 2, 16)
+    extra = b'JUNK' + struct.pack('<I', 28) + bytes(28) if junk else b''
+    body = b'WAVE' + extra + fmt + b'data' + struct.pack('<I', len(payload)) + payload
+    return b'RIFF' + struct.pack('<I', len(body)) + body
 
 
 class DummyDecoder:
@@ -67,7 +75,7 @@ class TestDecoderAB(unittest.TestCase):
             source.write_bytes(b"source")
 
             def fake_run(command, env=None, capture_output=True, check=False):
-                Path(command[command.index("-o") + 1]).write_bytes(b"identical wav bytes")
+                Path(command[command.index("-o") + 1]).write_bytes(wav_bytes(b"same PCM", junk=command[0] == "candidate"))
                 return SimpleNamespace(returncode=0, stderr="")
 
             with patch.object(decoder_ab, "safe_run", side_effect=fake_run):
@@ -75,8 +83,8 @@ class TestDecoderAB(unittest.TestCase):
 
             self.assertTrue(rows[0]["byte_identical"])
             self.assertIn("-b", rows[0]["outputs"]["baseline"]["command"])
-            self.assertEqual(rows[0]["outputs"]["baseline"]["sha256"],
-                             rows[0]["outputs"]["candidate"]["sha256"])
+            self.assertEqual(rows[0]["outputs"]["baseline"]["pcm_sha256"],
+                             rows[0]["outputs"]["candidate"]["pcm_sha256"])
 
     def test_pcm_preflight_rejects_mismatch(self):
         decoders = [DummyDecoder("baseline"), DummyDecoder("candidate")]
@@ -85,8 +93,8 @@ class TestDecoderAB(unittest.TestCase):
             source.write_bytes(b"source")
 
             def fake_run(command, env=None, capture_output=True, check=False):
-                payload = b"base" if command[0] == "baseline" else b"candidate"
-                Path(command[command.index("-o") + 1]).write_bytes(payload)
+                payload = b"base" if command[0] == "baseline" else b"cand"
+                Path(command[command.index("-o") + 1]).write_bytes(wav_bytes(payload))
                 return SimpleNamespace(returncode=0, stderr="")
 
             with patch.object(decoder_ab, "safe_run", side_effect=fake_run):

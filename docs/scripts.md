@@ -81,7 +81,8 @@ python3 scripts/winseq.py --frames out.aac
 ## Full-CLI decoder A/B timing
 
 `scripts/decoder_ab.py` compares two FAAD executables on the original AAC
-inputs, after requiring byte-identical WAV output at 16-bit integer and
+inputs, after requiring matching PCM formats and byte-identical audio payloads
+across RIFF and RF64 WAV output at 16-bit integer and
 32-bit float. It uses the shared stream-copy preparation and one-decode timing
 primitives from `codec_bench.decoders`; each input gets one warmup per decoder
 followed by serial, rotating decoder order for every measured round. The
@@ -104,7 +105,7 @@ python3 scripts/decoder_ab.py \
 Use `--baseline-lib`, `--candidate-lib`, and `--control-lib` when the intended
 `libfaad` cannot be resolved from the executable's linked libraries. The
 preflight decodes each original input before the timing workload is prepared;
-any output mismatch stops the timing run.
+WAV headers and ancillary chunks may differ; any PCM or format mismatch stops the timing run.
 
 The helper's unit tests run with `python3 -m unittest discover -s tests -p test_decoder_ab.py`.
 
@@ -308,3 +309,6 @@ For loader-setting executable wrappers, supply explicit `--baseline-lib`,
 and target executable, but cannot infer arbitrary wrapper loader settings.
 Automatic workload calibration is not implemented; choose the same explicit
 audio duration for all compared builds and inspect actual elapsed samples.
+
+RIFF/RF64 inspection is shared by decoder A/B preflight, throughput byte counts,
+and Phase 5 PCM comparisons. PCM hashes are streamed in 1 MiB blocks.

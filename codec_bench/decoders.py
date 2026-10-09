@@ -16,6 +16,8 @@ import subprocess
 import shutil
 import re
 
+from codec_bench.wav_pcm import wav_pcm_info
+
 import statistics
 import hashlib
 import platform
@@ -511,6 +513,7 @@ def time_decode_once(decoder, bitstream_input, output_dir):
         info = sf.info(scratch)
         return {"milliseconds": seconds * 1000.0, "peak_rss_kb": rss,
                 "command": command, "output_bytes": os.path.getsize(scratch),
+                "pcm_bytes": wav_pcm_info(scratch)["pcm_bytes"],
                 "output_info": {"rate": info.samplerate, "channels": info.channels,
                                 "frames": info.frames, "subtype": info.subtype}}
     finally:
@@ -531,7 +534,7 @@ def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio
         return None
     latencies = [r["milliseconds"] for r in measured]
     mean = statistics.mean(latencies)
-    pcm_bytes = max(0, measured[0]["output_bytes"] - 44)
+    pcm_bytes = measured[0].get("pcm_bytes", max(0, measured[0]["output_bytes"] - 44))
     return {"mean_ms": mean, "std_ms": statistics.pstdev(latencies),
             "median_ms": statistics.median(latencies), "best_ms": min(latencies),
             "samples_ms": latencies, "warmup_samples_ms": [r["milliseconds"] for r in cold],
@@ -783,8 +786,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
 
         if valid:
             try:
-                with wave.open(output_path, "rb") as w:
-                    dec_channels = w.getnchannels()
+                dec_channels = wav_pcm_info(output_path)["format"][1]
             except Exception:
                 dec_channels = None
 
@@ -801,8 +803,9 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 # encoder's own lossy error, not just decoder bugs).
                 snr_db = compute_snr(ref_path, output_path)
                 try:
-                    with wave.open(ref_path, "rb") as rw, wave.open(output_path, "rb") as dw:
-                        gapless_length_delta = dw.getnframes() - rw.getnframes()
+                    ri, di = wav_pcm_info(ref_path), wav_pcm_info(output_path)
+                    gapless_length_delta = (di["pcm_bytes"] // di["format"][3] -
+                                            ri["pcm_bytes"] // ri["format"][3])
                 except Exception:
                     gapless_length_delta = None
 

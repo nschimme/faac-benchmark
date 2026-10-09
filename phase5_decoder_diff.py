@@ -17,18 +17,20 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import wave
+from codec_bench.wav_pcm import wav_pcm_info
 
 import numpy as np
 
 
 def read_pcm(path):
     # faad's default WAV output is signed 16-bit PCM. Headers are not compared.
-    with wave.open(str(path), 'rb') as wav:
-        if wav.getsampwidth() != 2 or wav.getcomptype() != 'NONE':
-            raise ValueError('expected uncompressed 16-bit PCM')
-        channels, rate = wav.getnchannels(), wav.getframerate()
-        pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype='<i2').astype(np.int64)
+    info = wav_pcm_info(path)
+    tag, channels, rate, _, bits, _, _ = info['format']
+    if tag != 1 or bits != 16:
+        raise ValueError('expected uncompressed 16-bit PCM')
+    with open(path, 'rb') as wav:
+        wav.seek(info['data_offset'])
+        pcm = np.frombuffer(wav.read(info['pcm_bytes']), dtype='<i2').astype(np.int64)
     if len(pcm) % channels:
         raise ValueError('incomplete PCM frame')
     return pcm, channels, rate
@@ -55,7 +57,7 @@ def compare_streams(base_bin, cand_bin, streams):
                     if proc.returncode:
                         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f'exit {proc.returncode}')
                     decoded[side] = read_pcm(out)
-                except (OSError, ValueError, wave.Error, RuntimeError, subprocess.TimeoutExpired) as exc:
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
                     block['failed'].append({'file': stream['file'], 'side': side, 'error': str(exc)})
             if len(decoded) != 2:
                 continue
