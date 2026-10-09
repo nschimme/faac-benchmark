@@ -78,6 +78,7 @@ from codec_bench import (
     CLIP_PEER_BUG_GAP, cell_peer_gap, generate_leaderboard, generate_decoder_leaderboard,
     generate_decoder_report, get_conformance_ref_wav, CONFORMANCE_SNR_FLOOR_DB
 )
+from codec_bench.decoders import decoder_timing_protocol, SPEED_TARGET_SEC
 from muxer_bench import run_muxer_bench
 from gate_check import evaluate_gate
 
@@ -470,7 +471,9 @@ def main():
     parser.add_argument("--iterations", type=int, default=1,
                         help="Repeat each decode this many times (output discarded) for mean/std latency, xRT, MB/s (default: 1 = single timed decode only)")
     parser.add_argument("--speed-iterations", type=int, default=5,
-                        help="Serial timed decodes per decoder and bitstream after the parallel phase; the leaderboard speed is the best of these (0 = use the pooled single-run duration)")
+                        help="Measured decodes per timing job after a separate warmup; leaderboard uses the median (0 = pooled single-run duration)")
+    parser.add_argument("--speed-audio-seconds", type=float, default=SPEED_TARGET_SEC,
+                        help="Minimum stream-copy timing workload duration in audio seconds (default: 60)")
     parser.add_argument("--speed-workers", type=int, default=0,
                         help="Concurrent decoder timing jobs (default: 0 = available cores; 1 = serial)")
     parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
@@ -481,6 +484,8 @@ def main():
                         help="Keep each decoder's decoded WAV on disk instead of deleting it once its metrics are computed")
 
     args = parser.parse_args()
+    if args.speed_iterations < 0 or not (0 < args.speed_audio_seconds < float("inf")):
+        parser.error("--speed-iterations must be nonnegative and --speed-audio-seconds finite and positive")
     if args.speed_workers < 0:
         parser.error("--speed-workers must be nonnegative")
 
@@ -747,6 +752,10 @@ def main():
                     else:
                         print(f"  Decoder tasks for {decoder.name} satisfied from cache/reuse.")
 
+            if args.speed_iterations == 0:
+                for row in decoder_results:
+                    for key in ("speed_best_ms", "speed_median_ms", "speed_timing", "speed_protocol"):
+                        row.pop(key, None)
             if args.speed_iterations > 0:
                 # Like the encoder throughput pass, time a small fixed set, not
                 # the corpus: one clip per encoder row and scenario, the longest
@@ -760,15 +769,30 @@ def main():
                     timed_items.setdefault((i.get("row_key"), i.get("scenario")), i)
                 timed_items = {(k[0], k[1], i.get("filename")): i for k, i in timed_items.items()}
                 speed_todo = [(d, r) for d in decoders for r in decoder_results
-                              if r.get("tool") == d.name and r.get("decode_valid") and not r.get("speed_best_ms")
+                              if r.get("tool") == d.name and r.get("decode_valid")
                               and (r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) in timed_items]
-                print(f"\n>>> Timing {len(speed_todo)} decodes (best of {args.speed_iterations})...")
+                print(f"\n>>> Timing up to {len(speed_todo)} decodes (median of {args.speed_iterations})...")
                 # Use the full timing pool by default; one worker isolates timing
                 # for a small baseline/candidate check.
                 avail = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
-                cores = avail[1:] if len(avail) > 2 else avail
-                available_workers = len(cores) if cores else max(1, num_cpus - 1)
+                cores = avail
+                available_workers = len(cores) if cores else max(1, num_cpus)
                 n_workers = min(args.speed_workers, available_workers) if args.speed_workers else available_workers
+                protocols = {}
+                pending = []
+                for decoder, row in speed_todo:
+                    item = timed_items[(row.get("encoder_row_key"), row.get("scenario"), row.get("filename"))]
+                    protocol = decoder_timing_protocol(decoder, item["aac_path"], args.speed_iterations,
+                                                       args.speed_audio_seconds, n_workers)
+                    protocols[id(row)] = protocol
+                    # Fresh paired timing avoids comparing a cached baseline
+                    # from another machine/run against a newly measured candidate.
+                    for key in ("speed_best_ms", "speed_median_ms", "speed_timing", "speed_protocol"):
+                        row.pop(key, None)
+                    pending.append((decoder, row))
+                speed_todo = pending
+                print(f"    {len(speed_todo)} jobs; {n_workers} timing worker(s), "
+                      f"{'serial' if n_workers == 1 else 'concurrent'}")
                 core_q = queue.Queue()
                 for c in cores:
                     core_q.put(c)
@@ -783,7 +807,8 @@ def main():
                             except Exception:
                                 pass
                         item = timed_items[(r.get("encoder_row_key"), r.get("scenario"), r.get("filename"))]
-                        return r, time_decoder_serial(decoder, item, output_dir, args.speed_iterations)
+                        return r, time_decoder_serial(decoder, item, output_dir, args.speed_iterations,
+                                                     target_seconds=args.speed_audio_seconds, return_stats=True)
                     finally:
                         if core is not None:
                             core_q.put(core)
@@ -791,11 +816,14 @@ def main():
                 with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as tpool:
                     futs = {tpool.submit(_time_one, job): job for job in speed_todo}
                     for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
-                        r, best_ms = fut.result()
-                        if best_ms:
-                            r["speed_best_ms"] = best_ms
+                        r, timing_stats = fut.result()
+                        if timing_stats:
+                            r["speed_best_ms"] = timing_stats["best_ms"]
+                            r["speed_median_ms"] = timing_stats["median_ms"]
+                            r["speed_timing"] = timing_stats
+                            r["speed_protocol"] = protocols[id(r)]
                         prof_str = profile_label(r.get('profile', 'lc'))
-                        timing = f"{best_ms:.0f} ms" if best_ms else "Failed"
+                        timing = f"{timing_stats['median_ms']:.0f} ms median" if timing_stats else "Failed"
                         print(f"    [{n_done}/{len(futs)}] {r['tool']} ({prof_str}) | {r['scenario']} | {r['filename']} -> {timing}")
 
             mos_scored = decoder_results and any(r.get("mos_source") for r in decoder_results)

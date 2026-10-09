@@ -17,6 +17,9 @@ import shutil
 import re
 
 import statistics
+import hashlib
+import platform
+from contextlib import contextmanager
 
 from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    get_faad_path, ffmpeg_probe, decode_validate, find_linked_lib,
@@ -58,6 +61,7 @@ class Decoder:
         self.binary_path = binary_path
         self.tool_id = tool_id
         self.lib_override = lib_override
+        self.lib_name_substr = lib_name_substr
 
         measure_bin = resolve_wrapper_target(binary_path) if binary_path else binary_path
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
@@ -493,96 +497,176 @@ def get_conformance_ref_offset(ref_path, ffmpeg_ref_wav, cache_dir):
     return lag_samples, lag_ms
 
 
-def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio_duration):
-    """Repeats a decode `iterations` times with the output discarded after
-    each run, returning mean/std latency, x-realtime, and PCM throughput.
-    None when iterations <= 1 (the single timed decode already covers that
-    case) or when any repeat fails."""
-    if iterations <= 1:
-        return None
+def time_decode_once(decoder, bitstream_input, output_dir):
+    """Measure the full CLI, including WAV writes; inspect output after timing."""
+    import soundfile as sf
     scratch = os.path.join(output_dir, f"speed_scratch_{os.getpid()}_{threading.get_ident()}.wav")
-    latencies_ms = []
-    pcm_bytes = None
     try:
-        for _ in range(iterations):
-            # FAAD3 refuses to write over an existing output (needs --overwrite),
-            # which would fail every repeat after the first.
-            if os.path.exists(scratch):
-                os.remove(scratch)
-            res, dur, _ram = measure_peak_ram(decoder.get_decode_cmd(bitstream_input, scratch), env=decoder.get_run_env() or None)
-            if res.returncode != 0 or not os.path.exists(scratch):
-                return None
-            latencies_ms.append(dur * 1000.0)
-            if pcm_bytes is None:
-                pcm_bytes = max(0, os.path.getsize(scratch) - 44)
+        if os.path.exists(scratch):
+            os.remove(scratch)
+        command = decoder.get_decode_cmd(bitstream_input, scratch)
+        res, seconds, rss = measure_peak_ram(command, env=decoder.get_run_env() or None)
+        if res.returncode != 0 or not os.path.exists(scratch):
+            raise RuntimeError(f"Decode failed ({res.returncode}): {res.stderr!r}")
+        info = sf.info(scratch)
+        return {"milliseconds": seconds * 1000.0, "peak_rss_kb": rss,
+                "command": command, "output_bytes": os.path.getsize(scratch),
+                "output_info": {"rate": info.samplerate, "channels": info.channels,
+                                "frames": info.frames, "subtype": info.subtype}}
     finally:
         if os.path.exists(scratch):
-            try:
-                os.remove(scratch)
-            except OSError:
-                pass
-
-    mean_ms = statistics.mean(latencies_ms)
-    std_ms = statistics.pstdev(latencies_ms) if len(latencies_ms) > 1 else 0.0
-    xrt = (audio_duration * 1000.0 / mean_ms) if (audio_duration and mean_ms > 0) else None
-    mbps = (pcm_bytes / (mean_ms / 1000.0) / (1024 * 1024)) if (pcm_bytes and mean_ms > 0) else None
-    return {"mean_ms": mean_ms, "std_ms": std_ms, "best_ms": min(latencies_ms), "xrt": xrt, "mbps": mbps, "iterations": iterations}
+            os.remove(scratch)
 
 
-# Length each timed decode is stretched to (see time_decoder_serial).
+def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio_duration, warmups=0):
+    """Retain every measured latency, with warmups explicitly excluded."""
+    if iterations < 1 or (iterations == 1 and warmups == 0):
+        return None
+    measured, cold = [], []
+    try:
+        for i in range(warmups + iterations):
+            sample = time_decode_once(decoder, bitstream_input, output_dir)
+            (cold if i < warmups else measured).append(sample)
+    except (RuntimeError, OSError):
+        return None
+    latencies = [r["milliseconds"] for r in measured]
+    mean = statistics.mean(latencies)
+    pcm_bytes = max(0, measured[0]["output_bytes"] - 44)
+    return {"mean_ms": mean, "std_ms": statistics.pstdev(latencies),
+            "median_ms": statistics.median(latencies), "best_ms": min(latencies),
+            "samples_ms": latencies, "warmup_samples_ms": [r["milliseconds"] for r in cold],
+            "samples": measured, "warmup_samples": cold,
+            "xrt": audio_duration * 1000.0 / mean if audio_duration and mean > 0 else None,
+            "mbps": pcm_bytes / (mean / 1000.0) / (1024 * 1024) if mean > 0 else None,
+            "iterations": iterations}
+
+
 SPEED_TARGET_SEC = 60.0
+SPEED_PROTOCOL_VERSION = 2
 
 
-def time_decoder_serial(decoder, res_item, output_dir, iterations):
-    """Best-of-`iterations` wall time in ms for one decode of one bitstream,
-    or None if any run fails. Meant to run one process at a time: the
-    worker-pool decode is timed beside MOS scoring on every core, so its
-    duration says more about the machine's load than the decoder."""
-    aac_path = res_item.get("aac_path")
-    if not aac_path or not os.path.exists(aac_path):
+def timing_file_identity(path):
+    """Fingerprint the executable and shared library, not just their names."""
+    if not path:
+        return None
+    path = os.path.realpath(path)
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return {"path": path, "sha256": digest.hexdigest()}
+    except OSError:
+        return {"path": path, "sha256": None}
+
+
+def resolved_decoder_library(decoder):
+    if decoder.lib_override:
+        return os.path.realpath(decoder.lib_override)
+    binary = resolve_wrapper_target(decoder.binary_path)
+    if os.path.realpath(binary) != os.path.realpath(decoder.binary_path):
+        return None  # A wrapper can change loader paths; require an explicit library.
+    name = decoder.lib_name_substr
+    if not name:
+        return None
+    if sys.platform != "darwin":
+        return find_linked_lib(binary, name)
+    # otool -L reports @rpath rather than the loaded file for Meson builds.
+    try:
+        linked = subprocess.run(["otool", "-L", binary], capture_output=True, text=True, check=True).stdout
+        entry = next(line.strip().split(" ")[0] for line in linked.splitlines()[1:] if name in line)
+        directory = os.path.dirname(os.path.abspath(binary))
+        def expand(path):
+            return path.replace("@loader_path", directory).replace("@executable_path", directory)
+        candidates = [os.path.join(d, os.path.basename(entry))
+                      for d in os.environ.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if d]
+        if entry.startswith("@rpath/"):
+            loads = subprocess.run(["otool", "-l", binary], capture_output=True, text=True, check=True).stdout
+            rpaths = re.findall(r"cmd LC_RPATH\s+cmdsize \d+\s+path (.*?) \(offset \d+\)", loads)
+            candidates.extend(os.path.join(expand(rpath), entry[len("@rpath/"):]) for rpath in rpaths)
+        else:
+            candidates.append(expand(entry))
+        return next((os.path.realpath(p) for p in candidates if os.path.isfile(p)), None)
+    except (OSError, subprocess.CalledProcessError, StopIteration):
         return None
 
-    bitstream_input = aac_path
-    temp_adts = None
-    if getattr(decoder, "requires_adts", False) and aac_path.lower().endswith((".m4a", ".mp4")):
-        temp_adts = os.path.join(output_dir, f"speed_demux_{os.getpid()}_{threading.get_ident()}.aac")
-        res_demux = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts],
-                             capture_output=True, check=False)
-        if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
-            bitstream_input = temp_adts
-    looped = None
-    scale = 1.0
+
+def decoder_timing_protocol(decoder, source, iterations, target_seconds, workers):
+    binary = resolve_wrapper_target(decoder.binary_path)
+    library = resolved_decoder_library(decoder)
+    return {"version": SPEED_PROTOCOL_VERSION, "statistic": "median", "warmups": 1,
+            "iterations": iterations, "target_audio_seconds": target_seconds,
+            "workers": workers, "mode": "serial" if workers == 1 else "concurrent",
+            "platform": platform.platform(), "binary": timing_file_identity(decoder.binary_path),
+            "target_binary": timing_file_identity(binary),
+            "library": timing_file_identity(library),
+            "library_resolution": "resolved" if library else "unresolved or static/system/wrapper",
+            "input": timing_file_identity(source)}
+
+
+@contextmanager
+def prepared_decode_input(decoder, source, output_dir, target_seconds=SPEED_TARGET_SEC):
+    """Stream-copy a timing workload before measurements, and clean it up."""
+    if target_seconds <= 0:
+        raise ValueError("target_seconds must be positive")
+    paths = []
+    did_loop = False
+    current = source
+    tag = f"{os.getpid()}_{threading.get_ident()}"
     try:
-        # Corpus clips are a few seconds, so a decode is mostly process
-        # startup. Like run_benchmark.py's looped throughput signals, stream-
-        # copy the bitstream up to SPEED_TARGET_SEC and time that; the result
-        # is scaled back to one pass of the clip, which is what the report
-        # divides the source duration by.
-        one_pass = ffmpeg_probe(bitstream_input)
-        if one_pass and one_pass < SPEED_TARGET_SEC:
-            candidate = os.path.join(output_dir, f"speed_loop_{os.getpid()}_{threading.get_ident()}"
-                                     f"{os.path.splitext(bitstream_input)[1]}")
-            loops = math.ceil(SPEED_TARGET_SEC / one_pass)
-            res_loop = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-stream_loop", str(loops - 1),
-                                 "-i", bitstream_input, "-c:a", "copy", candidate],
-                                capture_output=True, check=False)
-            long_dur = ffmpeg_probe(candidate) if res_loop.returncode == 0 else None
-            if long_dur and long_dur > one_pass:
-                looped = candidate
-                scale = one_pass / long_dur
-                bitstream_input = candidate
-        # the extra run absorbs the cold page cache; best-of discards it
-        stats = measure_decode_speed(decoder, bitstream_input, output_dir, iterations + 1, 0)
-        if not stats:
-            return None
-        return stats["best_ms"] * scale
+        if getattr(decoder, "requires_adts", False) and source.lower().endswith((".m4a", ".mp4")):
+            current = os.path.join(output_dir, f"speed_demux_{tag}.aac")
+            paths.append(current)
+            res = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-v", "error", "-i", source,
+                            "-c:a", "copy", current], capture_output=True, check=False)
+            if res.returncode != 0:
+                raise RuntimeError("Timing demux failed")
+        one_pass = ffmpeg_probe(current)
+        if not one_pass or one_pass <= 0:
+            raise RuntimeError("Cannot determine timing input duration")
+        duration = one_pass
+        if one_pass < target_seconds:
+            looped = os.path.join(output_dir, f"speed_loop_{tag}{os.path.splitext(current)[1]}")
+            paths.append(looped)
+            res = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-v", "error", "-stream_loop",
+                            str(math.ceil(target_seconds / one_pass) - 1), "-i", current,
+                            "-c:a", "copy", looped], capture_output=True, check=False)
+            duration = ffmpeg_probe(looped) if res.returncode == 0 else None
+            if not duration or duration <= one_pass:
+                raise RuntimeError("Timing stream-copy loop failed")
+            current = looped
+            did_loop = True
+        yield {"path": current, "scale": one_pass / duration,
+               "source_duration_seconds": one_pass, "timed_duration_seconds": duration,
+               "looped": did_loop}
     finally:
-        for f in (temp_adts, looped, locals().get("candidate")):
-            if f and os.path.exists(f):
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def time_decoder_serial(decoder, res_item, output_dir, iterations,
+                        target_seconds=SPEED_TARGET_SEC, return_stats=False):
+    """Time one decoder job. The caller may run jobs concurrently."""
+    source = res_item.get("aac_path")
+    if not source or not os.path.exists(source):
+        return None
+    try:
+        with prepared_decode_input(decoder, source, output_dir, target_seconds) as prepared:
+            stats = measure_decode_speed(decoder, prepared["path"], output_dir, iterations, 0, warmups=1)
+            if not stats:
+                return None
+            scale = prepared["scale"]
+            stats["unscaled_samples_ms"] = stats["samples_ms"]
+            stats["samples_ms"] = [ms * scale for ms in stats["samples_ms"]]
+            for key in ("best_ms", "mean_ms", "median_ms", "std_ms"):
+                stats[key] *= scale
+            stats["source_duration_seconds"] = prepared["source_duration_seconds"]
+            stats["timed_duration_seconds"] = prepared["timed_duration_seconds"]
+            stats["scale"] = scale
+            return stats if return_stats else stats["best_ms"]
+    except (RuntimeError, OSError):
+        return None
 
 
 def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):
