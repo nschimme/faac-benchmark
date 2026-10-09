@@ -31,3 +31,6 @@ test_report.md
 # OS
 .DS_Store
 Thumbs.db
+
+# ESP32 on-device benchmark toolchain
+scripts/esp32/.toolchain/
