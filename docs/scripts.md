@@ -282,7 +282,7 @@ Prerequisite: a pinned ESP-IDF (v5.5.5) installed under
 scripts/esp32/setup_idf.sh                                    # once
 python3 scripts/esp32/esp32_dec_bench.py build  --target esp32s3 [--codec helix,faad2] [--sbr 0|1]
 python3 scripts/esp32/esp32_dec_bench.py run    --target esp32s3 --port /dev/serial/by-id/... \
-    [--gate] [--scenarios A,B] [--profiles lc,he] [--limit N] [--loops 3] [--verify N] \
+    [--gate] [--scenarios A,B] [--profiles lc,he] [--limit N] [--loops 3] [--verify N] [--stream auto|on|off] \
     [--bitstreams comparison_results.json] [--encoder faac]
 python3 scripts/esp32/esp32_dec_bench.py report --target esp32s3 [--output summary.md]
 ```
@@ -328,6 +328,18 @@ Caveats:
   not compile.
 - FAAD2 needs about 46 KB of stack.
 - Run from the repo root. Needs `ffmpeg` on `PATH`, and `numpy` for `--verify`.
+
+### `scripts/esp32/esp32_dec_profile.py`
+
+Per-function cycle profile of FAAD3 on a board: builds the FAAD3 adapter with `-finstrument-functions`
+(`CODEC_PROFILE=1`, a separate `build/faad3prof-<target>` directory), flashes it, decodes one ADTS clip for a
+single pass and prints exclusive cycles per function. Hook cost (about 50 cycles per call) lands in the callee, so
+trust the ranking of the large functions only. The clip must fit the chip's internal RAM. Results are in
+[esp32.md](esp32.md#where-faad3-spends-its-cycles-profile).
+
+```
+python3 scripts/esp32/esp32_dec_profile.py --target esp32 --port /dev/ttyUSB0 clip.aac [--no-build]
+```
 
 ### `scripts/esp32/esp32_enc_bench.py` (work in progress)
 

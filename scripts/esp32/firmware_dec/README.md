@@ -54,7 +54,21 @@ Device to host:
     u32 heap_min_free_delta | u32 stack_hwm | u32 init_heap_used
     then, if flags bit0 and status == 0: samples_out * 2 bytes of int16 PCM
 
-Total header: 56 bytes. Field notes:
+Total header: 56 bytes.
+
+### Streaming request (flags bit1)
+
+With `flags` bit1 set the clip is not sent with the request (`clip_len` is only its length); the device keeps a 16 KB
+window in internal RAM and pulls the clip in blocks, so no chip RAM ceiling applies to the clip (the harness still
+needs the 16 KB window, which is excluded from the heap figures). The exchange, all little-endian:
+
+    device -> host: "AACQ" | u32 offset | u32 n          host answers with exactly n bytes of the clip from offset
+    device -> host: "AACD" | u32 bytes | PCM              flags bit0 only: decoded PCM of pass 1, as it is produced
+    device -> host: "AACR" | 56-byte header              end; no PCM follows it
+
+The device refills the window outside the timed region (between decode calls), so cycle counts measure the same
+thing as the resident mode; each pass fetches the clip again. `esp32_dec_bench.py run --stream auto` uses it on the
+targets without PSRAM. Field notes:
 
 - `status`: 0 ok, 1 bad request, 2 clip does not fit, 3 codec init failed,
   4 PCM return buffer overflow, 5 no frame decoded, 6 out of memory.

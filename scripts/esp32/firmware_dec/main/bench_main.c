@@ -26,6 +26,10 @@ enum {
 };
 
 #define FLAG_RETURN_PCM 1u
+#define FLAG_STREAM 2u              /* the device pulls the clip in blocks instead of holding it */
+#define STREAM_BUF 16384            /* resident input window in internal RAM */
+#define STREAM_MAX_FRAME 8192       /* an ADTS frame is at most 8191 bytes */
+#define PSRAM_HEADROOM (1024 * 1024) /* PSRAM kept free next to the PCM return buffer */
 #define INTERNAL_RESERVE (64 * 1024) /* internal heap kept free when the clip lives in DRAM */
 
 typedef struct __attribute__((packed)) {
@@ -107,6 +111,134 @@ static void send_result(result_t *r, const uint8_t *pcm, size_t pcm_bytes)
         transport_write(pcm, pcm_bytes);
 }
 
+/* Streaming request: the clip stays on the host. The device asks for blocks ("AACQ" | u32 offset | u32 n, the host
+ * answers with exactly n bytes), keeps a sliding window of STREAM_BUF bytes and refills it between decode calls, so
+ * the timed region is the same as with a resident clip. Decoded PCM of the first pass goes back as "AACD" | u32 bytes |
+ * data messages (also outside the timed region); the closing "AACR" header then carries no trailing PCM. */
+static int stream_fetch(uint8_t *dst, uint32_t offset, uint32_t n)
+{
+    struct { char magic[4]; uint32_t offset, n; } q = { {'A', 'A', 'C', 'Q'}, offset, n };
+    if (transport_write(&q, sizeof(q)) != 0)
+        return -1;
+    return transport_read(dst, n);
+}
+
+static int stream_send_pcm(const void *pcm, uint32_t bytes)
+{
+    struct { char magic[4]; uint32_t bytes; } d = { {'A', 'A', 'C', 'D'}, bytes };
+    if (transport_write(&d, sizeof(d)) != 0)
+        return -1;
+    return transport_write(pcm, bytes);
+}
+
+static void serve_stream(uint32_t clip_len, uint32_t loops, uint32_t flags)
+{
+    result_t r;
+    memset(&r, 0, sizeof(r));
+
+    uint8_t *win = heap_caps_malloc(STREAM_BUF, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!win) {
+        r.status = ST_NO_MEMORY;
+        send_result(&r, NULL, 0);
+        return;
+    }
+    /* The window is a fixed harness cost, so the decoder's heap figures start after it. */
+    size_t base_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (codec_init() != 0) {
+        heap_caps_free(win);
+        r.status = ST_CODEC_INIT;
+        send_result(&r, NULL, 0);
+        return;
+    }
+    size_t after_init = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    r.init_heap_used = base_free > after_init ? (uint32_t)(base_free - after_init) : 0;
+
+    uint32_t status = ST_OK;
+    uint64_t best = UINT64_MAX, total = 0;
+    uint32_t crc = 0xFFFFFFFFu;
+    uint32_t frames = 0, samples_out = 0;
+    int out_rate = 0, out_channels = 0;
+    int link_ok = 1;
+
+    for (uint32_t pass = 0; pass < loops && link_ok; pass++) {
+        if (pass > 0) {
+            codec_close();
+            if (codec_init() != 0) {
+                status = ST_CODEC_INIT;
+                break;
+            }
+        }
+        const uint8_t *p = win;
+        int left = 0;
+        uint32_t fetched = 0;
+        uint64_t cycles = 0;
+
+        for (;;) {
+            while (left < STREAM_MAX_FRAME && fetched < clip_len) {
+                memmove(win, p, (size_t)left);
+                p = win;
+                uint32_t n = STREAM_BUF - (uint32_t)left;
+                if (n > STREAM_MAX_FRAME)
+                    n = STREAM_MAX_FRAME;
+                if (n > clip_len - fetched)
+                    n = clip_len - fetched;
+                if (stream_fetch(win + left, fetched, n) != 0) {
+                    link_ok = 0;
+                    break;
+                }
+                fetched += n;
+                left += (int)n;
+            }
+            if (!link_ok || left <= 0)
+                break;
+
+            const uint8_t *before = p;
+            codec_frame_info_t fi = {0};
+            uint32_t t0 = esp_cpu_get_cycle_count();
+            int rc = codec_decode_frame(&p, &left, s_pcm, &fi);
+            uint32_t t1 = esp_cpu_get_cycle_count();
+            cycles += (uint32_t)(t1 - t0);
+
+            if (rc == 0 && pass == 0) {
+                size_t bytes = (size_t)fi.out_samples * sizeof(int16_t);
+                crc = crc_update(crc, (const uint8_t *)s_pcm, bytes);
+                frames++;
+                samples_out += (uint32_t)fi.out_samples;
+                out_rate = fi.out_rate;
+                out_channels = fi.out_channels;
+                if ((flags & FLAG_RETURN_PCM) && stream_send_pcm(s_pcm, (uint32_t)bytes) != 0)
+                    link_ok = 0;
+            }
+            if (p == before) /* adapter contract violated: avoid spinning */
+                break;
+        }
+        if (cycles < best)
+            best = cycles;
+        total += cycles;
+    }
+
+    size_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    r.heap_min_free_delta = base_free > min_free ? (uint32_t)(base_free - min_free) : 0;
+    r.stack_hwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+
+    codec_close();
+    heap_caps_free(win);
+    if (!link_ok)
+        return;
+    if (status == ST_OK && frames == 0)
+        status = ST_NO_FRAMES;
+
+    r.status = status;
+    r.frames = frames;
+    r.samples_out = samples_out;
+    r.out_rate = (uint32_t)out_rate;
+    r.out_channels = (uint32_t)out_channels;
+    r.best_cycles = best == UINT64_MAX ? 0 : best;
+    r.mean_cycles = total / loops;
+    r.pcm_crc32 = ~crc;
+    send_result(&r, NULL, 0);
+}
+
 static void serve_request(void)
 {
     uint32_t hdr[3];
@@ -120,6 +252,11 @@ static void serve_request(void)
     if (clip_len == 0 || loops == 0) {
         r.status = ST_BAD_REQUEST;
         send_result(&r, NULL, 0);
+        return;
+    }
+
+    if (flags & FLAG_STREAM) {
+        serve_stream(clip_len, loops, flags);
         return;
     }
 
@@ -158,7 +295,9 @@ static void serve_request(void)
     size_t pcm_cap = 0;
     if (flags & FLAG_RETURN_PCM) {
         if (have_psram()) {
+            /* Leave headroom: decoders whose state lives in PSRAM allocate more of it lazily (SBR on the first HE frame). */
             pcm_cap = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+            pcm_cap = pcm_cap > PSRAM_HEADROOM ? pcm_cap - PSRAM_HEADROOM : 0;
             if (pcm_cap)
                 pcm_store = heap_caps_malloc(pcm_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         } else {

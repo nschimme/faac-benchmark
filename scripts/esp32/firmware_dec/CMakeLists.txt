@@ -19,7 +19,7 @@ endif()
 
 # Component CMakeLists also run in IDF's cache-less early-expansion pass, so
 # hand the switches over through the environment as well.
-foreach(v CODEC CODEC_SBR CODEC_PS CODEC_FAAD3_OPEN CODEC_PSRAM CODEC_HELIX_DIR CODEC_FAAD2_DIR CODEC_FAAD3_DIR)
+foreach(v CODEC CODEC_SBR CODEC_PS CODEC_FAAD3_OPEN CODEC_PROFILE CODEC_PSRAM CODEC_HELIX_DIR CODEC_FAAD2_DIR CODEC_FAAD3_DIR)
     set(ENV{AAC_${v}} "${${v}}")
 endforeach()
 

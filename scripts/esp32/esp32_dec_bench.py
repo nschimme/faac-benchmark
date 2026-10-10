@@ -32,12 +32,12 @@ CODECS = {
     "helix": "libhelix-aac (fixed point)",
     "faad2": "FAAD2 (FIXED_POINT)",
     "faad3": "FAAD3 (float, stack-tests)",
-    "faad3s": "FAAD3 (float, split allocations)",
 }
 # "<codec>-psram" builds the same decoder with its state allocated from PSRAM (S3 only).
 for _id in list(CODECS):
     CODECS[_id + "-psram"] = CODECS[_id] + ", state in PSRAM"
 BASE_CODECS = [c for c in CODECS if not c.endswith("-psram")]
+STREAM_AUTO = ("esp32", "esp32c6")  # no PSRAM: the host feeds the clip in blocks (firmware FLAG_STREAM)
 CPU_MHZ = {"esp32": 240, "esp32s3": 240, "esp32c6": 160}
 # Largest clip the target can hold (S3 has 8 MB PSRAM; the others use internal RAM).
 STACK_BYTES = 65536  # firmware main task stack (sdkconfig.defaults)
@@ -77,7 +77,8 @@ def save_results(target, data):
 
 # Codec ids that are another configuration of a firmware codec: id -> (firmware codec, extra -D flags).
 VARIANTS = {
-    "faad3s": ("faad3", f"-DCODEC_FAAD3_OPEN=1 -DCODEC_FAAD3_DIR={os.path.join(TOOLCHAIN, 'faad3-split-src')}"),
+    # stack-tests has the split allocations (PR #36) and only faad_decoder_open(); PS is built in (HE-AAC v2).
+    "faad3": ("faad3", "-DCODEC_FAAD3_OPEN=1 -DCODEC_PS=1"),
 }
 
 
@@ -188,6 +189,34 @@ def snr_vs_ffmpeg(adts_path, pcm, channels, rate):
 
 # ---------------------------------------------------------------- run
 
+SKIPPED = -2  # status of a bitstream the host did not send (too big for the target, demux failed)
+
+
+def run_key(r):
+    return (r["codec"], r["row_key"], r["scenario"], r["filename"])
+
+
+def outcome_lines(runs):
+    """Per codec/profile count of every outcome, so the limits of a target/variant show in the report."""
+    lines = ["", "## Outcomes (every bitstream tried, including skipped and failed)", "",
+             "| Codec | Profile | Bitstreams | ok | Not ok (reason: count) |", "|---|---|---|---|---|"]
+    for codec in sorted({r["codec"] for r in runs}):
+        for prof in sorted({r["profile"] for r in runs if r["codec"] == codec}):
+            rs = [r for r in runs if r["codec"] == codec and r["profile"] == prof]
+            bad = {}
+            for r in rs:
+                if r["status"] != 0:
+                    t = r.get("status_text", f"status {r['status']}")
+                    bad[t] = bad.get(t, 0) + 1
+            lines.append(f"| {CODECS.get(codec, codec)} | {prof} | {len(rs)} | {sum(r['status'] == 0 for r in rs)} | "
+                         f"{', '.join(f'{k}: {v}' for k, v in sorted(bad.items())) or '-'} |")
+    return lines
+
+def use_stream(args):
+    """--stream auto streams on the targets without PSRAM, where the clip would not fit next to the decoder."""
+    return args.stream == "on" or (args.stream == "auto" and args.target in STREAM_AUTO)
+
+
 def cmd_run(args):
     from esp32_dec_device import Device
     data = load_results(args.target)
@@ -197,8 +226,10 @@ def cmd_run(args):
     done = {(r["codec"], r["row_key"], r["scenario"], r["filename"]) for r in data["runs"]
             if r["status"] == 0 and (r.get("snr_db") is not None or not wants_verify(r["scenario"], r["filename"], r["profile"]))}
     clips = select_clips(args)
+    stream = use_stream(args)
     mhz = CPU_MHZ[args.target]
-    print(f"{len(clips)} bitstreams, target {args.target} @ {mhz} MHz")
+    print(f"{len(clips)} bitstreams, target {args.target} @ {mhz} MHz, "
+          f"{'streamed' if stream else 'resident'} clips")
     for codec in args.codec:
         todo = [r for r in clips if (codec, r["row_key"], r["scenario"], r["filename"]) not in done]
         if not todo:
@@ -210,29 +241,31 @@ def cmd_run(args):
         with tempfile.TemporaryDirectory() as td:
             for n, r in enumerate(todo, 1):
                 adts = os.path.join(td, "clip.aac")
-                if not demux_adts(r["aac_path"], adts):
-                    print(f"  skip (demux failed): {r['scenario']} {r['filename']}")
-                    continue
-                clip = open(adts, "rb").read()
+                base = {"codec": codec, "target": args.target, "row_key": r["row_key"], "profile": r["profile"],
+                        "scenario": r["scenario"], "filename": r["filename"], "audio_duration": r.get("audio_duration"),
+                        "cpu_mhz": mhz, "loops": args.loops, "stream": stream}
                 limit = args.max_bytes or MAX_CLIP_BYTES[args.target]
-                if len(clip) > limit:
-                    print(f"  skip (>{limit} B): {r['scenario']} {r['filename']}")
+                clip = open(adts, "rb").read() if demux_adts(r["aac_path"], adts) else None
+                skip = ("demux failed" if clip is None else f"clip over {limit} B" if not stream and len(clip) > limit else None)
+                if skip:  # recorded, so the report can show the limits of a target/variant
+                    print(f"  skip ({skip}): {r['scenario']} {r['filename']}")
+                    row = {**base, "clip_bytes": len(clip or b""), "status": SKIPPED, "status_text": "skipped: " + skip}
+                    data["runs"] = [x for x in data["runs"] if run_key(x) != run_key(row)] + [row]
+                    save_results(args.target, data)
                     continue
                 want_pcm = wants_verify(r["scenario"], r["filename"], r["profile"])
                 try:
-                    out = dev.decode(clip, loops=args.loops, want_pcm=want_pcm)
+                    send = dev.decode_stream if stream else dev.decode
+                    out = send(clip, loops=args.loops, want_pcm=want_pcm)
                     res, pcm = out if isinstance(out, tuple) else (out, None)  # no PCM when the device reports an error
                 except Exception as exc:
                     print(f"  device error ({exc}); resetting")
                     dev.reset()
                     res, pcm = {"status": -1, "status_text": str(exc)}, None
-                row = {"codec": codec, "target": args.target, "row_key": r["row_key"], "profile": r["profile"],
-                       "scenario": r["scenario"], "filename": r["filename"], "clip_bytes": len(clip),
-                       "audio_duration": r.get("audio_duration"), "cpu_mhz": mhz, "loops": args.loops, **res}
+                row = {**base, "clip_bytes": len(clip), **res}
                 if pcm is not None and res["status"] == 0:
                     row["snr_db"] = snr_vs_ffmpeg(adts, pcm, res["out_channels"], res["out_rate"])
-                data["runs"] = [x for x in data["runs"] if (x["codec"], x["row_key"], x["scenario"], x["filename"]) !=
-                                (codec, r["row_key"], r["scenario"], r["filename"])] + [row]
+                data["runs"] = [x for x in data["runs"] if run_key(x) != run_key(row)] + [row]
                 save_results(args.target, data)
                 ms = res.get("best_cycles", 0) / (mhz * 1000)
                 dur = r.get("audio_duration") or 0
@@ -266,6 +299,7 @@ def cmd_report(args):
                          f"{sum(need) / len(need):.1f} | {max(r['heap_min_free_delta'] for r in rs) / 1024:.0f} | "
                          f"{max(STACK_BYTES - r['stack_hwm'] for r in rs) / 1024:.0f} | "
                          f"{(f'{min(snr):.1f}..{max(snr):.1f}' if snr else 'n/a')} |")
+    lines += outcome_lines(data["runs"])
     if data.get("footprint"):
         lines += ["", "## Footprint (codec archive, from the IDF map)", ""]
         for codec, fp in data["footprint"].items():
@@ -294,6 +328,8 @@ def main():
     r = sub.add_parser("run", help="flash and benchmark")
     common(r)
     r.add_argument("--port", required=True)
+    r.add_argument("--stream", choices=("auto", "on", "off"), default="auto",
+                   help="feed the clip to the device in blocks instead of holding it (auto: chips without PSRAM)")
     r.add_argument("--bitstreams", default=os.path.join(ROOT, "comparison_results.json"),
                    help="encoder-phase results JSON listing the bitstreams")
     r.add_argument("--encoder", default="faac", help="substring of the encoder row_key to take bitstreams from")

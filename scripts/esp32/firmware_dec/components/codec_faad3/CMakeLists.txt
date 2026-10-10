@@ -1,4 +1,4 @@
-foreach(v CODEC CODEC_PSRAM CODEC_SBR CODEC_PS CODEC_FAAD3_OPEN CODEC_FAAD3_DIR)
+foreach(v CODEC CODEC_PSRAM CODEC_SBR CODEC_PS CODEC_FAAD3_OPEN CODEC_FAAD3_DIR CODEC_PROFILE)
     set(${v} "$ENV{AAC_${v}}")
 endforeach()
 
@@ -38,4 +38,13 @@ endif()
 
 if(CODEC_FAAD3_OPEN STREQUAL "1")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE CODEC_FAAD3_OPEN)
+endif()
+
+# Per-function cycle profile (scripts/esp32/esp32_dec_profile.py): the decoder sources are built with
+# -finstrument-functions and the adapter keeps exclusive cycles per function, printed on codec_close().
+# Timings include the hook cost, so small functions read high; use it to rank the big ones.
+if(CODEC_PROFILE STREQUAL "1")
+    set_source_files_properties(${faad3_srcs} PROPERTIES COMPILE_OPTIONS
+        "-finstrument-functions;-finstrument-functions-exclude-function-list=pcm_to_s16,pcm_to_s24,huff_decode,bits_show_fast,faad_bits_skip,faad_bits_get_consumed,pow_4_3_fast,decode_escape,decode_pair,sbr_pow2_half,cmp_u8,bounded_size,config_channels,output_sample_bytes,sbr_round,channel_mask")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE CODEC_PROFILE)
 endif()

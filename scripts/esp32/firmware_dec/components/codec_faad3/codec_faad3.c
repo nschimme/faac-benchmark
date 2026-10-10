@@ -7,10 +7,72 @@
 #include "faad.h"
 #include "codec_api.h"
 
+#ifdef CODEC_PSRAM_STATE
+void *codec_faad3_alloc(size_t size) { return heap_caps_malloc(size, CODEC_ALLOC_CAPS); }
+void codec_faad3_free(void *block) { heap_caps_free(block); }
+#endif
+
 static faad_decoder *s_dec;
 static void *s_state;   /* caller-owned decoder state */
 static void *s_pcm;     /* FAAD3 writes up to max_output_bytes per call */
 static uint32_t s_pcm_cap;
+
+#ifdef CODEC_PROFILE
+/* Exclusive-cycle profiler driven by -finstrument-functions (see CMakeLists.txt). */
+#include "esp_cpu.h"
+#define PROF_SLOTS 96
+#define PROF_DEPTH 48
+static struct { void *fn; uint64_t cycles; uint32_t calls; } s_prof[PROF_SLOTS];
+static void *s_stack[PROF_DEPTH];
+static int s_sp;
+static uint32_t s_last;
+
+static void __attribute__((no_instrument_function)) prof_charge(void *fn, uint32_t d)
+{
+    for (int i = 0; i < PROF_SLOTS; i++) {
+        if (s_prof[i].fn == fn || !s_prof[i].fn) {
+            s_prof[i].fn = fn;
+            s_prof[i].cycles += d;
+            return;
+        }
+    }
+}
+
+void __attribute__((no_instrument_function)) __cyg_profile_func_enter(void *fn, void *cs)
+{
+    uint32_t now = esp_cpu_get_cycle_count();
+    if (s_sp > 0 && s_sp <= PROF_DEPTH)
+        prof_charge(s_stack[s_sp - 1], now - s_last);
+    if (s_sp < PROF_DEPTH)
+        s_stack[s_sp] = fn;
+    s_sp++;
+    for (int i = 0; i < PROF_SLOTS; i++) {
+        if (s_prof[i].fn == fn || !s_prof[i].fn) { s_prof[i].fn = fn; s_prof[i].calls++; break; }
+    }
+    s_last = esp_cpu_get_cycle_count();
+}
+
+void __attribute__((no_instrument_function)) __cyg_profile_func_exit(void *fn, void *cs)
+{
+    uint32_t now = esp_cpu_get_cycle_count();
+    if (s_sp > 0 && s_sp <= PROF_DEPTH)
+        prof_charge(s_stack[s_sp - 1], now - s_last);
+    s_sp--;
+    s_last = esp_cpu_get_cycle_count();
+}
+
+static void prof_report(void)
+{
+    for (int i = 0; i < PROF_SLOTS && s_prof[i].fn; i++)
+        esp_rom_printf("PROF %08x %08x%08x %u\n", (unsigned)s_prof[i].fn, (unsigned)(s_prof[i].cycles >> 32),
+                       (unsigned)s_prof[i].cycles, (unsigned)s_prof[i].calls);
+    esp_rom_printf("PROFEND\n");
+    memset(s_prof, 0, sizeof(s_prof));
+    s_sp = 0;
+}
+#else
+#define prof_report() ((void)0)
+#endif
 
 int codec_init(void)
 {
@@ -52,11 +114,16 @@ int codec_init(void)
         codec_close();
         return -1;
     }
+#ifdef CODEC_PROFILE
+    memset(s_prof, 0, sizeof(s_prof)); /* count the decode calls only, not the open */
+    s_sp = 0;
+#endif
     return 0;
 }
 
 void codec_close(void)
 {
+    prof_report();
 #ifdef CODEC_FAAD3_OPEN
     faad_decoder_close(&s_dec);
 #endif

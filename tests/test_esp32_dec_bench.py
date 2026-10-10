@@ -117,6 +117,28 @@ class TestDevice(unittest.TestCase):
         res = make_device(header(status=5, samples_out=4)).decode(b"x", want_pcm=True)
         self.assertEqual(res["status"], 5)
 
+    def test_stream_serves_blocks_and_collects_pcm(self):
+        clip = bytes(range(200))
+        msgs = (device.REQ_BLOCK + struct.pack("<II", 0, 64) + b"noise" +
+                device.REQ_BLOCK + struct.pack("<II", 64, 200) +
+                device.PCM_MAGIC + struct.pack("<I", 4) + b"\x01\x02\x03\x04" +
+                device.PCM_MAGIC + struct.pack("<I", 2) + b"\x05\x06" + header(samples_out=3))
+        dev = make_device(msgs)
+        res, pcm = dev.decode_stream(clip, loops=2, want_pcm=True)
+        self.assertEqual(pcm, b"\x01\x02\x03\x04\x05\x06")
+        self.assertEqual(res["samples_out"], 3)
+        sent = bytes(dev.ser.written)
+        self.assertEqual(sent[:16], device.REQ_MAGIC + struct.pack("<III", 200, 2, device.FLAG_STREAM | device.FLAG_PCM))
+        self.assertEqual(sent[16:], clip[:64] + clip[64:])  # the second request is clamped at the end of the clip
+
+    def test_stream_error_status_has_no_pcm(self):
+        res = make_device(header(status=6)).decode_stream(b"x", want_pcm=True)
+        self.assertEqual(res["status"], 6)
+
+    def test_stream_times_out_without_device(self):
+        with self.assertRaisesRegex(device.DeviceError, "no response magic"):
+            make_device(b"").decode_stream(b"x", timeout=0.05)
+
     def test_constructor_uses_serial(self):
         with patch.object(device.serial, "Serial", return_value=FakeSerial()) as s:
             dev = device.Device("/dev/null", cpu_mhz=160)
@@ -217,6 +239,12 @@ class TestReport(unittest.TestCase):
         self.assertIn("| libhelix-aac (fixed point) | lc | 2 | 75.0 | 50.0 | 3.6 | 20 | 8 | 50.0..60.0 |", text)
         self.assertIn("| FAAD2 (FIXED_POINT) | lc | 2 | 20.0 | 20.0 | 12.0 | 20 | 8 | n/a |", text)
         self.assertIn("## Footprint", text)
+
+    def test_outcomes_count_skipped_and_failed(self):
+        skipped = dict(self.run_row("helix", "big", 1, status=eb.SKIPPED), status_text="skipped: clip over 90000 B")
+        runs = [self.run_row("helix", "a", 1000), skipped, self.run_row("helix", "x", 1, status=6)]
+        text = self.report({"target": "esp32s3", "runs": runs, "footprint": {}})
+        self.assertIn("| libhelix-aac (fixed point) | lc | 3 | 1 | skipped: clip over 90000 B: 1, status 6: 1 |", text)
 
     def test_output_file(self):
         out = os.path.join(eb.RESULTS_DIR, "r.md")
