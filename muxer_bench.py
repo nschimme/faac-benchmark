@@ -46,7 +46,7 @@ def run_muxer_bench(faam_bin, ffmpeg_bin, largest_adts, output_dir, iterations=1
     m4a_out = os.path.join(output_dir, "muxer_bench.m4a")
 
     mux_tools = [
-        ("faam", faam_bin, lambda: [faam_bin, "mux", largest_adts, "-o", m4a_out]),
+        ("faam", faam_bin, lambda: [faam_bin, "-i", largest_adts, "-o", m4a_out, "--overwrite"]),
         ("ffmpeg", ffmpeg_bin, lambda: [ffmpeg_bin, "-y", "-v", "error", "-i", largest_adts, "-c:a", "copy", m4a_out]),
         ("MP4Box", mp4box_bin, lambda: [mp4box_bin, "-quiet", "-add", largest_adts, "-new", m4a_out]),
     ]
@@ -63,8 +63,8 @@ def run_muxer_bench(faam_bin, ffmpeg_bin, largest_adts, output_dir, iterations=1
 
     demux_out = os.path.join(output_dir, "muxer_bench_demux.aac")
     demux_tools = [
-        ("faam", faam_bin, lambda: [faam_bin, "demux", m4a_out, "-o", demux_out]),
-        ("MP4Box", mp4box_bin, lambda: [mp4box_bin, "-quiet", "-raw", "1", m4a_out, "-out", demux_out]),
+        ("faam", faam_bin, lambda: [faam_bin, "demux", m4a_out, "-o", demux_out, "--overwrite"]),
+        ("MP4Box", mp4box_bin, lambda: [mp4box_bin, "-quiet", "-raw", f"1:output={demux_out}", m4a_out]),
     ]
     for tool, bin_path, builder in demux_tools:
         if not bin_path or not os.path.exists(bin_path):
