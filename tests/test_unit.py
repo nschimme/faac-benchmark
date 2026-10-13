@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
+
 from helpers import REPO, write_wav
 
 sys.path.insert(0, REPO)
@@ -1773,6 +1775,32 @@ class TestRenderJobSummary(unittest.TestCase):
         summary = render_job_summary(data)
         self.assertIn("Code Footprint", summary)
         self.assertIn("No encoding matrix executed in this run", summary)
+
+
+
+class LagSearchWindowTests(unittest.TestCase):
+    """The alignment lag is searched within the codec-delay window only."""
+
+    def test_far_peak_does_not_win(self):
+        from utils import best_lag
+        n, sr = 3 * 48000, 48000
+        corr = np.zeros(2 * n - 1)
+        corr[(n - 1) + 95038] = 10.0   # a repeat of periodic music, two seconds off
+        corr[(n - 1) - 960] = 9.0      # the real alignment
+        self.assertEqual(best_lag(corr, n, sr), -960)
+
+    def test_measure_delay_offset_finds_a_codec_sized_delay(self):
+        from utils import measure_delay_offset
+        import soundfile as sf
+        rng = np.random.default_rng(1)
+        ref = rng.standard_normal(48000 * 3).astype("float32") * 0.1
+        dec = np.concatenate([np.zeros(960, dtype="float32"), ref[:-960]])
+        with tempfile.TemporaryDirectory() as td:
+            r, d = os.path.join(td, "r.wav"), os.path.join(td, "d.wav")
+            sf.write(r, ref, 48000)
+            sf.write(d, dec, 48000)
+            # Negative: the decode starts later, as the scorer reads the lag.
+            self.assertEqual(measure_delay_offset(r, d)[0], -960)
 
 
 if __name__ == "__main__":

@@ -195,7 +195,11 @@ try:
     r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
     d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
     corr = scipy.signal.correlate(r_norm, d_norm, mode="full")
-    lag = int(np.argmax(corr)) - (n_search - 1)
+    # Bounded to the codec delay: on periodic music a noisy decode can correlate
+    # better one repeat away (seconds off), which scores unrelated audio.
+    lags = np.arange(len(corr)) - (n_search - 1)
+    near = np.abs(lags) <= ZIMT_RATE // 4
+    lag = int(lags[near][np.argmax(corr[near])])
 
     if lag < 0:
         dec_aligned = dec_data[-lag:]
