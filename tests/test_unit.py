@@ -648,7 +648,9 @@ class TestAutoBackendSelection(unittest.TestCase):
     def test_run_benchmark_calls_phase2_mos(self):
         import run_benchmark
         with patch.object(sys, "argv", ["run_benchmark.py", "name", "out.json", "--skip-encode", "--skip-stereo"]):
-            with patch("subprocess.run") as mock_subproc:
+            with patch("subprocess.run") as mock_subproc, \
+                 patch.object(run_benchmark, "resolve_scoring_decoder",
+                              return_value=(MagicMock(), "ffmpeg", None)):
                 try:
                     run_benchmark.main()
                 except SystemExit:
@@ -1801,6 +1803,41 @@ class LagSearchWindowTests(unittest.TestCase):
             sf.write(d, dec, 48000)
             # Negative: the decode starts later, as the scorer reads the lag.
             self.assertEqual(measure_delay_offset(r, d)[0], -960)
+
+
+class ScoringDecoderResolutionTests(unittest.TestCase):
+    """The scoring decoder is the run's own FAAD3 when it has one, else the pinned FAAD2."""
+
+    def _fake_faad(self, td, banner):
+        path = os.path.join(td, "faad")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\necho '%s'\n" % banner)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_auto_uses_the_runs_own_faad3(self):
+        from codec_bench import decoders
+        with tempfile.TemporaryDirectory() as td:
+            faad3 = self._fake_faad(td, "FAAD 3.0 decoder")
+            with patch.object(decoders, "pinned_faad2_path", return_value="/pinned/faad"):
+                inst, dec_type, dec_bin = decoders.resolve_scoring_decoder("auto", faad3)
+            self.assertTrue(inst.is_faad3)
+            self.assertEqual((dec_type, dec_bin), ("faad", faad3))
+
+    def test_auto_scores_with_the_pinned_faad2_unless_a_faad3_is_given(self):
+        from codec_bench import decoders
+        with tempfile.TemporaryDirectory() as td:
+            faad2 = self._fake_faad(td, "FAAD2 2.10.0")
+            with patch.object(decoders, "pinned_faad2_path", return_value="/pinned/faad"):
+                for given in (None, faad2):
+                    _, dec_type, dec_bin = decoders.resolve_scoring_decoder("auto", given)
+                    self.assertEqual((dec_type, dec_bin), ("faad", "/pinned/faad"))
+
+    def test_explicit_decoder_is_used_as_given(self):
+        from codec_bench import decoders
+        with patch.object(decoders, "pinned_faad2_path", side_effect=AssertionError("not needed")):
+            _, dec_type, dec_bin = decoders.resolve_scoring_decoder("ffmpeg", None)
+        self.assertEqual((dec_type, dec_bin), ("ffmpeg", None))
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ import numpy as np
 from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
                    get_cached_ref_wav, corpus_dir, scenario_channels,
                    WorkerPool, start_orphan_watchdog)
-from codec_bench.decoders import get_decoder_instance
+from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 try:
     import ffmpeg
@@ -390,13 +390,13 @@ def main():
     parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary for provenance verification")
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
-    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
 
     args = parser.parse_args()
 
-    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
+    decoder_inst = resolve_scoring_decoder(args.decoder, args.decoder_bin, args.decoder_lib)[0]
 
     results_path = args.results_json
     aac_dir = args.aac_dir

@@ -145,7 +145,8 @@ with wave.open(out, 'wb') as w:
                     return subprocess.CompletedProcess(cmd, 0)
                 output = io.StringIO()
                 with patch.object(sys, 'argv', argv), patch.object(run_benchmark.subprocess, 'run', side_effect=fake_run), \
-                     patch.object(run_benchmark, 'get_decoder_instance', return_value=SimpleNamespace(name='fake')), \
+                     patch.object(run_benchmark, 'resolve_scoring_decoder',
+                              return_value=(SimpleNamespace(name='fake'), 'ffmpeg', None)), \
                      redirect_stdout(output):
                     run_benchmark.main()
                 data = json.loads(result.read_text())

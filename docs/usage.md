@@ -47,7 +47,7 @@ Common options:
 | :--- | :--- |
 | `--encoder faac\|ffmpeg\|fdkaac\|aac_enc\|falabaac\|afconvert\|opus\|lame\|exhale\|xhe` | Pluggable encoder choice for Phase 1 encoding (default: `faac`) |
 | `--encoder-bin <path>` / `--encoder-lib <path>` | Path overrides for pluggable encoder binary or library |
-| `--decoder ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Pluggable decoder choice for Phase 2 (MOS) and Phase 3 (Stereo/Transient) evaluation passes (default: `ffmpeg`) |
+| `--decoder auto\|ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Decoder for Phase 2 (MOS) and Phase 3 (Stereo/Transient). `auto` (default) scores with the run's own FAAD3 when `--decoder-bin` is one, else the pinned FAAD2 (`$FAAD_BIN` or `bin/faad` from `scripts/build_faad2.sh`); streams it cannot decode (Opus, MP3, xHE-AAC) fall back to FFmpeg |
 | `--decoder-bin <path>` / `--decoder-lib <path>` | Path overrides for pluggable decoder binary or library |
 | `--rate-control abr\|vbr\|cbr` | Choose rate control mode (`abr` using `-b` bitrates, `vbr` using `-q` quality targets, or `cbr` using `-b --cbr`: the bit reservoir holds the rate exactly, so `bias_percent` is a hard target there) |
 | `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
