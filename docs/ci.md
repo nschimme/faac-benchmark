@@ -143,7 +143,7 @@ Summary, and writes `summary.md` for a PR comment.
 | `summary-output` | Output filename for the Markdown summary. | No | `summary.md` |
 | `cases-output` | Output filename for per-clip test cases details (optional). | No | |
 | `strict-decode` | Treat candidate decode validation failures as hard regressions. | No | `false` |
-| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`, `haze`). | No | |
+| `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`, `haze`, `decoder`, `gapless`). | No | |
 | `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
 | `skip-graphs` | Skip generating Mermaid.js charts in the report. | No | `false` |
 | `fail-on-regression` | Fail job if compare_results detects regressions. | No | `true` |
@@ -180,7 +180,7 @@ validation. The report always shows a **Decode Errors** count.
 ## Choosing gates (`--gates`)
 
 `compare_results.py` records every verdict as a named gate — `mos`,
-`footprint`, `throughput`, `bd_rate`, `haze` — and `--gates NAMES` selects which of
+`footprint`, `throughput`, `bd_rate`, `haze`, `decoder`, `gapless` — and `--gates NAMES` selects which of
 them may fail the run. Unselected gates still appear in the report, as skips,
 so narrowing the selection never hides an axis.
 

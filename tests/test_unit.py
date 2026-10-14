@@ -1840,5 +1840,83 @@ class ScoringDecoderResolutionTests(unittest.TestCase):
         self.assertEqual((dec_type, dec_bin), ("ffmpeg", None))
 
 
+def _box(kind, payload=b""):
+    import struct
+    return struct.pack(">I4s", 8 + len(payload), kind) + payload
+
+
+class GaplessTagTests(unittest.TestCase):
+    def _mp4(self, elst, smpb, decoy=False):
+        trak = _box(b"trak", _box(b"edts", _box(b"elst", b"\0" * 16)) if elst else _box(b"tkhd", b"\0" * 8))
+        udta = _box(b"udta", _box(b"meta", _box(b"ilst", b"----iTunSMPB" if smpb else b"")))
+        mdat = _box(b"mdat", b"iTunSMPB" if decoy else b"")
+        return _box(b"ftyp", b"M4A ") + _box(b"moov", trak + udta) + mdat
+
+    def _tags(self, data):
+        from gapless import mp4_gapless_tags
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as f:
+            f.write(data)
+            f.flush()
+            return mp4_gapless_tags(f.name)
+
+    def test_reads_both_tags(self):
+        self.assertEqual(self._tags(self._mp4(True, True)), {"elst": True, "itunsmpb": True})
+
+    def test_a_stream_without_tags_reads_as_untagged(self):
+        self.assertEqual(self._tags(self._mp4(False, False)), {"elst": False, "itunsmpb": False})
+
+    def test_media_data_cannot_fake_a_tag(self):
+        self.assertFalse(self._tags(self._mp4(False, False, decoy=True))["itunsmpb"])
+
+
+class GaplessGateTests(unittest.TestCase):
+    """Tagged streams must be exact, lost tags fail, and untagged history is left alone."""
+
+    def _gate(self, base, cand):
+        import compare_results
+        suite = {"gates": [], "has_regression": False}
+        compare_results.check_gapless(suite, {"gapless": base} if base is not None else {}, {"gapless": cand} if cand is not None else {})
+        return suite["gates"][0]["status"], suite["gates"][0]["detail"]
+
+    @staticmethod
+    def _block(**cases):
+        return {"streams": len(cases), "cases": {k: dict(dict(elst=False, itunsmpb=False, frame_error=0, lag=0), **v)
+                                                 for k, v in cases.items()}, "failed": []}
+
+    def test_historic_baseline_and_an_exact_tagged_candidate_pass(self):
+        base = self._block(a=dict(lag=2048, frame_error=1000))     # untagged, wherever its muxer put it
+        cand = self._block(a=dict(elst=True, itunsmpb=True))
+        self.assertEqual(self._gate(base, cand)[0], "pass")
+
+    def test_a_tagged_stream_that_is_not_exact_fails(self):
+        cand = self._block(a=dict(elst=True, lag=960))
+        status, detail = self._gate(self._block(a=dict(elst=True)), cand)
+        self.assertEqual(status, "fail")
+        self.assertIn("not sample-exact", detail)
+
+    def test_losing_the_baselines_tags_fails(self):
+        status, detail = self._gate(self._block(a=dict(elst=True)), self._block(a=dict(lag=960)))
+        self.assertEqual(status, "fail")
+        self.assertIn("lost", detail)
+
+    def test_neither_side_tagged_skips_instead_of_passing(self):
+        self.assertEqual(self._gate(self._block(a=dict(lag=2048)), self._block(a=dict(lag=2048)))[0], "skip")
+
+    def test_the_report_mentions_gapless_only_when_it_fails(self):
+        from compare_results import gate_is_reported
+        gate = lambda name, status: {"name": name, "status": status, "detail": ""}
+        for status in ("pass", "skip"):
+            self.assertFalse(gate_is_reported(gate("gapless", status)))
+        for status in ("fail", "warn"):
+            self.assertTrue(gate_is_reported(gate("gapless", status)))
+        for status in ("pass", "skip", "fail"):       # every other gate reports as before
+            self.assertTrue(gate_is_reported(gate("haze", status)))
+
+    def test_missing_or_failed_phase(self):
+        self.assertEqual(self._gate(None, None)[0], "skip")
+        self.assertEqual(self._gate(None, {"error": "boom"})[0], "fail")
+        self.assertEqual(self._gate(None, {"skipped": "no streams"})[0], "skip")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -71,6 +71,8 @@ The script runs five phases:
 
 5. **Phase 5** — exact decoder PCM comparison on the Phase 1 streams, when both faad binaries are supplied. See [Decoder output equality](metrics.md#decoder-output-equality).
 
+Alongside Phase 2 (not a phase of its own), the **gapless check** (`gapless.py`) looks at whether each stream carries the `elst` / `iTunSMPB` tags and whether the pinned FAAD2 then reproduces the source exactly. It is skipped with `--skip-gapless`. See [Gapless playback](metrics.md#gapless-playback).
+
 ### Filtering tests and scenarios
 
 ```bash
