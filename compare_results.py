@@ -479,6 +479,54 @@ def check_haze(suite_results, base, cand):
     else:
         add_gate(suite_results, "haze", "pass", detail)
 
+# Gapless gate (phase6_gapless.py). A stream that carries an elst or an
+# iTunSMPB tag claims sample-accurate playback, so a gapless-aware decode of it
+# must match the source in length and alignment. Builds that predate the tags
+# write neither and land wherever their muxer put them, so an untagged stream is
+# never asked to be exact; a stream that loses its tags is the regression.
+GAPLESS_FRAME_TOL = 4           # decoded minus source frames, at the source rate
+GAPLESS_LAG_TOL = 8             # samples of offset against the source
+
+
+def _gapless_tagged(case):
+    return bool(case and (case.get("elst") or case.get("itunsmpb")))
+
+
+def check_gapless(suite_results, base, cand):
+    """Gate gapless playback of the candidate's streams against the baseline's."""
+    block = cand.get("gapless")
+    if block is not None and "error" in block:
+        add_gate(suite_results, "gapless", "fail", f"gapless phase did not run: {block['error']}")
+        return
+    if not block or "skipped" in block:
+        add_gate(suite_results, "gapless", "skip",
+                 (block or {}).get("skipped", "no gapless block in the candidate (phase not run)"))
+        return
+    base_cases = (base.get("gapless") or {}).get("cases") or {}
+    inexact, lost, tagged = [], [], 0
+    for key, case in sorted(block["cases"].items()):
+        if _gapless_tagged(case):
+            tagged += 1
+            if abs(case["frame_error"]) > GAPLESS_FRAME_TOL or abs(case["lag"]) > GAPLESS_LAG_TOL:
+                inexact.append(f"{key} ({case['frame_error']:+d} frames, lag {case['lag']:+d})")
+        elif _gapless_tagged(base_cases.get(key)):
+            lost.append(key)
+    total = len(block["cases"])
+    if not tagged and not lost:
+        add_gate(suite_results, "gapless", "skip",
+                 f"no gapless metadata in the candidate's {total} streams, and none to lose")
+        return
+    base_tagged = sum(1 for c in base_cases.values() if _gapless_tagged(c))
+    detail = f"{tagged} of {total} streams tagged ({base_tagged} in the baseline)"
+    problems = []
+    if inexact:
+        problems.append(f"{len(inexact)} tagged stream(s) not sample-exact: " + ", ".join(inexact[:5]))
+    if lost:
+        problems.append(f"{len(lost)} stream(s) lost the baseline's gapless tags: " + ", ".join(lost[:5]))
+    add_gate(suite_results, "gapless", "fail" if problems else "pass",
+             detail + ("; " + "; ".join(problems) if problems else ", all exact"))
+
+
 def check_decoder(suite_results, base, cand):
     """Exact output gate; the candidate block already compares both binaries."""
     block = cand.get("decoder_diff")
@@ -918,6 +966,7 @@ def analyze_pair(base_file, cand_file):
     check_bd_rate(suite_results, base, cand)
     check_haze(suite_results, base, cand)
     check_decoder(suite_results, base, cand)
+    check_gapless(suite_results, base, cand)
 
     return suite_results
 
@@ -1330,7 +1379,7 @@ def main():
                              "(default: report only, do not fail the run)")
     parser.add_argument("--gates", metavar="NAMES",
                         help="Comma-separated gate names allowed to fail "
-                             "(mos, footprint, throughput, bd_rate, haze, decoder). Default: all. "
+                             "(mos, footprint, throughput, bd_rate, haze, decoder, gapless). Default: all. "
                              "Unselected gates are reported as skips.")
     parser.add_argument("--footprint-allow", type=int, default=0, metavar="BYTES",
                         help="Accept up to BYTES of .text+.rodata+.data growth without failing. "

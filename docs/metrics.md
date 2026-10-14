@@ -136,6 +136,28 @@ Evaluating library memory requirements separates non-volatile code storage (Flas
 - **Static Process RAM Footprint**: Calculated as `.data + .bss`. Initialized and uninitialized writable variables allocated in RAM when loaded into process memory. Converting mutable tables to `const` reduces `.data`, directly saving RAM.
 - **Peak Dynamic RAM (Max RSS)**: Measured in isolated single-process runs during throughput benchmark passes to track peak physical memory high-water marks (in KB/MB) free from parallel worker pool overhead.
 
+## Gapless Playback
+
+An MP4 records the encoder delay and padding in an edit list (`elst`) and an
+`iTunSMPB` tag. Without them a player cannot trim the priming samples. Phase 6
+(`phase6_gapless.py`) reads, for up to 100 streams per run, whether either tag is
+present, then decodes the stream with the pinned FAAD2 (which trims by them) and
+reports `frame_error` (decoded minus source frames, at the source rate) and `lag`
+(sample offset against the source, searched within the codec-delay window).
+
+The `gapless` gate judges each stream by what it claims, so builds that predate
+the tags are not failed for lacking them:
+
+- a candidate stream **with** tags must be sample-exact: |`frame_error`| <= 4 and
+  |`lag`| <= 8 samples, otherwise it fails;
+- a stream that **had** tags in the baseline and has none in the candidate fails;
+- a stream untagged on both sides is not judged, and a run with no tagged stream
+  on either side is reported as a skip, never a pass.
+
+Old faac decodes by accident of its muxer (1.30: aligned, 1.40: 2048 samples
+late), which is why untagged streams are never required to be exact. The block is
+stored under `gapless` in the results JSON.
+
 ## Decoder output equality
 
 Phase 5 (`phase5_decoder_diff.py`) decodes each selected `.m4a` stream once with
