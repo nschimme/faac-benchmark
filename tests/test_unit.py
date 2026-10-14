@@ -1853,7 +1853,7 @@ class GaplessTagTests(unittest.TestCase):
         return _box(b"ftyp", b"M4A ") + _box(b"moov", trak + udta) + mdat
 
     def _tags(self, data):
-        from phase6_gapless import mp4_gapless_tags
+        from gapless import mp4_gapless_tags
         with tempfile.NamedTemporaryFile(suffix=".m4a") as f:
             f.write(data)
             f.flush()
@@ -1901,6 +1901,16 @@ class GaplessGateTests(unittest.TestCase):
 
     def test_neither_side_tagged_skips_instead_of_passing(self):
         self.assertEqual(self._gate(self._block(a=dict(lag=2048)), self._block(a=dict(lag=2048)))[0], "skip")
+
+    def test_the_report_mentions_gapless_only_when_it_fails(self):
+        from compare_results import gate_is_reported
+        gate = lambda name, status: {"name": name, "status": status, "detail": ""}
+        for status in ("pass", "skip"):
+            self.assertFalse(gate_is_reported(gate("gapless", status)))
+        for status in ("fail", "warn"):
+            self.assertTrue(gate_is_reported(gate("gapless", status)))
+        for status in ("pass", "skip", "fail"):       # every other gate reports as before
+            self.assertTrue(gate_is_reported(gate("haze", status)))
 
     def test_missing_or_failed_phase(self):
         self.assertEqual(self._gate(None, None)[0], "skip")

@@ -41,7 +41,7 @@ def main():
                         help="Measure only throughput and merge into an existing output JSON")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip stereo image (inter-channel coherence) computation")
     parser.add_argument("--skip-transient", action="store_true", help="Skip transient fidelity (attack-centroid-shift) computation")
-    parser.add_argument("--skip-gapless", action="store_true", help="Skip the gapless-playback check (Phase 6)")
+    parser.add_argument("--skip-gapless", action="store_true", help="Skip the gapless-playback check")
     parser.add_argument("--skip-haze", action="store_true", help="Skip the bass-haze check (synthetic clip, faac only)")
     parser.add_argument("--sha", help="Commit SHA to associate with these results")
     parser.add_argument("--scenarios", help="Comma-separated list of scenarios to run")
@@ -177,7 +177,7 @@ def main():
 
         subprocess.run(cmd_phase1, env=run_env, check=True)
 
-        # Phase 6 (gapless playback) needs only the Phase 1 streams, so it runs
+        # The gapless check needs only the Phase 1 streams, so it runs
         # alongside Phase 2. It reads a snapshot and writes a side file because
         # Phase 2 rewrites the result JSON; the block is merged in below.
         gapless_job = None
@@ -185,7 +185,7 @@ def main():
             snapshot, side = run["output"] + ".gapless-in", run["output"] + ".gapless-out"
             shutil.copyfile(run["output"], snapshot)
             gapless_job = (subprocess.Popen(
-                [sys.executable, os.path.join(script_dir, "phase6_gapless.py"), run["output"],
+                [sys.executable, os.path.join(script_dir, "gapless.py"), run["output"],
                  os.path.join(script_dir, "output"), external_data_dir, "--snapshot", snapshot, "--out", side],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True), snapshot, side)
 
@@ -266,9 +266,9 @@ def main():
                 store_block(run["output"], {"error": reason})
                 print(f"Warning: Phase 5 (decoder diff) failed: {reason}")
 
-        # Phase 6 joins here, after Phases 2-5 have finished writing the result JSON.
+        # The gapless check joins here, after Phases 2-5 have finished writing the result JSON.
         if gapless_job:
-            from phase6_gapless import store_block as store_gapless
+            from gapless import store_block as store_gapless
             proc, snapshot, side = gapless_job
             _, err = proc.communicate()
             try:
@@ -278,7 +278,7 @@ def main():
                 else:
                     reason = (err.strip() or f"exit code {proc.returncode}").splitlines()[-1]
                     store_gapless(run["output"], {"error": reason})
-                    print(f"Warning: Phase 6 (gapless) failed: {reason}")
+                    print(f"Warning: gapless check failed: {reason}")
             finally:
                 for tmp in (snapshot, side):
                     if os.path.exists(tmp):

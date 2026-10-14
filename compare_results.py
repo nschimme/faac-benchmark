@@ -479,7 +479,7 @@ def check_haze(suite_results, base, cand):
     else:
         add_gate(suite_results, "haze", "pass", detail)
 
-# Gapless gate (phase6_gapless.py). A stream that carries an elst or an
+# Gapless gate (gapless.py). A stream that carries an elst or an
 # iTunSMPB tag claims sample-accurate playback, so a gapless-aware decode of it
 # must match the source in length and alignment. Builds that predate the tags
 # write neither and land wherever their muxer put them, so an untagged stream is
@@ -492,15 +492,25 @@ def _gapless_tagged(case):
     return bool(case and (case.get("elst") or case.get("itunsmpb")))
 
 
+# Gates that earn a report line only when something is wrong. The decision stays
+# in the gates list of the results either way.
+QUIET_GATES = {"gapless"}
+
+
+def gate_is_reported(gate):
+    """Whether the report prints this gate: always, except quiet gates that passed or skipped."""
+    return gate["name"] not in QUIET_GATES or gate["status"] in ("fail", "warn")
+
+
 def check_gapless(suite_results, base, cand):
     """Gate gapless playback of the candidate's streams against the baseline's."""
     block = cand.get("gapless")
     if block is not None and "error" in block:
-        add_gate(suite_results, "gapless", "fail", f"gapless phase did not run: {block['error']}")
+        add_gate(suite_results, "gapless", "fail", f"gapless check did not run: {block['error']}")
         return
     if not block or "skipped" in block:
         add_gate(suite_results, "gapless", "skip",
-                 (block or {}).get("skipped", "no gapless block in the candidate (phase not run)"))
+                 (block or {}).get("skipped", "no gapless block in the candidate (check not run)"))
         return
     base_cases = (base.get("gapless") or {}).get("cases") or {}
     inexact, lost, tagged = [], [], 0
@@ -1762,6 +1772,8 @@ def main():
                     icons = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
                     report.append("\n**Gates**")
                     for g in data["gates"]:
+                        if not gate_is_reported(g):
+                            continue
                         if g["name"] == "decoder":
                             continue  # one summary line; stream details belong only in cases
                         if g["name"] == "footprint":

@@ -1,5 +1,5 @@
 """
- * FAAC Benchmark Suite — Phase 6: Gapless Playback
+ * FAAC Benchmark Suite — Gapless Playback check
  * Copyright (C) 2026 Nils Schimmelmann
  *
  * This library is free software; you can redistribute it and/or
@@ -156,7 +156,7 @@ def summary(block):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase 6: gapless playback")
+    parser = argparse.ArgumentParser(description="Gapless playback check")
     parser.add_argument("results_json", help="Result JSON to update in place")
     parser.add_argument("aac_dir", help="Phase 1 output directory")
     parser.add_argument("external_data_dir", help="Reference corpus directory")

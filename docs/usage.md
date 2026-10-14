@@ -70,7 +70,8 @@ The script runs five phases:
 4. **Phase 4** — bass haze (`phase4_haze.py`): short synthetic clips (a loud bass over digital silence, the same bass under quiet treble, and kick drums) encoded with fixed options (LC and HE), measuring the decoded spectrum above 1.2 kHz and the error just before each kick. It needs only the `faac` binary, is skipped for other encoders and with `--skip-encode` or `--skip-haze`, and a failure leaves the block out rather than failing the run. See [Bass Haze](metrics.md#bass-haze).
 
 5. **Phase 5** — exact decoder PCM comparison on the Phase 1 streams, when both faad binaries are supplied. See [Decoder output equality](metrics.md#decoder-output-equality).
-6. **Phase 6** — gapless playback (`phase6_gapless.py`): whether each stream carries the `elst` / `iTunSMPB` tags and whether the pinned FAAD2 then reproduces the source exactly. It runs alongside Phase 2 and is skipped with `--skip-gapless`. See [Gapless playback](metrics.md#gapless-playback).
+
+Alongside Phase 2 (not a phase of its own), the **gapless check** (`gapless.py`) looks at whether each stream carries the `elst` / `iTunSMPB` tags and whether the pinned FAAD2 then reproduces the source exactly. It is skipped with `--skip-gapless`. See [Gapless playback](metrics.md#gapless-playback).
 
 ### Filtering tests and scenarios
 
