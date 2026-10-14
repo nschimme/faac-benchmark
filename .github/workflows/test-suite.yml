@@ -20,7 +20,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faac faad fdkaac ffmpeg valgrind
+          sudo apt-get install -y faac fdkaac ffmpeg valgrind cmake
+
+      - name: Cache FAAD2
+        uses: actions/cache@v6
+        with:
+          path: bin/faad*
+          key: faad2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_faad2.sh') }}
+
+      - name: Build FAAD2
+        run: echo "FAAD_BIN=$(./scripts/build_faad2.sh)" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |

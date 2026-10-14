@@ -64,7 +64,7 @@ from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
                    WorkerPool, start_orphan_watchdog)
 from transient import attack_centroid_deltas
-from codec_bench.decoders import get_decoder_instance
+from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 # 48 kHz, 50 ms analysis frames.
 FRAME = 2400
@@ -266,12 +266,12 @@ def main():
                         help="Skip inter-channel coherence (stereo image) scoring")
     parser.add_argument("--skip-transient", action="store_true",
                         help="Skip attack-centroid-shift (transient fidelity) scoring")
-    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     args = parser.parse_args()
 
-    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
+    decoder_inst = resolve_scoring_decoder(args.decoder, args.decoder_bin, args.decoder_lib)[0]
 
     want_ic = not args.skip_stereo
     want_transient = not args.skip_transient

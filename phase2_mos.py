@@ -33,7 +33,7 @@ import numpy as np
 from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
                    get_cached_ref_wav, corpus_dir, scenario_channels,
                    WorkerPool, start_orphan_watchdog)
-from codec_bench.decoders import get_decoder_instance
+from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 try:
     import ffmpeg
@@ -195,7 +195,11 @@ try:
     r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
     d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
     corr = scipy.signal.correlate(r_norm, d_norm, mode="full")
-    lag = int(np.argmax(corr)) - (n_search - 1)
+    # Bounded to the codec delay: on periodic music a noisy decode can correlate
+    # better one repeat away (seconds off), which scores unrelated audio.
+    lags = np.arange(len(corr)) - (n_search - 1)
+    near = np.abs(lags) <= ZIMT_RATE // 4
+    lag = int(lags[near][np.argmax(corr[near])])
 
     if lag < 0:
         dec_aligned = dec_data[-lag:]
@@ -386,13 +390,13 @@ def main():
     parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary for provenance verification")
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
-    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
 
     args = parser.parse_args()
 
-    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
+    decoder_inst = resolve_scoring_decoder(args.decoder, args.decoder_bin, args.decoder_lib)[0]
 
     results_path = args.results_json
     aac_dir = args.aac_dir

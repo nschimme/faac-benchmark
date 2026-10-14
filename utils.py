@@ -216,6 +216,23 @@ def zoomed_y_range(vals, y_range):
         axis_lo, axis_hi = y_floor, y_ceiling
     return axis_lo, axis_hi
 
+# Codec delay is a few thousand samples; a search wider than this lets a repeat
+# of periodic music outscore the true alignment when the decode is noisy.
+MAX_LAG_S = 0.25
+
+
+def lag_window(n_search, sr, max_lag_s=MAX_LAG_S):
+    """Lags (samples) of a full cross-correlation of n_search samples, and the mask of those within max_lag_s."""
+    lags = np.arange(2 * n_search - 1) - (n_search - 1)
+    return lags, np.abs(lags) <= int(max_lag_s * sr)
+
+
+def best_lag(corr, n_search, sr):
+    """The lag of the tallest correlation peak within the codec-delay window."""
+    lags, near = lag_window(n_search, sr)
+    return int(lags[near][np.argmax(corr[near])])
+
+
 def measure_delay_offset(ref_wav_path, cand_wav_path):
     """Measures sample alignment timing offset (in ms) relative to reference WAV.
 
@@ -247,7 +264,7 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
         r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
         c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
         corr = scipy.signal.correlate(r_norm, c_norm, mode='full')
-        lag = int(np.argmax(corr)) - (n_search - 1)
+        lag = best_lag(corr, n_search, r_sr)
         lag_ms = (lag / float(r_sr)) * 1000.0
         return lag, float(lag_ms)
     except Exception:
@@ -452,6 +469,8 @@ def compute_snr(ref_wav_path, cand_wav_path):
         # On loud periodic/tonal clips (e.g. the 5.1 channel-ID tones) the
         # correlation has many near-equal peaks and the tallest is often a
         # wrong lag, so pick among the top peaks by actual residual.
+        lags, near = lag_window(n_search, r_sr)
+        corr = np.where(near, corr, -np.inf)
         n_peaks = min(32, len(corr))
         best_lag, best_err = None, None
         for idx in np.argpartition(corr, -n_peaks)[-n_peaks:]:

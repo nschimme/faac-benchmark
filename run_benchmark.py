@@ -19,7 +19,7 @@ import shutil
 import copy
 
 from utils import calculate_provenance_hash, get_git_tag
-from codec_bench.decoders import get_decoder_instance
+from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 def main():
     parser = argparse.ArgumentParser(description="FAAC Benchmark Suite")
@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--encoder", default="faac", help="Encoder type: faac, ffmpeg, fdkaac, aac_enc, falabaac, afconvert, opus, lame, exhale, xhe")
     parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary")
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library override")
-    parser.add_argument("--decoder", default="ffmpeg", help="Decoder type: ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-ref-bin", help="Baseline faad binary for exact decoder comparison")
     parser.add_argument("--skip-decoder-diff", action="store_true", help="Skip Phase 5 decoder comparison")
@@ -58,7 +58,7 @@ def main():
 
     args, unknown = parser.parse_known_args()
 
-    decoder_inst = get_decoder_instance(args.decoder, binary_path=args.decoder_bin, lib_override=args.decoder_lib)
+    decoder_inst, scoring_decoder, scoring_decoder_bin = resolve_scoring_decoder(args.decoder, args.decoder_bin, args.decoder_lib)
 
     # A bare filename (no directory component) is an ad hoc/manual run --
     # default it under results/ instead of littering the repo root. Callers
@@ -186,12 +186,12 @@ def main():
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
-                "--decoder", args.decoder
+                "--decoder", scoring_decoder
             ]
             if args.encoder_bin and args.encoder_lib:
                 cmd_phase2.extend(["--encoder-bin", args.encoder_bin, "--encoder-lib", args.encoder_lib])
-            if args.decoder_bin:
-                cmd_phase2.extend(["--decoder-bin", args.decoder_bin])
+            if scoring_decoder_bin:
+                cmd_phase2.extend(["--decoder-bin", scoring_decoder_bin])
             if args.decoder_lib:
                 cmd_phase2.extend(["--decoder-lib", args.decoder_lib])
             if run["extra_args"]:
@@ -206,10 +206,10 @@ def main():
                 run["output"],
                 os.path.join(script_dir, "output"),
                 external_data_dir,
-                "--decoder", args.decoder
+                "--decoder", scoring_decoder
             ]
-            if args.decoder_bin:
-                cmd_phase3.extend(["--decoder-bin", args.decoder_bin])
+            if scoring_decoder_bin:
+                cmd_phase3.extend(["--decoder-bin", scoring_decoder_bin])
             if args.decoder_lib:
                 cmd_phase3.extend(["--decoder-lib", args.decoder_lib])
             if args.skip_stereo:

@@ -319,8 +319,13 @@ result JSON with build provenance (`faac_git_sha`, `faac_args`), so CI artifacts
 
 Supply `faad-bin` (candidate) and `faad-ref-bin` (baseline), both defaulting to
 empty, to enable Phase 5. The equivalent runner options are `--decoder-bin` and
-`--decoder-ref-bin`; `--skip-decoder-diff` disables it. No change to the scoring
-`--decoder` selection is needed.
+`--decoder-ref-bin`; `--skip-decoder-diff` disables it.
+
+The scoring decoder defaults to `auto`: the pinned FAAD2 (built by
+`scripts/build_faad2.sh`), or, when `faad-bin` is a FAAD3, that build's own FAAD3.
+Pass `faad-bin` to the baseline run as well as the candidate run, and only when
+both builds ship a FAAD3; otherwise leave it empty so both runs are scored by
+the same pinned FAAD2.
 
 The candidate's `decoder_diff` block compares both binaries on the same Phase 1
 matrix streams, sorted by path and capped at 200. Missing binaries or a missing
