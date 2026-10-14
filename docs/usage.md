@@ -9,7 +9,11 @@ reflect your code and the provenance hashing stays meaningful.
 
 ```bash
 # System (Ubuntu/Debian)
-sudo apt-get update && sudo apt-get install -y meson ninja-build bc faad ffmpeg
+sudo apt-get update && sudo apt-get install -y meson ninja-build bc cmake ffmpeg
+
+# FAAD2 reference decoder: built from the pinned release into bin/faad. The distro
+# package lags upstream and lacks the gapless MP4 trimming (2.11.4).
+export FAAD_BIN="$(./scripts/build_faad2.sh)"
 
 # Python
 python3 -m venv .venv
