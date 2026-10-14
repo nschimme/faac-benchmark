@@ -3,10 +3,13 @@
 # Build the reference FAAD2 decoder (faad) for the decoder gate and the
 # conformance reference.
 #
-# Pinned to a release rather than the distro package: the Ubuntu package lags
-# upstream, and 2.11.4 is the first release that trims the encoder delay and the
-# SBR decoder delay from MP4 output using the elst atom and iTunSMPB (gapless),
-# so decodes line up with the source without a search.
+# Pinned to an upstream commit rather than the distro package: the Ubuntu
+# package lags upstream. 2.11.4 is the first release that trims the encoder
+# delay and the SBR decoder delay from MP4 output using the elst atom and
+# iTunSMPB (gapless); the pinned commit also drains the SBR decoder delay at the
+# end of the stream (FreewareAdvancedAudio/faad2#16), without which a stream
+# whose padding is under 481 samples decodes short. Decodes line up with the
+# source without a search.
 #
 # Prints the path of the built binary. Idempotent: reuses bin/faad when it was
 # built from this version.
@@ -14,8 +17,9 @@
 
 set -euo pipefail
 
-FAAD2_VERSION="2.11.4"
-FAAD2_SHA256="ee479ccbae4a8387ab696e6f21a481bd83fe3881471cafa81b4ae59d7d3aed43"
+FAAD2_COMMIT="287c00ccf20086db395869cfe8b09fc50a76e988"
+FAAD2_VERSION="2.11.4+${FAAD2_COMMIT:0:7}"
+FAAD2_SHA256="00fd5f6b898377d67d06a751f535669fe14de9bf3f620fb5921b70240608e5ff"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -35,7 +39,7 @@ TARBALL="$BUILD_DIR/faad2-$FAAD2_VERSION.tar.gz"
 
 if [[ ! -f "$TARBALL" ]]; then
     echo "==> Downloading FAAD2 $FAAD2_VERSION..." >&2
-    curl -fsSL -o "$TARBALL" "https://github.com/knik0/faad2/archive/refs/tags/$FAAD2_VERSION.tar.gz" >&2
+    curl -fsSL -o "$TARBALL" "https://github.com/FreewareAdvancedAudio/faad2/archive/$FAAD2_COMMIT.tar.gz" >&2
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
