@@ -37,7 +37,7 @@ import soundfile as sf
 
 from codec_bench.decoders import pinned_faad2_path
 from phase2_mos import get_sample_info
-from utils import best_lag, scenario_rate, wav_conv
+from utils import MAX_LAG_S, scenario_rate, wav_conv
 
 MAX_STREAMS = 100       # deterministic stride over the matrix; each costs one decode
 SEARCH_S = 3            # seconds of audio the lag is measured on
@@ -80,6 +80,24 @@ def mp4_gapless_tags(path):
     return tags
 
 
+def phat_lag(ref, dec, rate):
+    """Sample offset of dec against ref (positive: dec starts early) within the codec-delay window.
+
+    A plain cross-correlation is dominated by whatever carries the most energy, and a
+    low-rate decode keeps the bass and little else: its peak lands on a bass cycle and
+    wanders by thousands of samples with the window. Whitening the spectrum first
+    (phase transform) makes every bin vote for the delay alike, so the answer is the
+    alignment itself and does not depend on which part of the clip is measured."""
+    n = len(ref)
+    size = 1 << (2 * n - 1).bit_length()
+    spec = np.fft.rfft(ref, size) * np.conj(np.fft.rfft(dec, size))
+    spec /= np.abs(spec) + 1e-12 * np.abs(spec).max()
+    corr = np.fft.irfft(spec, size)
+    reach = min(n - 1, int(MAX_LAG_S * rate))
+    lags = np.concatenate([np.arange(reach + 1), np.arange(-reach, 0)])
+    return int(lags[np.argmax(np.concatenate([corr[:reach + 1], corr[size - reach:]]))])
+
+
 def measure(aac_path, ref_input, rate, channels, faad):
     """(frame_error, lag, decoded rate) of one stream against its source."""
     with tempfile.TemporaryDirectory() as td:
@@ -101,8 +119,7 @@ def measure(aac_path, ref_input, rate, channels, faad):
     n = min(len(r), len(d), ref_rate * SEARCH_S)
     if n == 0:
         raise RuntimeError("empty decode")
-    corr = scipy.signal.correlate(r[:n] / (np.std(r[:n]) + 1e-10), d[:n] / (np.std(d[:n]) + 1e-10), mode="full")
-    return len(dec) - len(ref), best_lag(corr, n, ref_rate), dec_rate
+    return len(dec) - len(ref), phat_lag(r[:n], d[:n], ref_rate), dec_rate
 
 
 def measure_matrix(data, aac_dir, external_data_dir, results_path, faad):

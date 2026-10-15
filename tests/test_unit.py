@@ -1869,6 +1869,48 @@ class GaplessTagTests(unittest.TestCase):
         self.assertFalse(self._tags(self._mp4(False, False, decoy=True))["itunsmpb"])
 
 
+class GaplessLagTests(unittest.TestCase):
+    """The lag estimator finds a known shift in a bass-heavy, band-limited decode."""
+
+    RATE = 48000
+
+    def _pair(self, shift, seconds=3, bass_skew=0):
+        rng = np.random.default_rng(7)
+        n = self.RATE * seconds
+        t = np.arange(n) / self.RATE
+        body = rng.standard_normal(n)
+        bass = 40 * np.sin(2 * np.pi * 55 * t) + 25 * np.sin(2 * np.pi * 82 * t)
+        ref = body + bass
+        # What a 16 kbps decode keeps: the broadband content low-passed, the bass line
+        # displaced by the codec's low-frequency phase error.
+        spec = np.fft.rfft(np.roll(body, -shift))
+        spec[int(4000 * n / self.RATE):] = 0
+        dec = np.fft.irfft(spec, n) + np.roll(bass, -shift - bass_skew) + 0.3 * rng.standard_normal(n)
+        return ref, dec
+
+    def test_finds_known_shifts(self):
+        from gapless import phat_lag
+        for shift in (0, 37, -89, 2112):
+            ref, dec = self._pair(shift)
+            self.assertEqual(phat_lag(ref, dec, self.RATE), shift, shift)
+
+    def test_follows_the_content_not_the_bass_line(self):
+        from gapless import phat_lag
+        from utils import best_lag
+        import scipy.signal
+        ref, dec = self._pair(37, bass_skew=300)
+        self.assertEqual(phat_lag(ref, dec, self.RATE), 37)
+        corr = scipy.signal.correlate(ref / ref.std(), dec / dec.std(), mode="full")
+        self.assertNotEqual(best_lag(corr, len(ref), self.RATE), 37)    # the control: plain correlation is fooled
+
+    def test_does_not_depend_on_which_window_is_measured(self):
+        from gapless import phat_lag
+        ref, dec = self._pair(0, seconds=9)
+        lags = [phat_lag(ref[o:o + 3 * self.RATE], dec[o:o + 3 * self.RATE], self.RATE)
+                for o in (0, 3 * self.RATE, 6 * self.RATE)]
+        self.assertTrue(all(abs(v) <= 2 for v in lags), lags)
+
+
 class GaplessGateTests(unittest.TestCase):
     """Tagged streams must be exact, lost tags fail, and untagged history is left alone."""
 
