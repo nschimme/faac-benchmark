@@ -312,3 +312,10 @@ audio duration for all compared builds and inspect actual elapsed samples.
 
 RIFF/RF64 inspection is shared by decoder A/B preflight, throughput byte counts,
 and Phase 5 PCM comparisons. PCM hashes are streamed in 1 MiB blocks.
+
+## dabplus_960/
+
+DAB+ (960-sample AAC, HE-AAC v1/v2) conformance probe for libfaad3 against FDK,
+FFmpeg and FAAD2. `build_odr_fdk.sh` builds the fdk-aac fork that can encode a
+960-sample granule; `run_matrix.sh` encodes and compares a matrix of rates and
+channel layouts. See `scripts/dabplus_960/README.md`.
