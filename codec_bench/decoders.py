@@ -482,7 +482,13 @@ def get_conformance_ref_wav(aac_path, cache_dir):
     try:
         res = safe_run([ffmpeg_bin, "-y", "-i", aac_path, "-sample_fmt", "s16", tmp], capture_output=True, check=False)
         if res.returncode == 0 and os.path.exists(tmp):
-            os.replace(tmp, cached)
+            try:
+                os.replace(tmp, cached)
+            except OSError:
+                # Concurrent worker won the race (SMB can EEXIST on rename);
+                # their identical file is already in place.
+                if not os.path.exists(cached):
+                    raise
             return cached
     except Exception:
         pass
@@ -707,6 +713,15 @@ def time_decoder_serial(decoder, res_item, output_dir, iterations,
         return None
 
 
+def _remove_stale(path):
+    """Decoders differ on clobbering (FAAD3 refuses to overwrite, others vary
+    in flag spelling), so clear leftovers from earlier runs before decoding."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
 def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):
     aac_path = res_item.get("aac_path")
     ref_path = res_item.get("ref_path")
@@ -763,6 +778,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         except Exception:
             pass
 
+    _remove_stale(output_path)
     cmd = decoder.get_decode_cmd(bitstream_input, output_path)
 
     try:
@@ -1044,6 +1060,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
             os.remove(temp_adts)
         return None
 
+    _remove_stale(dec_corrupt_wav)
     cmd = decoder.get_decode_cmd(corrupt_path, dec_corrupt_wav)
     runaway = False
     is_crash = False

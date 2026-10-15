@@ -1009,7 +1009,18 @@ def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
     if not wav_conv(ref_input_path, tmp_path, v_rate, v_channels):
         os.unlink(tmp_path)
         return None
-    os.replace(tmp_path, cached_path)
+    try:
+        os.replace(tmp_path, cached_path)
+    except OSError:
+        # A concurrent worker landed the same (deterministic) key first. POSIX
+        # rename overwrites, but SMB mounts can fail it with EEXIST. Theirs is
+        # equivalent, so use it and drop ours.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        if not os.path.exists(cached_path):
+            raise
     return cached_path
 
 def encoder_env_signature(env=None):
