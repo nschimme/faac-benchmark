@@ -17,6 +17,7 @@ build/
 
 # Benchmark Assets
 results/
+output
 output/
 data/external/
 report.md
