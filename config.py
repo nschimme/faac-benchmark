@@ -106,7 +106,13 @@ CORPORA = {
         "channels": 6,
         "source": "ffmpeg",
         "family": "44k1_51",
-        "label": "44.1 kHz 5.1 Surround"},
+        "label": "44.1 kHz 5.1 Surround",
+        # Report only, never a gate. The real sample's URL is dead, so this
+        # corpus is one synthetic file of six steady sines, and per-channel
+        # zimtohrli on a pure tone swings by up to 0.45 MOS at equal SNR
+        # (nschimme/faac#595: -0.11 with equal or better SNR on every
+        # channel). One clip also cannot carry a BD-rate verdict.
+        "gated": False},
 }
 
 # Report ordering for families: mono speech first (ascending rate), then
