@@ -269,7 +269,8 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
         ver = version
         if not ver and f_bin and os.path.exists(f_bin):
             ver = probe_version(f_bin, ["-h", "--help", "-v"],
-                                [r"Freeware Advanced Audio Decoder\s*\(v?(\d+\.\d+(?:\.\d+)*)\)",
+                                [r"\bFAAD\s+(\d+\.\d+(?:\.\d+)*(?:\s*\([0-9a-f]+\))?)",
+                                 r"Freeware Advanced Audio Decoder\s*\(v?(\d+\.\d+(?:\.\d+)*)\)",
                                  r"FAAD2\s+v?(\d+\.\d+(?:\.\d+)*)",
                                  r"Decoder\s+V?(\d+\.\d+(?:\.\d+)*)",
                                  r"version\s+(\d+\.\d+(?:\.\d+)*)"])

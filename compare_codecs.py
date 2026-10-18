@@ -20,8 +20,7 @@ import tempfile
 import wave
 import concurrent.futures
 from collections import defaultdict
-
-from utils import (get_scenario_sort_key, safe_run, corpus_dir,
+from utils import (default_worker_count, get_scenario_sort_key, safe_run, corpus_dir,
                    select_corpus_clips, scenario_channels, scenario_rate,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
@@ -475,7 +474,7 @@ def main():
     parser.add_argument("--speed-audio-seconds", type=float, default=SPEED_TARGET_SEC,
                         help="Minimum stream-copy timing workload duration in audio seconds (default: 60)")
     parser.add_argument("--speed-workers", type=int, default=0,
-                        help="Concurrent decoder timing jobs (default: 0 = available cores; 1 = serial)")
+                        help="Concurrent decoder timing jobs (default: 0 = pinned cores, or on macOS the performance cores less one; 1 = serial)")
     parser.add_argument("--faam-bin", help="Path to faam binary, for --muxer-bench")
     parser.add_argument("--muxer-bench", action="store_true",
                         help="Benchmark faam vs ffmpeg -c:a copy vs MP4Box on the largest ADTS stream from this run")
@@ -504,7 +503,7 @@ def main():
     else:
         scenario_list = sorted(SCENARIOS.keys(), key=get_scenario_sort_key)
 
-    num_cpus = max(1, os.cpu_count() or 1)
+    num_cpus = default_worker_count()
     encoder_results = []
     encoders = []
     candidate_jsons = saved_result_paths(args, run_encoders)
@@ -776,7 +775,7 @@ def main():
                 # for a small baseline/candidate check.
                 avail = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
                 cores = avail
-                available_workers = len(cores) if cores else max(1, num_cpus)
+                available_workers = len(cores) if cores else num_cpus
                 n_workers = min(args.speed_workers, available_workers) if args.speed_workers else available_workers
                 protocols = {}
                 pending = []

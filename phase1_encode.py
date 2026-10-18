@@ -29,7 +29,7 @@ import concurrent.futures
 import multiprocessing
 import fnmatch
 
-from utils import (WorkerPool, start_orphan_watchdog, corpus_dir, select_corpus_clips, expand_scenario_list,
+from utils import (default_worker_count, WorkerPool, start_orphan_watchdog, corpus_dir, select_corpus_clips, expand_scenario_list,
                    decode_validate, calculate_provenance_hash, get_binary_size,
                    get_file_hash, get_elf_section_sizes, get_section_sizes,
                    get_object_sizes, get_toolchain_fp, get_host_fp, is_faac_legacy,
@@ -332,7 +332,7 @@ def run_benchmark(
     if run_perceptual and not throughput_only:
         print(f"Starting Phase 1 (Encoding) for {precision}...")
         # Detect number of CPUs for parallelization
-        num_cpus = os.cpu_count() or 1
+        num_cpus = default_worker_count()
         print(f"Parallelizing across {num_cpus} threads.")
 
         scenario_list = SCENARIOS.keys()

@@ -146,6 +146,23 @@ def flatten_arg_list(arg_val):
             if p and p not in res:
                 res.append(p)
     return res
+def default_worker_count():
+    """Parallel jobs for encode and timing passes.
+
+    Apple Silicon cannot pin threads, so jobs landing on efficiency cores or
+    sharing a core inflate every codec's wall time. On macOS use the
+    performance cores less one for the harness; elsewhere every core.
+    """
+    cpus = max(1, os.cpu_count() or 1)
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["sysctl", "-n", "hw.perflevel0.logicalcpu"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            return max(1, min(cpus, int(out.strip()) - 1))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return cpus
+
 
 def probe_version(bin_path, flag_list, patterns, env=None):
     """Probes a binary by running it with candidate flags and matching output against regex patterns."""
