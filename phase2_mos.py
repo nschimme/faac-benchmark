@@ -126,6 +126,10 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
 
                 if wav_conv(ref_input_path, v_ref, 16000, 1) and \
                    wav_conv(aac_path, v_deg, 16000, 1):
+                    if not durations_match(v_ref, v_deg):
+                        print(f"    Duration mismatch for {key}: decoded length differs from reference")
+                        results[key] = (1.0, "duration_mismatch")
+                        continue
                     file_pairs.append((v_ref, v_deg))
                     valid_keys.append(key)
 
@@ -268,7 +272,11 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     Speech mode strictly uses visqol-python (16 kHz mono); audio mode strictly
     uses Zimtohrli (48 kHz). The engine is chosen by the scenario's mode ALONE
     to prevent mixing different metric scale distributions.
-    Returns (mos, backend_used); mos is None on failure."""
+    Returns (mos, backend_used); mos is None on failure. A decode whose duration
+    is off by more than 3% is scored 1.0 without invoking the scorer."""
+    if not durations_match(v_ref, v_deg):
+        print("  Duration mismatch: decoded length differs from reference")
+        return 1.0, "duration_mismatch"
     try:
         if mode_str == "speech":
             if HAS_VISQOL_PYTHON:
@@ -379,10 +387,6 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac
 
         if not decode_bitstream(decoder, aac_path, v_deg, v_rate, v_channels):
             print(f"  Decode failed for {key}")
-            return key, 1.0, "none"
-
-        if not durations_match(v_ref, v_deg):
-            print(f"  Duration mismatch for {key}: decoded length differs from reference")
             return key, 1.0, "none"
 
         mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"))

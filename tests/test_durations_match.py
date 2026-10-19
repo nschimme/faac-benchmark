@@ -25,6 +25,10 @@ class TestDurationsMatch(unittest.TestCase):
             self.assertTrue(utils.durations_match(ref, same))
             self.assertFalse(utils.durations_match(ref, half))
 
+    def test_zero_length_decode_is_mismatch(self):
+        with mock.patch.object(utils, "ffmpeg_probe", side_effect=[2.0, 0.0]):
+            self.assertFalse(utils.durations_match("a", "b"))
+
     def test_unprobeable_counts_as_match(self):
         with mock.patch.object(utils, "ffmpeg_probe", return_value=None):
             self.assertTrue(utils.durations_match("a", "b"))
