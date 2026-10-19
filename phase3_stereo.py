@@ -62,7 +62,7 @@ from scipy.signal import fftconvolve
 
 from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
-                   WorkerPool, start_orphan_watchdog)
+                   WorkerPool, start_orphan_watchdog, loudest_window_start)
 from transient import attack_centroid_deltas
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
@@ -131,8 +131,9 @@ def read_stereo(path):
 
 def estimate_delay(ref, deg, win=50000, maxlag=4096):
     """Samples that `deg` lags `ref`, via cross-correlation of the left channel."""
-    r = ref[:win]
-    d = deg[:win + maxlag]
+    s = loudest_window_start(ref[:max(0, len(deg) - maxlag)], win)
+    r = ref[s:s + win]
+    d = deg[s:s + win + maxlag]
     if len(d) < len(r):
         return 0
     r = r - r.mean()

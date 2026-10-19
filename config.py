@@ -450,6 +450,14 @@ for _name, _cfg in SCENARIOS.items():
     _cfg["visqol_rate"] = METRIC_RATE[_cfg["mode"]]
 del _name, _cfg, _corpus
 
+
+def corpus_is_visqol(corpus_key):
+    """True if a speech-mode (ViSQOL) scenario scores this corpus. ViSQOL wants
+    5-10 s clips, so only those corpora are looped/trimmed at build time; the
+    Zimtohrli-scored ones keep their full originals."""
+    return any(c["corpus"] == corpus_key and c["mode"] == "speech"
+               for c in SCENARIOS.values())
+
 # Small, fixed, reproducible subsets for fast iteration (`run_benchmark --gate`).
 # Curated to span the strata that matter (percussive vs tonal music; chop/noise/
 # echo speech across voices). Corpora sharing content share a list. Any

@@ -49,6 +49,8 @@ import numpy as np
 import scipy.ndimage
 import scipy.signal
 
+from utils import loudest_window_start
+
 
 # ── algorithm constants (mirrors scripts/score_transient.py) ──────────────────
 ZIMT_RATE         = 48000  # onset detection / envelope math below is
@@ -106,9 +108,11 @@ def find_lag(ref_mono, dec_mono, sr, search_seconds=3):
     scipy.signal.correlate(a, b) peaks at index k -> lag = k - (n-1).
     At lag d: a[i] correlates best with b[i-d].
     """
-    n = min(len(ref_mono), len(dec_mono), sr * search_seconds)
-    r = ref_mono[:n] / (np.std(ref_mono[:n]) + 1e-10)
-    d = dec_mono[:n] / (np.std(dec_mono[:n]) + 1e-10)
+    m = min(len(ref_mono), len(dec_mono))
+    n = min(m, sr * search_seconds)
+    s = loudest_window_start(ref_mono[:m], n)
+    r = ref_mono[s:s + n] / (np.std(ref_mono[s:s + n]) + 1e-10)
+    d = dec_mono[s:s + n] / (np.std(dec_mono[s:s + n]) + 1e-10)
     corr = scipy.signal.correlate(r, d, mode='full')
     lag = int(np.argmax(corr)) - (n - 1)
     return lag

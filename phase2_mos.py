@@ -188,12 +188,16 @@ try:
     r_mono = ref_data.mean(axis=1)
     d_mono = dec_data.mean(axis=1)
 
-    n_search = min(len(r_mono), len(d_mono), ZIMT_RATE * 3)
+    m = min(len(r_mono), len(d_mono))
+    n_search = min(m, ZIMT_RATE * 3)
     if n_search == 0:
         sys.exit(1)
 
-    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-    d_norm = d_mono[:n_search] / (np.std(d_mono[:n_search]) + 1e-10)
+    # Loudest window, not the first: full-length clips can open with silence.
+    csum = np.concatenate(([0.0], np.cumsum(np.square(r_mono[:m], dtype=np.float64))))
+    s = int(np.argmax(csum[n_search:] - csum[:m + 1 - n_search]))
+    r_norm = r_mono[s:s + n_search] / (np.std(r_mono[s:s + n_search]) + 1e-10)
+    d_norm = d_mono[s:s + n_search] / (np.std(d_mono[s:s + n_search]) + 1e-10)
     corr = scipy.signal.correlate(r_norm, d_norm, mode="full")
     # Bounded to the codec delay: on periodic music a noisy decode can correlate
     # better one repeat away (seconds off), which scores unrelated audio.

@@ -1114,6 +1114,20 @@ def get_corpus(cfg):
     return CORPORA.get(cfg.get("corpus")) or {}
 
 
+def loudest_window_start(mono, n):
+    """Start index of the n-sample window with the most energy (0 if the signal
+    is no longer than n).
+
+    Delay estimation correlates a short window of the reference. Full-length
+    clips often open with silence or a fade-in, where the correlation peak is
+    meaningless, so the window is taken from the loudest part instead.
+    """
+    if len(mono) <= n:
+        return 0
+    c = np.concatenate(([0.0], np.cumsum(np.square(mono, dtype=np.float64))))
+    return int(np.argmax(c[n:] - c[:-n]))
+
+
 def corpus_dir(cfg, external_data_dir=None):
     """Absolute path of a scenario's reference-WAV directory.
 
