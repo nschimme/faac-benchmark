@@ -887,6 +887,14 @@ def ffmpeg_probe(path):
     except Exception:
         return None
 
+def durations_match(ref_path, deg_path, tol=0.03):
+    """False when the decoded file's duration differs from the reference by
+    more than `tol` (fraction of reference). Unprobeable files count as a match."""
+    ref_dur, deg_dur = ffmpeg_probe(ref_path), ffmpeg_probe(deg_path)
+    if not ref_dur or not deg_dur:
+        return True
+    return abs(ref_dur - deg_dur) / ref_dur <= tol
+
 def get_audio_es_bytes(path):
     """Calculates pure audio elementary stream payload size in bytes, excluding container metadata & padding.
 

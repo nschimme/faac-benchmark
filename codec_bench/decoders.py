@@ -25,7 +25,7 @@ import platform
 from contextlib import contextmanager
 
 from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
-                   get_faad_path, ffmpeg_probe, decode_validate, find_linked_lib,
+                   get_faad_path, ffmpeg_probe, durations_match, decode_validate, find_linked_lib,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
@@ -945,8 +945,16 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                                     if not wav_conv(output_path, dec_wav, rate=v_rate, channels=v_channels):
                                         dec_wav = output_path
 
-                                    import phase2_mos
-                                    mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
+                                    if not durations_match(ref_wav, dec_wav):
+                                        ref_dur, dec_dur = ffmpeg_probe(ref_wav), ffmpeg_probe(dec_wav)
+                                        # A truncated/extended decode can't be aligned for scoring;
+                                        # treat it as a failure (lowest MOS) rather than a scorer error.
+                                        print(f"Duration mismatch: encoder={res_item['row_key']} decoder={decoder.name} "
+                                              f"{scenario_name}/{sample} ref={ref_dur:.3f}s decoded={dec_dur:.3f}s")
+                                        mos_val, mos_source = 1.0, "duration_mismatch"
+                                    else:
+                                        import phase2_mos
+                                        mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
                             except Exception as e:
                                 print(f"Decoder MOS calculation failed for {scenario_name}/{sample}: {e}")
 

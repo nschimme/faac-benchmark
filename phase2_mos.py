@@ -30,7 +30,7 @@ import argparse
 
 import numpy as np
 
-from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
+from utils import (durations_match, wav_conv, get_aac_path, calculate_provenance_hash,
                    get_cached_ref_wav, corpus_dir, scenario_channels,
                    WorkerPool, start_orphan_watchdog)
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
@@ -379,6 +379,10 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac
 
         if not decode_bitstream(decoder, aac_path, v_deg, v_rate, v_channels):
             print(f"  Decode failed for {key}")
+            return key, 1.0, "none"
+
+        if not durations_match(v_ref, v_deg):
+            print(f"  Duration mismatch for {key}: decoded length differs from reference")
             return key, 1.0, "none"
 
         mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"))
