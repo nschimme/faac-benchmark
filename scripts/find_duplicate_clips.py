@@ -1,7 +1,7 @@
 """Find clips in the FLAC listening-test sets that duplicate PMLT2014/SoundExpert.
 
-Names and cuts differ between sets (the corpus clips are 48 kHz, 10 s centre
-windows; these are full-length 44.1 kHz FLACs), so duplicates are found by
+Names and cuts differ between sets (the corpus clips are 48 kHz and may be
+centre-trimmed; these are full-length 44.1 kHz FLACs), so duplicates are found by
 content: a 3 s excerpt of the shorter file is cross-correlated against the
 longer at 8 kHz mono (gain- and resampler-insensitive). On the current sets
 true duplicates score 0.89-1.00 and every other pair stays below 0.25.

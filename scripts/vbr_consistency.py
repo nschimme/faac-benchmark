@@ -57,7 +57,7 @@ def stream_rate(path):
 
 def mean_kbps(path, dur):
     """Audio payload rate: container overhead differs between encoders and is
-    1-2% of a 10 s clip, comparable to the effects measured here."""
+    1-2% of a short clip, comparable to the effects measured here."""
     out = sh(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
               "packet=size", "-of", "csv=p=0", path]).stdout.split()
     return sum(int(x.split(",")[0]) for x in out if x.strip()) * 8 / dur / 1000

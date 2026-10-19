@@ -7,7 +7,7 @@ This document outlines the perceptual, acoustic, and efficiency metrics used to 
 ## Perceptual Audio Quality (MOS)
 
 Perceptual quality is measured on a **1.0 to 5.0 Mean Opinion Score (MOS)** scale, reflecting objective human listening quality models:
-- **Speech Content**: Evaluated using **ViSQOL** (Virtual Speech Quality Objective Listener), optimized for speech intelligibility and telephony bandwidths.
+- **Speech Content**: Evaluated using **ViSQOL** (Virtual Speech Quality Objective Listener), optimized for speech intelligibility and telephony bandwidths. ViSQOL corpora are looped/trimmed to 5-10 s clips; Zimtohrli-scored corpora use the full original clips.
 - **Music & Full-Band Audio**: Evaluated using **Zimtohrli**, a psychoacoustic model sensitive to temporal smearing, transient preservation, pre-echo, and high-frequency distortion.
 
 ### Overall Ranking Floor: 1st Percentile MOS ($P_1$) / 99% Floor MOS

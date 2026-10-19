@@ -38,7 +38,7 @@ import scipy.signal
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
-from utils import wav_conv, select_corpus_clips
+from utils import wav_conv, select_corpus_clips, loudest_window_start
 from phase2_mos import score_wav_pair
 
 EXTERNAL_DATA_DIR = os.path.join(ROOT_DIR, "data", "external")
@@ -61,8 +61,9 @@ def align_to_ref(ref, cand):
     r_mono = ref.mean(axis=1)
     c_mono = cand.mean(axis=1)
     n_search = min(len(r_mono), len(c_mono), 48000 * 3)
-    r_norm = r_mono[:n_search] / (np.std(r_mono[:n_search]) + 1e-10)
-    c_norm = c_mono[:n_search] / (np.std(c_mono[:n_search]) + 1e-10)
+    s = loudest_window_start(r_mono[:min(len(r_mono), len(c_mono))], n_search)
+    r_norm = r_mono[s:s + n_search] / (np.std(r_mono[s:s + n_search]) + 1e-10)
+    c_norm = c_mono[s:s + n_search] / (np.std(c_mono[s:s + n_search]) + 1e-10)
     corr = scipy.signal.correlate(r_norm, c_norm, mode="full")
     lag = int(np.argmax(corr)) - (n_search - 1)
 

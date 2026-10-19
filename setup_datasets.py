@@ -178,6 +178,8 @@ def resample(
 def get_tier_params(dur):
     """
     Determine resampling parameters based on ViSQOL recommendations (5-10s).
+    Applies only to ViSQOL-scored corpora (see tier_params_for); Zimtohrli
+    corpora keep the full original.
     1. < 5s: loop to 5s
     2. 5-10s: use full sample
     3. > 10s: trim to 10s center segment
@@ -187,6 +189,15 @@ def get_tier_params(dur):
     if dur <= 10.0:
         return None, None, False
     return (dur - 10) / 2, 10, False
+
+
+def tier_params_for(corpus_key, dur):
+    """(start, duration, loop) for a corpus: ViSQOL tiering only if a speech-mode
+    scenario scores it, else the full clip."""
+    from config import corpus_is_visqol
+    if corpus_is_visqol(corpus_key):
+        return get_tier_params(dur)
+    return None, None, False
 
 
 def pmlt_wav_files(src_dir):
@@ -229,7 +240,7 @@ def _tcd_wav_files(src_dir, clean):
     return wav_files
 
 
-def _build_speech_corpus(src_dir, dest_dir, rate, label):
+def _build_speech_corpus(src_dir, dest_dir, rate, label, corpus_key):
     """Resample a set of TCD-VoIP WAVs into one fixed-format corpus."""
     clean = "clean" in os.path.basename(dest_dir)
     wav_files = _tcd_wav_files(src_dir, clean=clean)
@@ -246,7 +257,7 @@ def _build_speech_corpus(src_dir, dest_dir, rate, label):
             skipped += 1
             continue
         print(f"  [{i + 1}/{len(wav_files)}] Processing {os.path.basename(wav)}...")
-        start, duration, loop = get_tier_params(dur)
+        start, duration, loop = tier_params_for(corpus_key, dur)
         output = os.path.join(dest_dir, os.path.basename(wav))
         resample(wav, output, rate, 1, start=start, duration=duration, loop=loop)
 
@@ -261,14 +272,14 @@ def setup_tcd_voip():
     src_dir = os.path.join(TEMP_DIR, "TCD-VOIP-harte2015tcd")
     # ViSQOL speech mode requires 16k mono
     _build_speech_corpus(src_dir, os.path.join(BASE_DATA_DIR, "speech"),
-                         16000, dataset_info["name"])
+                         16000, dataset_info["name"], "speech_voip_16k")
 
 
 def setup_tcd_ref(rate, dest_name):
     """The clean reference recordings, at `rate` mono."""
     src_dir = os.path.join(TEMP_DIR, "TCD-VOIP-harte2015tcd")
     _build_speech_corpus(src_dir, os.path.join(BASE_DATA_DIR, dest_name),
-                         rate, f"TCD-VoIP clean references @ {rate} Hz")
+                         rate, f"TCD-VoIP clean references @ {rate} Hz", dest_name)
 
 
 def setup_audio_51():
@@ -394,7 +405,7 @@ def setup_audio():
     for i, (out_name, src) in enumerate(sources):
         print(f"  [{i + 1}/{len(sources)}] Processing {out_name}...")
         dur, chans, _ = source_info(src)
-        start, duration, loop = get_tier_params(dur)
+        start, duration, loop = tier_params_for("audio_48k", dur)
         resample(src, os.path.join(BASE_DATA_DIR, "audio", out_name), 48000, chans,
                  start=start, duration=duration, loop=loop, hq=True)
 
@@ -424,7 +435,7 @@ def setup_derived_audio(dest_name, rate):
         if derives_from_original(src_rate, rate):
             print(f"  [{i + 1}/{len(sources)}] Processing {out_name} from the original "
                   f"({src_rate} Hz)...")
-            start, duration, loop = get_tier_params(dur)
+            start, duration, loop = tier_params_for(dest_name, dur)
             resample(src, out, rate, 2, start=start, duration=duration, loop=loop, hq=True)
         else:
             print(f"  [{i + 1}/{len(sources)}] Processing {out_name} from the 48 kHz clip "

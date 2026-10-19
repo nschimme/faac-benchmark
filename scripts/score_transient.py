@@ -35,7 +35,7 @@ import scipy.signal
 import soundfile as sf
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import wav_conv, is_faac_legacy
+from utils import wav_conv, is_faac_legacy, loudest_window_start
 
 
 # ── algorithm constants ────────────────────────────────────────────────────────
@@ -232,9 +232,11 @@ def find_lag(ref_mono, dec_mono, sr, search_seconds=3):
     so the decoded audio starts ~2048 samples AHEAD of the reference content.
     This produces lag = +D (positive) where D ≈ encoder_delay_samples.
     """
-    n = min(len(ref_mono), len(dec_mono), sr * search_seconds)
-    r = ref_mono[:n] / (np.std(ref_mono[:n]) + 1e-10)
-    d = dec_mono[:n] / (np.std(dec_mono[:n]) + 1e-10)
+    m = min(len(ref_mono), len(dec_mono))
+    n = min(m, sr * search_seconds)
+    s = loudest_window_start(ref_mono[:m], n)
+    r = ref_mono[s:s + n] / (np.std(ref_mono[s:s + n]) + 1e-10)
+    d = dec_mono[s:s + n] / (np.std(dec_mono[s:s + n]) + 1e-10)
     corr = scipy.signal.correlate(r, d, mode='full')
     lag = int(np.argmax(corr)) - (n - 1)
     return lag
