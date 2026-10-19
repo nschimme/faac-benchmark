@@ -1580,11 +1580,24 @@ def generate_decoder_report(decoders, decoder_results, robustness_results, outpu
 
         n_inherited = sum(1 for r in decoder_results if r.get("mos_source") == "inherited")
         n_scored = sum(1 for r in decoder_results if r.get("mos_source") == "scored")
-        n_total = n_inherited + n_scored
+        n_mismatch = sum(1 for r in decoder_results if r.get("mos_source") == "duration_mismatch")
+        n_total = n_inherited + n_scored + n_mismatch
         if n_total:
             f.write(f"*MOS: {n_inherited} row(s) ({n_inherited / n_total * 100:.0f}%) inherited the encoder "
                     f"phase's ffmpeg-decode score (conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB vs that "
-                    f"decode), {n_scored} row(s) ({n_scored / n_total * 100:.0f}%) scored directly.*\n\n")
+                    f"decode), {n_scored} row(s) ({n_scored / n_total * 100:.0f}%) scored directly"
+                    f"{f', {n_mismatch} row(s) scored 1.0 for a duration mismatch' if n_mismatch else ''}.*\n\n")
+
+        mismatches = [r for r in decoder_results if r.get("duration_mismatch")]
+        if mismatches:
+            f.write("### Duration mismatches (scored MOS 1.0, scorer skipped)\n\n")
+            f.write("| Encoder | Decoder | Scenario | Clip | Reference (s) | Decoded (s) |\n")
+            f.write("| :--- | :--- | :--- | :--- | ---: | ---: |\n")
+            for r in sorted(mismatches, key=lambda x: (x.get("encoder_row_key") or "", x["tool"], x["scenario"], x["filename"])):
+                dm = r["duration_mismatch"]
+                f.write(f"| {r.get('encoder_row_key')} | {r['tool']} | {r['scenario']} | {r['filename']} | "
+                        f"{dm['ref_s']:.3f} | {dm['decoded_s']:.3f} |\n")
+            f.write("\n")
 
         # --- Section 2: footprint --------------------------------------
         f.write("## 2. Binary Footprint\n\n")

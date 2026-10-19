@@ -894,8 +894,10 @@ def main():
             if mos_scored:
                 n_inherited = sum(1 for r in decoder_results if r.get("mos_source") == "inherited")
                 n_scored = sum(1 for r in decoder_results if r.get("mos_source") == "scored")
+                n_mismatch = sum(1 for r in decoder_results if r.get("mos_source") == "duration_mismatch")
                 print(f"\n>>> MOS: {n_inherited} inherited from the encoder phase's ffmpeg-decode score "
-                      f"(conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB), {n_scored} scored directly")
+                      f"(conformance SNR >= {CONFORMANCE_SNR_FLOOR_DB:.0f} dB), {n_scored} scored directly"
+                      f"{f', {n_mismatch} duration mismatch (MOS 1.0)' if n_mismatch else ''}")
 
             print(f"\n>>> Running Decoder Robustness Pass (Corrupted Bitstreams)...")
             robustness_bitstreams = valid_encoder_bitstreams

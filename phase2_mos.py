@@ -30,7 +30,7 @@ import argparse
 
 import numpy as np
 
-from utils import (wav_conv, get_aac_path, calculate_provenance_hash,
+from utils import (durations_match, wav_conv, get_aac_path, calculate_provenance_hash,
                    get_cached_ref_wav, corpus_dir, scenario_channels,
                    WorkerPool, start_orphan_watchdog)
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
@@ -126,6 +126,10 @@ def run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, a
 
                 if wav_conv(ref_input_path, v_ref, 16000, 1) and \
                    wav_conv(aac_path, v_deg, 16000, 1):
+                    if not durations_match(v_ref, v_deg):
+                        print(f"    Duration mismatch for {key}: decoded length differs from reference")
+                        results[key] = (1.0, "duration_mismatch")
+                        continue
                     file_pairs.append((v_ref, v_deg))
                     valid_keys.append(key)
 
@@ -268,7 +272,11 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
     Speech mode strictly uses visqol-python (16 kHz mono); audio mode strictly
     uses Zimtohrli (48 kHz). The engine is chosen by the scenario's mode ALONE
     to prevent mixing different metric scale distributions.
-    Returns (mos, backend_used); mos is None on failure."""
+    Returns (mos, backend_used); mos is None on failure. A decode whose duration
+    is off by more than 3% is scored 1.0 without invoking the scorer."""
+    if not durations_match(v_ref, v_deg):
+        print("  Duration mismatch: decoded length differs from reference")
+        return 1.0, "duration_mismatch"
     try:
         if mode_str == "speech":
             if HAS_VISQOL_PYTHON:
