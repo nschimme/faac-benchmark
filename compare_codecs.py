@@ -14,6 +14,7 @@ import sys
 import json
 import time
 import argparse
+import atexit
 import subprocess
 import shutil
 import tempfile
@@ -24,7 +25,7 @@ from utils import (default_worker_count, get_scenario_sort_key, safe_run, corpus
                    select_corpus_clips, scenario_channels, scenario_rate,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
-                   get_cached_ref_wav, WorkerPool, start_orphan_watchdog)
+                   get_cached_ref_wav, input_signature, WorkerPool, start_orphan_watchdog)
 import os
 if sys.platform == "darwin":
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
@@ -110,7 +111,7 @@ def get_audio_info(path):
         return 44100, 2
 
 
-def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir, skip_mos=False, skip_stereo=False, skip_transient=False, ref_cache_dir=None):
+def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir, skip_mos=False, skip_stereo=False, skip_transient=False, ref_cache_dir=None, conformance_dir=None):
     """Executes single encoder task in worker thread with colocated metric evaluation."""
     input_path = os.path.join(data_dir, sample)
     sample_rate, channels = get_audio_info(input_path)
@@ -187,7 +188,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             # hash) instead of decoding this bitstream again per decoder
             # under test. The scenario-rate copy used for MOS/stereo/transient
             # below is then a cheap WAV->WAV resample of that cached decode.
-            native_ref_wav = get_conformance_ref_wav(output_path, ref_cache_dir) if ref_cache_dir else None
+            native_ref_wav = get_conformance_ref_wav(output_path, conformance_dir or ref_cache_dir) if ref_cache_dir else None
             if native_ref_wav:
                 decode_ok = wav_conv(native_ref_wav, decoded_wav, rate=sample_rate, channels=channels)
             else:
@@ -243,6 +244,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "attack_centroid_ms": centroid_deltas,
             "aac_path": output_path if valid else None,
             "ref_path": input_path,
+            "input_sig": input_signature(input_path),
             "decoder_name": "FFmpeg AAC",
             "decoder_id": "ffmpeg_aac"
         }
@@ -379,6 +381,55 @@ def check_speech_metric(scenario_list, external_data_dir):
         raise RuntimeError("ViSQOL speech preflight failed: " + "; ".join(failures))
 
 
+def replaced_clip_names():
+    """Older clips a lossless copy supersedes (duplicate_clips.json): they are no
+    longer in the corpus, so saved rows under those names must not be scored."""
+    try:
+        with open(os.path.join(SCRIPT_DIR, "duplicate_clips.json")) as f:
+            dupes = json.load(f)["duplicates"]
+    except (OSError, ValueError, KeyError):
+        return set()
+    return {d["matches"] for d in dupes.values() if d.get("action") == "replace"}
+
+
+def drop_stale_input_rows(rows, external_data_dir, replaced=None):
+    """Drop saved encoder rows whose input clip changed or was superseded.
+
+    Returns (rows to keep, {(scenario, filename)} found stale). Rows under a
+    superseded clip's name are always dropped (the recording is scored under
+    its new name). Other rows carry an input_sig and are dropped when the clip
+    on disk no longer matches; rows saved before it existed can't be verified
+    and are kept. A clip that is no longer on disk can't be checked either, so
+    its rows are kept."""
+    replaced = replaced_clip_names() if replaced is None else replaced
+    sigs, kept, stale = {}, [], set()
+    for row in rows:
+        if row.get("filename") in replaced:
+            stale.add((row.get("scenario"), row.get("filename")))
+            continue
+        want = row.get("input_sig")
+        if want is None:
+            kept.append(row)
+            continue
+        cfg = SCENARIOS.get(row.get("scenario"))
+        path = os.path.join(corpus_dir(cfg, external_data_dir), row["filename"]) if cfg else None
+        if path not in sigs:
+            sigs[path] = input_signature(path) if path and os.path.exists(path) else None
+        if sigs[path] is None or sigs[path] == want:
+            kept.append(row)
+        else:
+            stale.add((row.get("scenario"), row.get("filename")))
+    return kept, stale
+
+
+def drop_stale_clip_rows(rows, stale_clips, replaced=None):
+    """Drop decoder/robustness rows (which carry no signature) for stale clips."""
+    replaced = replaced_clip_names() if replaced is None else replaced
+    return [r for r in rows
+            if (r.get("scenario"), r.get("filename")) not in stale_clips
+            and r.get("filename") not in replaced]
+
+
 def load_all_saved_results(json_paths):
     """Loads and aggregates encoder, decoder, and robustness results from JSON files."""
     loaded_encoders = []
@@ -497,6 +548,12 @@ def main():
     external_data_dir = os.environ.get("EXTERNAL_DATA_DIR") or os.path.join(SCRIPT_DIR, "data", "external")
     output_dir = os.path.join(SCRIPT_DIR, "output")
     os.makedirs(output_dir, exist_ok=True)
+    # The ffmpeg conformance references (one WAV per bitstream) are only reused
+    # within a run, and a path-keyed copy outliving a re-encode would score the
+    # new bitstream against the old decode, so they live in a run-scoped dir.
+    conformance_dir = tempfile.mkdtemp(prefix="conformance_", dir=output_dir)
+    atexit.register(shutil.rmtree, conformance_dir, ignore_errors=True)
+    stale_clips = set()
 
     if args.scenarios:
         scenario_list = expand_scenario_list(args.scenarios)
@@ -528,6 +585,11 @@ def main():
             print(f"==> Auto-detected and loaded {len(loaded_enc)} encoder entries from: {', '.join(candidate_jsons)}")
             encoder_results = reusable_encoder_results(loaded_enc, encoders, scenario_list, eligible,
                                                        require_mos=not args.skip_mos)
+            n_reusable = len(encoder_results)
+            encoder_results, stale_clips = drop_stale_input_rows(encoder_results, external_data_dir)
+            if stale_clips:
+                print(f"==> Dropping {n_reusable - len(encoder_results)} saved encoder entries for "
+                      f"{len(stale_clips)} clip(s) changed or superseded since they were run.")
 
         # Identify missing encoder tasks using smart reuse (encoder_version, scenario, filename)
         existing_keys = {(r.get("row_key"), r.get("scenario"), r.get("filename"))
@@ -566,7 +628,8 @@ def main():
             completed = 0
             with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
-                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
+                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir,
+                                          conformance_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
 
                 for future in concurrent.futures.as_completed(futures):
@@ -614,7 +677,8 @@ def main():
             completed = 0
             with WorkerPool(max_workers=num_cpus, initializer=init_worker) as executor:
                 futures = [executor.submit(process_encoder_task, enc, s_name, cfg, sample, d_dir, output_dir,
-                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir)
+                                          args.skip_mos, args.skip_stereo, args.skip_transient, ref_cache_dir,
+                                          conformance_dir)
                            for enc, s_name, cfg, sample, d_dir in tasks]
 
                 for future in concurrent.futures.as_completed(futures):
@@ -673,9 +737,9 @@ def main():
         # Load any existing decoder results
         _enc_res, loaded_dec, loaded_rob = load_all_saved_results(candidate_jsons)
         if loaded_dec:
-            decoder_results.extend(loaded_dec)
+            decoder_results.extend(drop_stale_clip_rows(loaded_dec, stale_clips))
         if loaded_rob:
-            decoder_robustness_results.extend(loaded_rob)
+            decoder_robustness_results.extend(drop_stale_clip_rows(loaded_rob, stale_clips))
 
         existing_dec_keys = {(r.get("tool"), r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) for r in decoder_results if r.get("decode_valid") is not None}
         existing_rob_keys = {(r.get("tool"), r.get("encoder_row_key"), r.get("scenario"), r.get("filename")) for r in decoder_robustness_results if r.get("passed") is not None}
@@ -734,7 +798,8 @@ def main():
                         print(f"  Decoding with {decoder.name} ({len(dec_tasks)} pending bitstreams)...")
                         completed_dec = 0
                         futures = [executor.submit(process_decoder_task, decoder, item, output_dir, args.skip_mos, ref_cache_dir,
-                                                   args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes)
+                                                   args.iterations if (args.gate or id(item) in sampled_ids) else 1, args.keep_decodes,
+                                                   conformance_dir)
                                    for item in dec_tasks]
                         for future in concurrent.futures.as_completed(futures):
                             res = future.result()

@@ -18,6 +18,8 @@
 """
 
 import argparse
+import glob
+import json
 import os
 import urllib.request
 import zipfile
@@ -38,6 +40,14 @@ DATASETS = {
     "SoundExpert": {
         "url": "https://github.com/nschimme/SoundExpert/archive/refs/tags/SoundExpert.zip",
         "name": "SoundExpert Sound samples"
+    },
+    "IgorCPBLT2020": {
+        "url": "https://github.com/nschimme/IgorCPBLT2020/archive/refs/tags/IgorCPBLT2020.zip",
+        "name": "Igor's Personal Blind Test, multicodec ~192 kbps (2020)"
+    },
+    "Kamedo2PLT2012": {
+        "url": "https://github.com/nschimme/Kamedo2PLT2012/archive/refs/tags/Kamedo2PLT2012.zip",
+        "name": "Kamedo2 Personal Listening Test (2012)"
     },
     "FFmpeg51": {
         "url": "https://samples.mplayerhq.hu/A-codecs/lossless/6_Channel_ID.wav",
@@ -97,6 +107,16 @@ def get_info(wav_path):
         return 0, 2
 
 
+def get_info_ffprobe(path):
+    """(duration, channels) for formats the wave module can't read (FLAC)."""
+    try:
+        probe = ffmpeg.probe(path)
+        stream = next(st for st in probe["streams"] if st["codec_type"] == "audio")
+        return float(probe["format"]["duration"]), int(stream["channels"])
+    except BaseException:
+        return 0, 2
+
+
 def get_rate(wav_path):
     """Source sample rate, or 0 if unreadable."""
     try:
@@ -106,6 +126,13 @@ def get_rate(wav_path):
         return 0
 
 
+# swr with a long, steep filter. ffmpeg's defaults (filter_size 32, cutoff 0.97)
+# droop ~0.7 dB at 20 kHz and ~4 dB near 22 kHz when going 44.1 -> 48 kHz, and
+# image only 10-17 dB down above the source Nyquist; these settings are flat to
+# 21.5 kHz with the image ~95 dB down. Same engine, so no extra dependency.
+HQ_SWR = dict(filter_size=256, phase_shift=16, cutoff=0.99, linear_interp=0)
+
+
 def resample(
         input_path,
         output_path,
@@ -113,7 +140,10 @@ def resample(
         channels,
         start=None,
         duration=None,
-        loop=False):
+        loop=False,
+        hq=False):
+    """Convert to `rate`/`channels` s16. `hq` opts into the HQ_SWR filter; it is
+    used for the music corpora, while speech keeps ffmpeg's defaults."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     try:
         input_args = {}
@@ -128,13 +158,17 @@ def resample(
         if duration is not None:
             output_args['t'] = duration
 
-        (ffmpeg .input(input_path,
-                       **input_args) .output(output_path,
-                                             ar=rate,
-                                             ac=channels,
-                                             sample_fmt='s16',
-                                             **output_args) .run(quiet=True,
-                                                                 overwrite_output=True))
+        stream = ffmpeg.input(input_path, **input_args)
+        if hq:
+            stream = stream.filter('aresample', rate, **HQ_SWR)
+            rate_args = {}
+        else:
+            rate_args = {'ar': rate}
+        (stream.output(output_path,
+                       ac=channels,
+                       sample_fmt='s16',
+                       **rate_args,
+                       **output_args).run(quiet=True, overwrite_output=True))
     except ffmpeg.Error as e:
         print(
             f" FFmpeg error during setup: {
@@ -155,33 +189,22 @@ def get_tier_params(dur):
     return (dur - 10) / 2, 10, False
 
 
-def setup_pmlt():
-    dataset_info = DATASETS["PMLT2014"]
-    src_dir = os.path.join(TEMP_DIR, "PMLT2014-PMLT2014")
-    dest_dir = os.path.join(BASE_DATA_DIR, "audio")
-
+def pmlt_wav_files(src_dir):
     wav_files = []
     for root, dirs, files in os.walk(src_dir):
         for f in files:
             if f.endswith("48k.wav") and not re.search(r"48k\.\d+\.wav$", f):
                 wav_files.append(os.path.join(root, f))
+    return wav_files
 
-    print(f"Found {len(wav_files)} valid samples for {dataset_info['name']}.")
-    for i, wav in enumerate(wav_files):
-        print(f"  [{i + 1}/{len(wav_files)}] Processing {os.path.basename(wav)}...")
-        dur, chans = get_info(wav)
-        start, duration, loop = get_tier_params(dur)
 
-        filename = os.path.basename(wav)
-        output = os.path.join(dest_dir, filename)
-        resample(
-            wav,
-            output,
-            48000,
-            chans,
-            start=start,
-            duration=duration,
-            loop=loop)
+def soundexpert_wav_files(src_dir):
+    wav_files = []
+    for root, dirs, files in os.walk(src_dir):
+        for f in files:
+            if f.endswith(".wav"):
+                wav_files.append(os.path.join(root, f))
+    return wav_files
 
 
 def _tcd_wav_files(src_dir, clean):
@@ -283,54 +306,130 @@ def setup_audio_51():
                 print(f"FFmpeg error generating 5.1 surround sample: {e.stderr.decode() if e.stderr else e}")
 
 
-def setup_derived_audio(dest_name, rate):
-    """Build a music corpus by resampling the 48 kHz one already on disk.
+# Clips in the newer listening-test sets that are the same recording as one
+# already supplied by PMLT2014/SoundExpert, found offline by content (the names
+# and cuts differ) with scripts/find_duplicate_clips.py and committed in
+# duplicate_clips.json so setup never has to re-derive them. Each entry is
+# "replace" (the lossless FLAC supersedes the older clip: it is built under its
+# own name and the older clip is left out of every corpus) or "skip" (the FLAC
+# is left out and the older clip kept). "matches" names the older clip.
+DUPLICATES_FILE = os.path.join(SCRIPT_DIR, "duplicate_clips.json")
 
-    No re-download: data/external/audio is the source. Downsampling is honest
-    here -- the derived file is itself the reference every metric scores
-    against, so the comparison stays self-consistent.
+
+def load_duplicates():
+    with open(DUPLICATES_FILE) as f:
+        return json.load(f)["duplicates"]
+
+
+def source_info(path):
+    """(duration, channels, sample rate) of a music source, WAV or FLAC."""
+    if path.endswith(".wav"):
+        dur, chans = get_info(path)
+        return dur, chans, get_rate(path)
+    dur, chans = get_info_ffprobe(path)
+    try:
+        stream = next(st for st in ffmpeg.probe(path)["streams"] if st["codec_type"] == "audio")
+        return dur, chans, int(stream["sample_rate"])
+    except BaseException:
+        return dur, chans, 0
+
+
+MUSIC_DATASETS = ["PMLT2014", "SoundExpert", "IgorCPBLT2020", "Kamedo2PLT2012"]
+
+
+def music_sources():
+    """Every clip of the music corpora as (out_name, source path), in build order.
+
+    One list drives `audio` and the corpora derived from it, so each of them
+    can resample from the original instead of from another corpus.
+
+    Only the top-level reference FLACs of the listening-test sets are used:
+    IgorCPBLT2020 also ships a lossy encode of each clip per codec in
+    subfolders, which would be measuring other encoders' artifacts as reference
+    material. A clip that duplicates an earlier one (duplicate_clips.json) either
+    supersedes it (the older clip is dropped from the list) or is skipped, so
+    each recording is scored once.
     """
-    src_dir = os.path.join(BASE_DATA_DIR, "audio")
-    dest_dir = os.path.join(BASE_DATA_DIR, dest_name)
-    if not os.path.isdir(src_dir):
-        print(f"  WARNING: {src_dir} missing; cannot build {dest_name}.")
-        return
+    dupes = load_duplicates()
+    sources = {}
+    for wav in pmlt_wav_files(os.path.join(TEMP_DIR, "PMLT2014-PMLT2014")):
+        sources[os.path.basename(wav)] = wav
+    for wav in soundexpert_wav_files(os.path.join(TEMP_DIR, "SoundExpert-SoundExpert")):
+        sources[os.path.basename(wav)] = wav
+    for zip_name in ("IgorCPBLT2020", "Kamedo2PLT2012"):
+        src_dir = os.path.join(TEMP_DIR, f"{zip_name}-{zip_name}")
+        for filename in sorted(f for f in os.listdir(src_dir) if f.endswith(".flac")):
+            dupe = dupes.get(f"{zip_name}/{filename}")
+            if dupe and dupe["action"] == "skip":
+                print(f"  Skipping {filename} (duplicate of {dupe['matches']}).")
+                continue
+            if dupe:
+                print(f"  {filename} supersedes {dupe['matches']}.")
+                sources.pop(dupe["matches"], None)
+            sources[os.path.splitext(filename)[0] + ".wav"] = os.path.join(src_dir, filename)
+    return list(sources.items())
 
-    wav_files = sorted(f for f in os.listdir(src_dir) if f.endswith(".wav"))
-    print(f"Found {len(wav_files)} samples to derive {dest_name} @ {rate} Hz.")
-    for i, filename in enumerate(wav_files):
-        print(f"  [{i + 1}/{len(wav_files)}] Processing {filename}...")
-        resample(os.path.join(src_dir, filename),
-                 os.path.join(dest_dir, filename), rate, 2)
+
+def superseded_clips():
+    """Older clips that a lossless copy in a newer set replaces."""
+    return {d["matches"] for d in load_duplicates().values() if d["action"] == "replace"}
 
 
-def setup_soundexpert():
-    dataset_info = DATASETS["SoundExpert"]
-    src_dir = os.path.join(TEMP_DIR, "SoundExpert-SoundExpert")
-    dest_dir = os.path.join(BASE_DATA_DIR, "audio")
+def _remove_superseded(dest_dir):
+    """Drop superseded clips a previous build left behind, so a --force rebuild
+    of an existing checkout does not score the same recording twice."""
+    for name in sorted(superseded_clips()):
+        path = os.path.join(dest_dir, name)
+        if os.path.exists(path):
+            print(f"  Removing superseded {name} from {os.path.basename(dest_dir)}.")
+            os.remove(path)
 
-    wav_files = []
-    for root, dirs, files in os.walk(src_dir):
-        for f in files:
-            if f.endswith(".wav"):
-                wav_files.append(os.path.join(root, f))
 
-    print(f"Found {len(wav_files)} valid samples for {dataset_info['name']}.")
-    for i, wav in enumerate(wav_files):
-        print(f"  [{i + 1}/{len(wav_files)}] Processing {os.path.basename(wav)}...")
-        dur, chans = get_info(wav)
+def setup_audio():
+    """The 48 kHz music corpus."""
+    sources = music_sources()
+    _remove_superseded(os.path.join(BASE_DATA_DIR, "audio"))
+    print(f"Found {len(sources)} music samples for "
+          f"{', '.join(DATASETS[n]['name'] for n in MUSIC_DATASETS)}.")
+    for i, (out_name, src) in enumerate(sources):
+        print(f"  [{i + 1}/{len(sources)}] Processing {out_name}...")
+        dur, chans, _ = source_info(src)
         start, duration, loop = get_tier_params(dur)
+        resample(src, os.path.join(BASE_DATA_DIR, "audio", out_name), 48000, chans,
+                 start=start, duration=duration, loop=loop, hq=True)
 
-        filename = os.path.basename(wav)
-        output = os.path.join(dest_dir, filename)
-        resample(
-            wav,
-            output,
-            48000,
-            chans,
-            start=start,
-            duration=duration,
-            loop=loop)
+
+def derives_from_original(src_rate, rate):
+    """A derived corpus resamples the original when it has at least the target
+    rate, so a native 44.1 kHz clip is not pushed through 48 kHz and back. A
+    source below the target would have to be upsampled; it falls back to the 48
+    kHz clip, as before."""
+    return src_rate >= rate
+
+
+def setup_derived_audio(dest_name, rate):
+    """Build a music corpus at `rate`, resampling each original once.
+
+    Downsampling is honest here -- the derived file is itself the reference
+    every metric scores against, so the comparison stays self-consistent.
+    """
+    sources = music_sources()
+    audio_dir = os.path.join(BASE_DATA_DIR, "audio")
+    dest_dir = os.path.join(BASE_DATA_DIR, dest_name)
+    _remove_superseded(dest_dir)
+    print(f"Found {len(sources)} samples to derive {dest_name} @ {rate} Hz.")
+    for i, (out_name, src) in enumerate(sources):
+        dur, _, src_rate = source_info(src)
+        out = os.path.join(dest_dir, out_name)
+        if derives_from_original(src_rate, rate):
+            print(f"  [{i + 1}/{len(sources)}] Processing {out_name} from the original "
+                  f"({src_rate} Hz)...")
+            start, duration, loop = get_tier_params(dur)
+            resample(src, out, rate, 2, start=start, duration=duration, loop=loop, hq=True)
+        else:
+            print(f"  [{i + 1}/{len(sources)}] Processing {out_name} from the 48 kHz clip "
+                  f"(source is {src_rate} Hz)...")
+            resample(os.path.join(audio_dir, out_name), out, rate, 2, hq=True)
 
 
 def setup_throughput_signals():
@@ -417,14 +516,16 @@ def setup_realistic_throughput_signals(dest_dir):
 # Which builder produces each corpus directory, and which dataset zips it needs.
 # Keyed by the "dir" of each entry in config.CORPORA.
 CORPUS_BUILDERS = {
-    "audio": (["PMLT2014", "SoundExpert"], lambda: (setup_pmlt(), setup_soundexpert())),
+    "audio": (MUSIC_DATASETS, setup_audio),
     "speech": (["TCD-VOIP"], setup_tcd_voip),
     "speech_clean_16k": (["TCD-VOIP"], lambda: setup_tcd_ref(16000, "speech_clean_16k")),
     "speech_clean_24k": (["TCD-VOIP"], lambda: setup_tcd_ref(24000, "speech_clean_24k")),
-    # Derived from data/external/audio, so no dataset download is required --
-    # but "audio" must exist first, which build order below guarantees.
-    "audio_44k1": ([], lambda: setup_derived_audio("audio_44k1", 44100)),
-    "audio_32k": ([], lambda: setup_derived_audio("audio_32k", 32000)),
+    # Resampled once from the same originals as "audio" rather than from it, so
+    # a native 44.1 kHz clip is not converted 44.1 -> 48 -> 44.1. A source below
+    # the target still falls back to the "audio" clip, which build order below
+    # guarantees exists.
+    "audio_44k1": (MUSIC_DATASETS, lambda: setup_derived_audio("audio_44k1", 44100)),
+    "audio_32k": (MUSIC_DATASETS, lambda: setup_derived_audio("audio_32k", 32000)),
     "audio_51": ([], setup_audio_51),
 }
 
@@ -465,6 +566,13 @@ def main():
         for dirname in todo:
             print(f"\n>>> Building corpus: {dirname}")
             CORPUS_BUILDERS[dirname][1]()
+
+        if "audio" in todo:
+            # The realistic throughput signals are cut from corpus clips and
+            # setup skips ones that already exist, so a rebuilt `audio` would
+            # leave them on the old content ("same content as quality").
+            for stale in glob.glob(os.path.join(BASE_DATA_DIR, "throughput", "music_*.wav")):
+                os.remove(stale)
 
         if os.path.exists(TEMP_DIR):
             shutil.rmtree(TEMP_DIR)

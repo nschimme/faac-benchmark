@@ -13,9 +13,9 @@ next run without re-downloading everything (`--force` rebuilds all).
 | `speech_clean_16k` | `data/external/speech_clean_16k/` | 16 kHz mono | TCD-VoIP clean `ref/` recordings |
 | `speech_clean_24k` | `data/external/speech_clean_24k/` | 24 kHz mono | the same, at 24 kHz |
 | `speech_voip_16k` | `data/external/speech/` | 16 kHz mono | TCD-VoIP degraded test set |
-| `audio_32k` | `data/external/audio_32k/` | 32 kHz stereo | downsampled from `audio` |
-| `audio_44k1` | `data/external/audio_44k1/` | 44.1 kHz stereo | downsampled from `audio` |
-| `audio_48k` | `data/external/audio/` | 48 kHz stereo | PMLT2014 + SoundExpert |
+| `audio_32k` | `data/external/audio_32k/` | 32 kHz stereo | same originals as `audio`, resampled once |
+| `audio_44k1` | `data/external/audio_44k1/` | 44.1 kHz stereo | same originals as `audio`, resampled once |
+| `audio_48k` | `data/external/audio/` | 48 kHz stereo | PMLT2014 + SoundExpert + IgorCPBLT2020 + Kamedo2PLT2012 |
 | `audio_51` | `data/external/audio_51/` | 44.1 kHz 5.1 surround | FFmpeg Multichannel 6 Channel ID |
 
 A corpus may declare `max_clips`/`strata`, a deterministic cap applied by

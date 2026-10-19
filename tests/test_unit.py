@@ -201,12 +201,12 @@ class TestGateFilter(unittest.TestCase):
     def setUp(self):
         from phase1_encode import gate_filter
         self.gate_filter = gate_filter
-        self.music = ["sandman.16b48k.wav", "velvet.16b48k.wav", "x.wav", "y.wav", "z.wav"]
+        self.music = ["sandman.16b48k.wav", "08 velvet.wav", "x.wav", "y.wav", "z.wav"]
 
     def test_known_scenario_includes_fixtures(self):
         picked = self.gate_filter("48k_stereo_64k", self.music)
         self.assertIn("sandman.16b48k.wav", picked)
-        self.assertIn("velvet.16b48k.wav", picked)
+        self.assertIn("08 velvet.wav", picked)
 
     def test_unknown_scenario_returns_nonempty_subset(self):
         fb = self.gate_filter("does_not_exist", self.music)
@@ -786,6 +786,21 @@ class TestRefWavCache(unittest.TestCase):
             self.assertEqual(len(calls), 1, "second call should hit the cache, not re-run ffmpeg")
             self.assertEqual(p1, p2)
             self.assertTrue(os.path.exists(p1))
+
+    def test_replaced_source_is_converted_afresh(self):
+        from utils import get_cached_ref_wav
+        with tempfile.TemporaryDirectory() as td:
+            ref = os.path.join(td, "ref.wav")
+            write_wav(ref, seconds=1, sr=48000, ch=2)
+            cache_dir = os.path.join(td, "cache")
+            os.makedirs(cache_dir)
+
+            p_old = get_cached_ref_wav(cache_dir, ref, 48000, 2)
+            write_wav(ref, seconds=2, sr=48000, ch=2)  # same name, new content
+            p_new = get_cached_ref_wav(cache_dir, ref, 48000, 2)
+
+            self.assertNotEqual(p_old, p_new)
+            self.assertGreater(os.path.getsize(p_new), os.path.getsize(p_old))
 
     def test_different_params_convert_separately(self):
         from utils import get_cached_ref_wav

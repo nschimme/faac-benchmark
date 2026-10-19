@@ -231,5 +231,70 @@ class TestCompareDecoders(unittest.TestCase):
                 self.assertIn("## 🔊 Decoder Leaderboard", text)
                 self.assertIn("FAAD", text)
 
+class TestStaleInputRows(unittest.TestCase):
+    """--resume must not reuse rows for a clip replaced under the same name."""
+
+    def setUp(self):
+        from tests.helpers import write_wav
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.scenario = "48k_stereo_128k"
+        self.cfg = SCENARIOS[self.scenario]
+        d = utils.corpus_dir(self.cfg, self._td.name)
+        os.makedirs(d)
+        self.clip = os.path.join(d, "velvet.16b48k.wav")
+        write_wav(self.clip, seconds=1)
+        self.write_wav = write_wav
+
+    def row(self, name="velvet.16b48k.wav", sig="current"):
+        row = {"scenario": self.scenario, "filename": name, "row_key": "enc"}
+        if sig == "current":
+            row["input_sig"] = utils.input_signature(self.clip)
+        elif sig is not None:
+            row["input_sig"] = sig
+        return row
+
+    def test_matching_signature_is_kept(self):
+        kept, stale = cd.drop_stale_input_rows([self.row()], self._td.name, replaced=set())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(stale, set())
+
+    def test_changed_clip_is_dropped_and_reported(self):
+        rows = [self.row()]
+        self.write_wav(self.clip, seconds=2)
+        kept, stale = cd.drop_stale_input_rows(rows, self._td.name, replaced=set())
+        self.assertEqual(kept, [])
+        self.assertEqual(stale, {(self.scenario, "velvet.16b48k.wav")})
+
+    def test_legacy_rows_cannot_be_verified_and_are_kept(self):
+        kept, stale = cd.drop_stale_input_rows([self.row(sig=None)], self._td.name, replaced=set())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(stale, set())
+
+    def test_rows_under_a_superseded_clip_name_are_always_dropped(self):
+        # even with a matching signature, and even for a legacy row without one:
+        # the recording is scored under its new name now
+        rows = [self.row(), self.row(sig=None), self.row(name="other.wav", sig=None)]
+        kept, stale = cd.drop_stale_input_rows(rows, self._td.name, replaced={"velvet.16b48k.wav"})
+        self.assertEqual([r["filename"] for r in kept], ["other.wav"])
+        self.assertEqual(stale, {(self.scenario, "velvet.16b48k.wav")})
+
+    def test_missing_clip_cannot_be_checked_and_is_kept(self):
+        kept, stale = cd.drop_stale_input_rows([self.row(name="gone.wav", sig="1:abc")],
+                                               self._td.name, replaced=set())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(stale, set())
+
+    def test_decoder_rows_follow_their_clip(self):
+        rows = [{"scenario": self.scenario, "filename": "velvet.16b48k.wav"},
+                {"scenario": self.scenario, "filename": "other.wav"},
+                {"scenario": "other_scenario", "filename": "velvet.16b48k.wav"}]
+        kept = cd.drop_stale_clip_rows(rows, {(self.scenario, "velvet.16b48k.wav")}, replaced=set())
+        self.assertEqual([(r["scenario"], r["filename"]) for r in kept],
+                         [(self.scenario, "other.wav"), ("other_scenario", "velvet.16b48k.wav")])
+        kept = cd.drop_stale_clip_rows(rows, set(), replaced={"velvet.16b48k.wav"})
+        self.assertEqual([r["filename"] for r in kept], ["other.wav"])
+
+
 if __name__ == "__main__":
     unittest.main()

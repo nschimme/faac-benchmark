@@ -108,8 +108,9 @@ runs:
         # the run loudly. Degrading to any fixed string rebuilds the same
         # never-expiring cache, and the failure would again be invisible.
         h=$(python3 -c \
-          'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()[:16])' \
-          "${{ github.action_path }}/setup_datasets.py")
+          'import hashlib,sys; print(hashlib.sha256(b"".join(open(p,"rb").read() for p in sys.argv[1:])).hexdigest()[:16])' \
+          "${{ github.action_path }}/setup_datasets.py" \
+          "${{ github.action_path }}/duplicate_clips.json")
         echo "hash=$h" >> $GITHUB_OUTPUT
         echo "Dataset generator hash: $h"
 

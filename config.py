@@ -80,9 +80,9 @@ CORPORA = {
         "label": "48 kHz Stereo"},
     # 44.1 kHz exercises a different sample-rate index and a different
     # scalefactor-band table than 48 kHz -- the most common real-world config,
-    # and until now completely untested. Derived by downsampling the 48 kHz
-    # corpus, which is honest here: most PMLT sources are 44.1 kHz material the
-    # dataset had already upsampled (*.441.16b48k.wav), and the derived file is
+    # and until now completely untested. Resampled once from the same originals
+    # as the 48 kHz corpus (not from it), so a native 44.1 kHz clip is never
+    # pushed through 48 kHz and back. Honest here because the derived file is
     # itself the reference for scoring.
     "audio_44k1": {
         "dir": "audio_44k1",
@@ -458,9 +458,14 @@ del _name, _cfg, _corpus
 # its own fixed reference-file list below.
 _MUSIC_GATE = [
     "sandman.16b48k.wav",          # percussive (LC-favoured)
-    "velvet.16b48k.wav",           # tonal/bright (HE-favoured)
+    "08 velvet.wav",               # tonal/bright (HE-favoured)
     "21-classic.441.16b48k.wav",   # tonal classical (HE-favoured)
     "fms.wav",                     # mixed
+    # Two clips from IgorCPBLT2020 that are popular in the HydrogenAudio
+    # community for catching encoder bugs. Appended, not inserted:
+    # setup_datasets builds the realistic throughput signals from [0] and [1].
+    "03 eig.wav",
+    "13 fatboy_30sec.wav",
 ]
 _SPEECH_GATE = [
     "C_01_CHOP_FA.wav",

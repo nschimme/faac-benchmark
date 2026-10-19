@@ -148,8 +148,9 @@ class FDKDecoder(Decoder):
     """Wraps scripts/fdkdec (Homebrew libfdk-aac): decodes MP4/M4A via
     TT_MP4_RAW + FAAC's mp4read.c for gapless trim, or raw ADTS via
     TT_MP4_ADTS. fdkdec writes the gapless-trimmed decode straight to
-    output_path (plus an untrimmed "<stem>_raw.wav" alongside, for
-    debugging), so no wrapper is needed."""
+    output_path, so no wrapper is needed. (Older builds also wrote an
+    untrimmed "<stem>_raw.wav" unconditionally; it is now opt-in via --raw,
+    but cleanup still removes one if a stale binary produces it.)"""
     def __init__(self, name, binary_path, tool_id="fdk_aac_dec"):
         super().__init__(name, binary_path, tool_id, lib_name_substr="libfdk-aac")
 
@@ -546,8 +547,7 @@ def time_decode_once(decoder, bitstream_input, output_dir):
     import soundfile as sf
     scratch = os.path.join(output_dir, f"speed_scratch_{os.getpid()}_{threading.get_ident()}.wav")
     try:
-        if os.path.exists(scratch):
-            os.remove(scratch)
+        _remove_stale(scratch)
         command = decoder.get_decode_cmd(bitstream_input, scratch)
         res, seconds, rss = measure_peak_ram(command, env=decoder.get_run_env() or None)
         if res.returncode != 0 or not os.path.exists(scratch):
@@ -559,8 +559,7 @@ def time_decode_once(decoder, bitstream_input, output_dir):
                 "output_info": {"rate": info.samplerate, "channels": info.channels,
                                 "frames": info.frames, "subtype": info.subtype}}
     finally:
-        if os.path.exists(scratch):
-            os.remove(scratch)
+        _remove_stale(scratch)
 
 
 def measure_decode_speed(decoder, bitstream_input, output_dir, iterations, audio_duration, warmups=0):
@@ -714,16 +713,23 @@ def time_decoder_serial(decoder, res_item, output_dir, iterations,
         return None
 
 
+def _raw_sibling(path):
+    """The untrimmed "<stem>_raw.wav" that fdkdec writes beside its output."""
+    return os.path.splitext(path)[0] + "_raw.wav"
+
+
 def _remove_stale(path):
     """Decoders differ on clobbering (FAAD3 refuses to overwrite, others vary
     in flag spelling), so clear leftovers from earlier runs before decoding."""
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
+    for p in (path, _raw_sibling(path)):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
 
 
-def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False):
+def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cache_dir=None, iterations=1, keep_decodes=False,
+                         conformance_dir=None):
     aac_path = res_item.get("aac_path")
     ref_path = res_item.get("ref_path")
     scenario_name = res_item["scenario"]
@@ -888,7 +894,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 # the encoder phase, or here on first use) and reused by
                 # every decoder under test in this run rather than
                 # re-decoded per decoder.
-                ffmpeg_ref_wav = get_conformance_ref_wav(aac_path, ref_cache_dir)
+                ffmpeg_ref_wav = get_conformance_ref_wav(aac_path, conformance_dir or ref_cache_dir)
                 base_lag, base_lag_ms = (None, None)
                 if ffmpeg_ref_wav:
                     # The reference decode's own offset vs the original is
@@ -897,7 +903,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                     # offset plus its own (much cheaper, already-aligned)
                     # offset vs the reference decode, instead of each decoder
                     # re-correlating a full window against the original.
-                    base_lag, base_lag_ms = get_conformance_ref_offset(ref_path, ffmpeg_ref_wav, ref_cache_dir)
+                    base_lag, base_lag_ms = get_conformance_ref_offset(ref_path, ffmpeg_ref_wav, conformance_dir or ref_cache_dir)
 
                 if decoder.tool_id == "ffmpeg_aac":
                     conformance_snr_db = "ref"
@@ -979,12 +985,6 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "speed_mbps": speed_stats["mbps"] if speed_stats else None,
         }
 
-        if not keep_decodes and os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError:
-                pass
-
         return result
     except BaseException as e:
         detail = str(e)
@@ -1028,6 +1028,13 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                 os.remove(temp_adts)
             except OSError:
                 pass
+        if not keep_decodes:
+            for scratch in (output_path, _raw_sibling(output_path)):
+                if os.path.exists(scratch):
+                    try:
+                        os.remove(scratch)
+                    except OSError:
+                        pass
 
 
 def process_decoder_robustness_task(decoder, res_item, output_dir):
@@ -1101,7 +1108,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
                 os.remove(temp_adts)
             except OSError:
                 pass
-        for scratch in (corrupt_path, dec_corrupt_wav):
+        for scratch in (corrupt_path, dec_corrupt_wav, _raw_sibling(dec_corrupt_wav)):
             if os.path.exists(scratch):
                 try:
                     os.remove(scratch)

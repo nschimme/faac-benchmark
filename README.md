@@ -31,6 +31,8 @@ We are grateful to the following projects for providing high-quality research ma
 *   **TCD-VoIP (Sigmedia-VoIP)**: [Listener Test Database](https://www.sigmedia.tv/datasets/tcd_voip_ltd/) — designed for assessing quality in VoIP applications. Supplies both the clean reference recordings (the speech quality ladder) and the degraded test set (the VoIP spot check).
 *   **PMLT2014**: [Public Multiformat Listening Test](https://listening-test.coresv.net/) — a community-defined comprehensive multi-codec benchmark.
 *   **SoundExpert**: [Sound Samples](https://soundexpert.org/sound-samples) — high-precision EBU SQAM CD excerpts for transparency testing.
+*   **IgorCPBLT2020**: [Personal Blind Test, multicodec ~192 kbps](https://hydrogenaudio.org/index.php/topic,120007.0.html) — Hydrogenaudio listening-test sources (reference FLACs only).
+*   **Kamedo2PLT2012**: [Personal Listening Test samples](https://hydrogenaudio.org/index.php/topic,98003.msg815018.html) — Hydrogenaudio listening-test sources.
 
 ## License
 
