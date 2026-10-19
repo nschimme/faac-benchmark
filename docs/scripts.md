@@ -358,3 +358,17 @@ DAB+ (960-sample AAC, HE-AAC v1/v2) conformance probe for libfaad3 against FDK,
 FFmpeg and FAAD2. `build_odr_fdk.sh` builds the fdk-aac fork that can encode a
 960-sample granule; `run_matrix.sh` encodes and compares a matrix of rates and
 channel layouts. See `scripts/dabplus_960/README.md`.
+
+## find_duplicate_clips.py
+
+Finds clips in the FLAC listening-test sets (IgorCPBLT2020, Kamedo2PLT2012)
+that are the same recording as a PMLT2014/SoundExpert clip, by content
+(8 kHz mono cross-correlation; true duplicates score 0.89-1.00, everything else
+< 0.25). It compares against the raw dataset sources and writes the committed
+`duplicate_clips.json`, which `setup_datasets.py` reads. Re-run it when bumping a
+dataset tag. A hand-edited `action` is preserved.
+
+Each duplicate is `replace` (default: the lossless FLAC supersedes the older
+clip, which is left out of every corpus and removed from an existing checkout on
+rebuild, so the recording is scored once) or `skip` (the FLAC is left out). Run from the repo root:
+`python3 scripts/find_duplicate_clips.py`.

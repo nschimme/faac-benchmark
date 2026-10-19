@@ -1,10 +1,11 @@
 /* fdkdec: decode an MP4/M4A or raw ADTS AAC stream with libfdk-aac.
- * MP4 samples and gapless metadata come from libfaam. Writes <out>_raw.wav
- * (untrimmed decoder output) and <out>.wav (trimmed by container priming,
- * padding, and decoder outputDelay; ADTS has no container gapless metadata),
- * and prints fdk's reported
- * outputDelay. Also supports `fdkdec -v` / `--version` to print the
- * linked libfdk-aac version for tool auto-detection. */
+ * MP4 samples and gapless metadata come from libfaam. Writes <out>.wav
+ * (trimmed by container priming, padding, and decoder outputDelay; ADTS has no
+ * container gapless metadata) and prints fdk's reported outputDelay. With a
+ * trailing --raw it also writes <out>_raw.wav (untrimmed decoder output) for
+ * debugging; that is off by default so a timed decode does the same single WAV
+ * write as every other decoder. Also supports `fdkdec -v` / `--version` to
+ * print the linked libfdk-aac version for tool auto-detection. */
 #define _POSIX_C_SOURCE 200809L
 #define _FILE_OFFSET_BITS 64
 #include <stdio.h>
@@ -63,7 +64,8 @@ int main(int argc, char **argv) {
         aacDecoder_Close(d);
         return 0;
     }
-    if (argc < 3) { fprintf(stderr, "usage: fdkdec in.m4a|in.aac out.wav\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: fdkdec in.m4a|in.aac out.wav [--raw]\n"); return 2; }
+    bool write_raw = argc >= 4 && !strcmp(argv[3], "--raw");
     FILE *in = fopen(argv[1], "rb");
     if (!in) return 1;
     if (fseeko(in, 0, SEEK_END) != 0) { fclose(in); return 1; }
@@ -241,14 +243,17 @@ int main(int argc, char **argv) {
     size_t out_len = strlen(out_path);
     bool has_wav_ext = out_len > 4 && !strcasecmp(out_path + out_len - 4, ".wav");
 
-    /* argv[2] is the gapless output's exact path; the untrimmed debug wav
-     * is written alongside it with a "_raw" suffix inserted before the
-     * extension (or appended, if argv[2] has no .wav extension). */
-    if (has_wav_ext)
-        snprintf(path, sizeof(path), "%.*s_raw.wav", (int)(out_len - 4), out_path);
-    else
-        snprintf(path, sizeof(path), "%s_raw.wav", out_path);
-    FILE *f = fopen(path, "wb"); wav_hdr(f, sr, ch, frames); fwrite(pcm, 2, n, f); fclose(f);
+    FILE *f;
+    /* argv[2] is the gapless output's exact path; with --raw the untrimmed
+     * debug wav is written alongside it with a "_raw" suffix inserted before
+     * the extension (or appended, if argv[2] has no .wav extension). */
+    if (write_raw) {
+        if (has_wav_ext)
+            snprintf(path, sizeof(path), "%.*s_raw.wav", (int)(out_len - 4), out_path);
+        else
+            snprintf(path, sizeof(path), "%s_raw.wav", out_path);
+        f = fopen(path, "wb"); wav_hdr(f, sr, ch, frames); fwrite(pcm, 2, n, f); fclose(f);
+    }
 
     /* Container gapless counts are in the track timescale (the core rate).
      * ADTS input carries no such metadata, so delay and padding are 0

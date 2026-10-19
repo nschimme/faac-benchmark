@@ -81,6 +81,71 @@ class TestDecoders(unittest.TestCase):
             self.assertTrue(res["decode_valid"])
             self.assertIsNotNone(res["mos"])
 
+    def _raw_writing_decoder(self, src_wav):
+        """Like fdkdec: writes the trimmed output plus an untrimmed <stem>_raw.wav."""
+        class RawWritingDecoder(dec.Decoder):
+            def __init__(self):
+                super().__init__("RawWritingDecoder", "/bin/sh", "raw_dec")
+
+            def get_decode_cmd(self, input_path, output_path):
+                raw = os.path.splitext(output_path)[0] + "_raw.wav"
+                return ["sh", "-c", 'cp "$0" "$1" && cp "$0" "$2"', src_wav, output_path, raw]
+        return RawWritingDecoder()
+
+    def _decode_task_item(self, td):
+        from helpers import write_wav
+        ref_wav = os.path.join(td, "ref.wav")
+        src_wav = os.path.join(td, "src.wav")
+        bitstream = os.path.join(td, "test.aac")
+        write_wav(ref_wav, seconds=1, sr=48000, ch=2)
+        write_wav(src_wav, seconds=1, sr=48000, ch=2)
+        with open(bitstream, "wb") as f:
+            f.write(b"dummy")
+        return src_wav, {"row_key": "enc_row_1", "scenario": "48k_stereo_128k",
+                         "filename": "sample.wav", "aac_path": bitstream,
+                         "ref_path": ref_wav, "profile": "lc"}
+
+    def _leftovers(self, td):
+        return sorted(f for f in os.listdir(td) if f.startswith("dec_"))
+
+    def test_process_decoder_task_removes_raw_sibling(self):
+        with tempfile.TemporaryDirectory() as td:
+            src_wav, item = self._decode_task_item(td)
+            res = dec.process_decoder_task(self._raw_writing_decoder(src_wav), item, td)
+            self.assertTrue(res["decode_valid"])
+            self.assertEqual(self._leftovers(td), [])
+
+    def test_process_decoder_task_keep_decodes_keeps_both(self):
+        with tempfile.TemporaryDirectory() as td:
+            src_wav, item = self._decode_task_item(td)
+            dec.process_decoder_task(self._raw_writing_decoder(src_wav), item, td, keep_decodes=True)
+            left = self._leftovers(td)
+            self.assertEqual(len(left), 2)
+            self.assertTrue(any(f.endswith("_raw.wav") for f in left))
+
+    def test_process_decoder_task_failed_decode_cleans_up(self):
+        class FailingDecoder(dec.Decoder):
+            def __init__(self):
+                super().__init__("FailingDecoder", "/bin/sh", "fail_dec")
+
+            def get_decode_cmd(self, input_path, output_path):
+                raw = os.path.splitext(output_path)[0] + "_raw.wav"
+                return ["sh", "-c", 'echo x > "$0"; echo x > "$1"; exit 1', output_path, raw]
+
+        with tempfile.TemporaryDirectory() as td:
+            _, item = self._decode_task_item(td)
+            res = dec.process_decoder_task(FailingDecoder(), item, td)
+            self.assertFalse(res["decode_valid"])
+            self.assertEqual(self._leftovers(td), [])
+
+    def test_time_decode_once_removes_raw_sibling(self):
+        with tempfile.TemporaryDirectory() as td:
+            src_wav, _ = self._decode_task_item(td)
+            out_dir = os.path.join(td, "out")
+            os.makedirs(out_dir)
+            dec.time_decode_once(self._raw_writing_decoder(src_wav), os.path.join(td, "test.aac"), out_dir)
+            self.assertEqual(os.listdir(out_dir), [])
+
     def test_decoder_robustness_task_error_exit_is_crash_free(self):
         class ErrorExitDecoder(dec.Decoder):
             def __init__(self):

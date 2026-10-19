@@ -28,6 +28,7 @@ comparison_results.json
 test_results/
 test_report.md
 /*.json
+!/duplicate_clips.json
 
 # OS
 .DS_Store

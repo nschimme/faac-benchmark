@@ -1011,12 +1011,27 @@ def wav_conv(input_path, output_path, rate=None, channels=None):
 
     return False
 
+def input_signature(path):
+    """Content fingerprint of an input clip (size + SHA-256 prefix), recorded on
+    result rows so a resumed run can tell a clip was replaced under its name."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return f"{os.path.getsize(path)}:{h.hexdigest()[:16]}"
+
 def get_cached_ref_wav(cache_dir, ref_input_path, v_rate, v_channels):
     """Converts ref_input_path to a (v_rate, v_channels) WAV under cache_dir,
-    reusing a prior conversion for the same (path, rate, channels) key.
+    reusing a prior conversion for the same (path, size, mtime, rate, channels)
+    key, so a clip replaced under the same name is converted afresh.
     Safe under concurrent workers: conversion is written to a private temp
     file and atomically renamed into place."""
-    key = hashlib.sha1(f"{ref_input_path}|{v_rate}|{v_channels}".encode()).hexdigest()
+    try:
+        st = os.stat(ref_input_path)
+        stamp = f"{st.st_size}|{st.st_mtime_ns}"
+    except OSError:
+        stamp = "missing"
+    key = hashlib.sha1(f"{ref_input_path}|{stamp}|{v_rate}|{v_channels}".encode()).hexdigest()
     cached_path = os.path.join(cache_dir, f"{key}.wav")
     if os.path.exists(cached_path):
         return cached_path

@@ -1,0 +1,25 @@
+{
+  "duplicates": {
+    "IgorCPBLT2020/01 castanets.flac": {
+      "action": "replace",
+      "matches": "cst.wav",
+      "score": 0.894
+    },
+    "IgorCPBLT2020/06 trumpet.flac": {
+      "action": "replace",
+      "matches": "trumpet.16b48k.wav",
+      "score": 1.0
+    },
+    "IgorCPBLT2020/08 velvet.flac": {
+      "action": "replace",
+      "matches": "velvet.16b48k.wav",
+      "score": 1.0
+    },
+    "Kamedo2PLT2012/21wa_.flac": {
+      "action": "replace",
+      "matches": "Waiting.16b48k.wav",
+      "score": 1.0
+    }
+  },
+  "threshold": 0.8
+}
