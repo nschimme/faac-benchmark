@@ -109,6 +109,45 @@ WAV headers and ancillary chunks may differ; any PCM or format mismatch stops th
 
 The helper's unit tests run with `python3 -m unittest discover -s tests -p test_decoder_ab.py`.
 
+## Decoder output-filesystem A/B timing
+
+`scripts/storage_ab.py` compares full-CLI FAAD output to several existing
+filesystem roots. It copies every original input into local scratch before
+using the shared stream-copy timing preparation, so even an input longer than
+`--audio-seconds` is decoded from local storage. Each `--dest LABEL=DIR` must
+name an existing directory; the script creates a unique temporary child there
+and removes only that child when the run ends. It refuses to overwrite an
+existing `--json` report.
+
+Each destination gets one warmup, then serial trials with rotating destination
+order. The CLI wall time and direct child user+system CPU time are recorded;
+WAV format, PCM byte count and PCM SHA-256 are inspected after timing and must
+match across file destinations. Peak RSS is not collected by this direct
+subprocess timer. `--include-null` adds a separately labeled raw PCM decode to
+`os.devnull`; it discards WAV output and is not compared as a file destination.
+
+```bash
+python3 scripts/storage_ab.py \
+  --faad build/frontend/faad \
+  --faad-lib build/libfaad/libfaad3.dylib \
+  --inputs /path/to/clip-a.m4a /path/to/clip-b.m4a \
+  --dest local=/private/tmp \
+  --dest wd_black=/Volumes/WD_BLACK/faad-bench-scratch \
+  --dest old_nas=/Volumes/scratch/output \
+  --iterations 5 --audio-seconds 300 \
+  --include-null --json /private/tmp/faad-storage-ab.json
+```
+
+The report includes executable/library/input hashes, source and prepared-input
+paths, destination filesystem paths, preparation details, warmups, every raw
+sample, per-destination medians and failures. This is a serial filesystem
+diagnostic. It does not reproduce the leaderboard's ten-worker contention, and
+the raw `/dev/null` measurement answers a different output-path question from
+the WAV-writing full-CLI timing.
+
+The argument, timer, copy, PCM-mismatch, failure-report and cleanup checks run
+with `python3 -m unittest discover -s tests -p test_storage_ab.py`.
+
 ## Transient fidelity / TNS tooling
 
 ### `scripts/score_transient.py`
