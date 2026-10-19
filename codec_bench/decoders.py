@@ -838,6 +838,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
         gapless_length_delta = None
         mos_val = None
         mos_source = None
+        mismatch_durations = None
         dec_channels = None
         mono_downmix = False
         speed_stats = None
@@ -952,6 +953,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
                                         print(f"Duration mismatch: encoder={res_item['row_key']} decoder={decoder.name} "
                                               f"{scenario_name}/{sample} ref={ref_dur:.3f}s decoded={dec_dur:.3f}s")
                                         mos_val, mos_source = 1.0, "duration_mismatch"
+                                        mismatch_durations = {"ref_s": ref_dur, "decoded_s": dec_dur}
                                     else:
                                         import phase2_mos
                                         mos_val, _backend = phase2_mos.score_wav_pair(ref_wav, dec_wav, mode_str=mode_str)
@@ -977,6 +979,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
             "decode_error": decode_err,
             "mos": mos_val,
             "mos_source": mos_source,
+            "duration_mismatch": mismatch_durations,
             "snr_db": snr_db,
             "ic_err": ic_err_val,
             "conformance_snr_db": conformance_snr_db,
