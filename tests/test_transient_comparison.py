@@ -46,8 +46,8 @@ class TestTransientComparison(unittest.TestCase):
 
     def test_improvement(self):
         text = self.block(row(), row(nper=-2))
-        self.assertIn('NPER: 3.0 → 0.0 (Δ -3.0)', text)
-        self.assertIn('Improved / traded / regressed: 1 / 0 / 0', text)
+        self.assertIn('| **Pre-Echo (NPER)** | 3.0 dB | 0.0 dB | -3.0 dB |', text)
+        self.assertIn('Improved / Traded / Regressed: 1 / 0 / 0', text)
         self.assertIn('no transient regression flagged', text)
 
     def test_exclusive_categories_at_thresholds(self):
@@ -61,22 +61,22 @@ class TestTransientComparison(unittest.TestCase):
                 (0.9, 0.9, '0 / 0 / 0')):
             with self.subTest(dnper=dnper, dres=dres):
                 text = self.block(row(), row(nper=3+dnper, residual=-20+dres))
-                self.assertIn('Improved / traded / regressed: ' + counts, text)
+                self.assertIn('Improved / Traded / Regressed: ' + counts, text)
                 if counts.endswith('/ 1'):
                     self.assertIn('1 clip(s) regressed', text)
-                    self.assertIn('clip.wav @', text)
+                    self.assertIn('| `clip.wav` | `48k_stereo_128k` |', text)
                 else:
                     self.assertIn('no transient regression flagged', text)
-                    self.assertNotIn('clip.wav @', text)
+                    self.assertNotIn('| `clip.wav` | `48k_stereo_128k` |', text)
 
     def test_nper_flag(self):
-        self.assertIn('clip.wav @ 48k_stereo_128k: dNPER +1.0, dRes +0.0 (events 3)',
+        self.assertIn('| `clip.wav` | `48k_stereo_128k` | +1.0 dB | +0.0 dB | 3 |',
                       self.block(row(), row(nper=4)))
 
     def test_residual_flag_and_null(self):
         cand = row(residual=-19)
         cand['post_onset_residual_db'][0] = None
-        self.assertIn('dNPER +0.0, dRes +1.0', self.block(row(), cand))
+        self.assertIn('| `clip.wav` | `48k_stereo_128k` | +0.0 dB | +1.0 dB | 3 |', self.block(row(), cand))
         cand['post_onset_residual_db'] = [None] * 3
         self.assertEqual(self.block(row(), cand), '')
 
@@ -120,5 +120,6 @@ class TestTransientComparison(unittest.TestCase):
         cand['0'] = dict(cand['0'], post_onset_metric_version=-1)
         text = '\n'.join(render_transient_block({'transients': transient_comparison(base, cand)}))
         self.assertIn('Covered pairs: 4 of 5', text)
-        self.assertEqual(text.count(' @ '), 3)
-        self.assertLess(text.index('4.wav @'), text.index('3.wav @'))
+        reg_rows = [line for line in text.splitlines() if line.startswith('| `')]
+        self.assertEqual(len(reg_rows), 3)
+        self.assertLess(text.index('`4.wav`'), text.index('`3.wav`'))

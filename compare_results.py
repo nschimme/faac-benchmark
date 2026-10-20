@@ -1011,19 +1011,35 @@ def render_transient_block(metrics):
                  and p["dnper"] <= -TRANSIENT_FLAG_DB for p in pairs)
     improved = sum(p["dnper"] <= -TRANSIENT_FLAG_DB
                    and p["dres"] < TRANSIENT_FLAG_DB for p in pairs)
-    lines = ["", "**Transients (NPER / post-onset residual, dB, lower is better)**",
-             f"Covered pairs: {len(pairs)} of {block['total']} pairs with events."]
-    for label, suffix in (("NPER", "nper"), ("Residual", "res")):
-        base = sum(p[f"base_{suffix}"] for p in pairs) / len(pairs)
-        cand = sum(p[f"cand_{suffix}"] for p in pairs) / len(pairs)
-        lines.append(f"{label}: {base:.1f} → {cand:.1f} (Δ {cand - base:+.1f}).")
+
+    base_nper = sum(p["base_nper"] for p in pairs) / len(pairs)
+    cand_nper = sum(p["cand_nper"] for p in pairs) / len(pairs)
+    base_res = sum(p["base_res"] for p in pairs) / len(pairs)
+    cand_res = sum(p["cand_res"] for p in pairs) / len(pairs)
+
     verdict = f"{len(regressed)} clip(s) regressed" if regressed else "no transient regression flagged"
-    lines.append(f"Improved / traded / regressed: {improved} / {traded} / {len(regressed)} — **{verdict}** (flag-only).")
+
+    lines = [
+        "",
+        "#### ⚡ Transient & Pre-Echo Performance",
+        f"_Covered pairs: {len(pairs)} of {block['total']} pairs with events (NPER / post-onset HF residual in dB, lower is better)._\n",
+        "| Metric | Baseline | Candidate | Delta | Summary / Verdict |",
+        "| :--- | :---: | :---: | :---: | :--- |",
+        f"| **Pre-Echo (NPER)** | {base_nper:.1f} dB | {cand_nper:.1f} dB | {cand_nper - base_nper:+.1f} dB | {improved} improved, {len(regressed)} regressed |",
+        f"| **Post-Onset Residual** | {base_res:.1f} dB | {cand_res:.1f} dB | {cand_res - base_res:+.1f} dB | {traded} traded for NPER |",
+        f"| **Outcome Breakdown** | — | — | — | Improved / Traded / Regressed: {improved} / {traded} / {len(regressed)} — **{verdict}** |"
+    ]
+
     if regressed:
-        lines.append("")
-    for p in regressed[:3]:
-        lines.append(f"- {p['clip']} @ {p['scenario']}: dNPER {p['dnper']:+.1f}, "
-                     f"dRes {p['dres']:+.1f} (events {p['events']})")
+        lines.extend([
+            "",
+            "##### Regressed Transient Clips",
+            "| Regressed Clip | Scenario | ΔNPER | ΔRes | Scored Events |",
+            "| :--- | :--- | :---: | :---: | :---: |"
+        ])
+        for p in regressed[:3]:
+            lines.append(f"| `{p['clip']}` | `{p['scenario']}` | {p['dnper']:+.1f} dB | {p['dres']:+.1f} dB | {p['events']} |")
+
     return lines
 
 
@@ -1753,6 +1769,21 @@ def main():
                     report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
                     for r in data["regressions"]:
                         report.append(r["line"])
+            report.append("\n</details>")
+
+        # Collapsible Details: Significant Wins
+        total_sig_wins = global_metrics["total_significant_wins"]
+        if total_sig_wins > 0:
+            report.append(
+                "\n<details><summary><b>🌟 View Significant Win Details ({})</b></summary>\n".format(total_sig_wins))
+            for name, data in sorted(all_suite_data.items()):
+                if data["significant_wins"]:
+                    report.append(f"\n#### {name}")
+                    report.append(
+                        f"| Test Case | Status | {mos_label} (Base) | Delta | Target | Actual | Acc % | Speed Δ | Bit-Exact |")
+                    report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                    for w in data["significant_wins"]:
+                        report.append(w["line"])
             report.append("\n</details>")
 
         # 2. Collapsible Additional Details
