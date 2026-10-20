@@ -67,6 +67,7 @@ jobs:
           libfaac-so: ${{ github.workspace }}/../faac_src/build/libfaac/libfaac.so
           run-name: faac_${{ matrix.rate_control }}_cand
           output-json: results/faac_${{ matrix.rate_control }}_cand.json
+          baseline-json: results/faac_${{ matrix.rate_control }}_base.json
           rate-control: ${{ matrix.rate_control }}
           gate: ${{ github.event_name != 'workflow_dispatch' }}
 

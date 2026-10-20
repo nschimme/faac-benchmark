@@ -35,7 +35,7 @@ def format_bytes(b):
     return f"{b} B"
 
 
-def render_job_summary(data, name_override=None):
+def render_job_summary(data, name_override=None, baseline=None):
     lines = []
     run_name = name_override or data.get("name") or "Benchmark Run"
     sha = data.get("sha")
@@ -57,6 +57,15 @@ def render_job_summary(data, name_override=None):
     if "decoder_diff" in data:
         from phase5_decoder_diff import summary
         lines.append(summary(data["decoder_diff"]) + "\n")
+
+    from compare_results import transient_comparison, render_transient_block
+
+    # A single run has no paired deltas; reuse comparison data only when supplied.
+    metrics = data
+    if baseline is not None:
+        metrics = {"transients": transient_comparison(baseline.get("matrix", {}),
+                                                      data.get("matrix", {}))}
+    lines.extend(render_transient_block(metrics))
 
     # 1. Code Footprint Section
     lib_size = data.get("lib_size")
@@ -261,6 +270,7 @@ def render_job_summary(data, name_override=None):
 def main():
     parser = argparse.ArgumentParser(description="Render Job Summary to Markdown for GitHub Step Summary")
     parser.add_argument("result_json", help="Path to result JSON file")
+    parser.add_argument("--baseline", help="Baseline result JSON for paired transient diagnostics")
     parser.add_argument("--name", help="Override name for this benchmark run")
     parser.add_argument("--output", help="Path to output Markdown file (default: stdout)")
 
@@ -273,7 +283,11 @@ def main():
     with open(args.result_json, "r") as f:
         data = json.load(f)
 
-    summary_md = render_job_summary(data, name_override=args.name)
+    baseline = None
+    if args.baseline:
+        with open(args.baseline) as f:
+            baseline = json.load(f)
+    summary_md = render_job_summary(data, name_override=args.name, baseline=baseline)
 
     if args.output:
         with open(args.output, "w") as f:

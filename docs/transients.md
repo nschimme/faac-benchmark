@@ -39,3 +39,40 @@ than 0.5 dB. These are measurement validation results, without audibility claims
 
 `attack_centroid_ms` did not discriminate between encoders at 128 kbps in the
 validated comparison.
+
+## Merge-decision reports
+
+The PR summary shows a compact suite-level **Transients (NPER / post-onset
+residual, dB, lower is better)** block beside the stereo diagnostics. The job
+renderer uses the same block with `--baseline baseline.json`, or a supplied
+`transients` comparison metrics dict. Single-run job summaries without a
+baseline omit it.
+
+Only matching scenario/clip pairs with valid decodes, current versions of both
+metrics, at least three scored events on each side, and a non-null residual
+mean are covered. Fewer events let a single attack dominate the mean. Coverage
+is reported against paired clips with events on both sides; legacy rows are
+not covered. With no covered pairs the block is omitted.
+
+NPER is each clip's mean positive excess; residual is its signed mean of
+non-null events. Suite means weight covered pairs equally. Deltas are candidate
+minus baseline, so larger is worse. Pre-echo is the target metric; residual is
+a cost, so a residual rise is only a problem when pre-echo did not buy it.
+Each covered pair falls into exactly one category:
+
+- Regressed: dNPER >= +1 dB, or dRes >= +1 dB with dNPER > -1 dB.
+- Traded: dRes >= +1 dB with dNPER <= -1 dB; counted and shown, never flagged.
+- Improved: dNPER <= -1 dB with dRes < +1 dB.
+- Unchanged: all other pairs.
+
+The block always shows improved / traded / regressed counts. Its verdict is
+“no transient regression flagged” when none regressed, otherwise “N clip(s)
+regressed”, listing up to three worst regressed pairs by max(dNPER, dRes).
+Event counts show the smaller scored count.
+
+The 1 dB threshold concerns size, not measurement noise: identical inputs give
+identical scores. It represents about 26% energy and catches the 1.9-2.9 dB
+per-clip eig/fatboy NPER regression from FAAC 2.2 to later 3.0 HEAD. Intended
+pre-echo fixes can raise residual error; improvements of at least 1 dB NPER
+pay for residual rises in this diagnostic. This is flag-only: it never changes
+exit codes, merge gates, or MOS ranking. Attack centroid is not included.

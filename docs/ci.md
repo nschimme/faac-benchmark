@@ -347,3 +347,15 @@ printf '{}\n' > results/decoder-smoke.json
 python3 phase5_decoder_diff.py results/decoder-smoke.json path/to/streams \
   --all-streams --decoder-ref-bin path/to/base/faad --decoder-bin path/to/cand/faad
 ```
+
+The comparison summary also includes a flag-only suite-level transient block
+when current paired NPER and post-onset residual scores cover at least three
+events per clip on both sides. It shows coverage, means, deltas, and the
+improved / traded / regressed counts. Pre-echo is the target metric; residual
+is a cost. A residual rise of at least 1 dB is traded when NPER improves by at
+least 1 dB, and regressed otherwise; an NPER rise of at least 1 dB also
+regresses. Up to three worst regressed pairs are listed by max(dNPER, dRes);
+traded pairs are never flagged. It changes no gate or MOS ranking. See
+[transient diagnostics](transients.md#merge-decision-reports). For a single-job
+comparison, pass `--baseline baseline.json` to `render_job_summary.py`, or set
+the benchmark action's optional `baseline-json` input to an available baseline.
