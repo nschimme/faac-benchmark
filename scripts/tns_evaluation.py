@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from utils import find_linked_lib, resolve_wrapper_target, safe_run
+from transient import has_current_post_onset
 
 
 def sha256(path):
@@ -57,6 +58,13 @@ def verify_inputs(manifest, data_dir):
         if sha256(path) != digest:
             raise ValueError(f"input hash mismatch: {path}")
     return corpus
+
+
+def post_onset_fields(row):
+    if not has_current_post_onset(row):
+        return {}
+    return {field: row[field] for field in
+            ("post_onset_residual_db", "post_onset_metric_version")}
 
 
 def main():
@@ -131,6 +139,9 @@ def main():
                              "attack_centroid_ms": row.get("attack_centroid_ms"),
                              "pre_echo_db": row.get("pre_echo_db"),
                              "pre_echo_coverage": row.get("pre_echo_coverage")})
+            per_clip[-1].update(post_onset_fields(row))
+    has_post = any("post_onset_residual_db" in row or "post_onset_metric_version" in row
+                   for row in per_clip)
     provenance = {
         "schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
         "benchmark_commit": safe_run(["git", "rev-parse", "HEAD"]).stdout.strip(),
@@ -143,17 +154,25 @@ def main():
         "limits": ["Apple AAC is available only on supported macOS hosts; its system framework provenance is identified by row/version and OS, not a standalone binary hash.",
                    "Pre-echo is N/A when the reference has no eligible quiet-onset events; N/A is not zero.",
                    "MOS, bitrate, stereo, attack, and pre-echo are separate measurements."]}
+    if has_post:
+        provenance["metric_versions"]["post_onset"] = next(
+            row["post_onset_metric_version"] for row in per_clip
+            if "post_onset_metric_version" in row)
     (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     with (out / "per-clip.csv").open("w", newline="") as stream:
         columns = ["encoder", "filename", "source_sha256", "aac_sha256", "status", "mos",
                    "actual_bitrate_kbps", "stereo_ic_error", "attack_centroid_ms",
                    "pre_echo_db", "pre_echo_coverage"]
+        if has_post:
+            columns += ["post_onset_residual_db", "post_onset_metric_version"]
         writer = csv.DictWriter(stream, fieldnames=columns)
         writer.writeheader()
         for row in per_clip:
             row["attack_centroid_ms"] = json.dumps(row["attack_centroid_ms"], separators=(",", ":")) if row["attack_centroid_ms"] is not None else ""
             row["pre_echo_db"] = json.dumps(row["pre_echo_db"], separators=(",", ":")) if row["pre_echo_db"] is not None else ""
             row["pre_echo_coverage"] = json.dumps(row["pre_echo_coverage"], separators=(",", ":")) if row["pre_echo_coverage"] is not None else ""
+            if "post_onset_residual_db" in row:
+                row["post_onset_residual_db"] = json.dumps(row["post_onset_residual_db"], separators=(",", ":"))
             writer.writerow(row)
     print(f"Wrote evidence to {out}")
 

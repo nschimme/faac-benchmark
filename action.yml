@@ -22,6 +22,10 @@ inputs:
   output-json:
     description: 'Path where the result JSON should be saved'
     required: true
+  baseline-json:
+    description: 'Optional baseline result JSON for paired transient job diagnostics'
+    required: false
+    default: ''
   coverage:
     description: 'Percentage of dataset to cover (1-100)'
     required: false
@@ -205,5 +209,9 @@ runs:
         PYTHONPATH: ${{ github.action_path }}
       run: |
         if [ -f "${{ inputs.output-json }}" ]; then
-          python3 ${{ github.action_path }}/render_job_summary.py "${{ inputs.output-json }}" --name "${{ inputs.run-name }}" >> $GITHUB_STEP_SUMMARY
+          BASELINE_ARGS=()
+          if [ -n "${{ inputs.baseline-json }}" ]; then
+            BASELINE_ARGS+=(--baseline "${{ inputs.baseline-json }}")
+          fi
+          python3 ${{ github.action_path }}/render_job_summary.py "${{ inputs.output-json }}" --name "${{ inputs.run-name }}" "${BASELINE_ARGS[@]}" >> $GITHUB_STEP_SUMMARY
         fi

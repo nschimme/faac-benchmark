@@ -117,12 +117,16 @@ def _pre_echo_error_fields(message):
     return {
         "pre_echo_error": str(message),
         "pre_echo_metric_version": transient.PRE_ECHO_METRIC_VERSION,
+        "post_onset_metric_version": transient.POST_ONSET_METRIC_VERSION,
     }
 
 
 def _replace_pre_echo_fields(row, fields):
+    if transient.has_current_pre_echo(row) and "pre_echo_error" in fields:
+        return
     for key in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
-                "pre_echo_lag_samples", "pre_echo_error"):
+                "pre_echo_lag_samples", "pre_echo_error",
+                "post_onset_residual_db", "post_onset_metric_version"):
         row.pop(key, None)
     row.update(fields)
 
@@ -130,7 +134,7 @@ def _replace_pre_echo_fields(row, fields):
 def _pre_echo_fields(ref_data, dec_data, sample_rate):
     try:
         values = transient.pre_echo_metrics(ref_data, dec_data, sample_rate)
-        if not transient.has_current_pre_echo(values):
+        if not transient.has_current_post_onset(values):
             raise TypeError("pre_echo_metrics returned an incomplete or stale result")
         return values
     except Exception as exc:
@@ -231,7 +235,7 @@ def refresh_pre_echo_results(rows, external_data_dir, saved_jsons=(), output_dir
                 row, _pre_echo_error_fields("cannot backfill a row whose stream failed decode validation"))
             updated += 1
             continue
-        if transient.has_current_pre_echo(row):
+        if transient.has_current_post_onset(row):
             continue
         try:
             aac_path = _resolve_existing_row_path(row, "aac_path", saved_jsons, output_dir)

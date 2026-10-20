@@ -171,8 +171,8 @@ pre-echo metric.
 ### Fresh reference-locked measurements
 
 `compare_codecs.py` computes MOS, stereo image, attack-centroid shift, and
-pre-echo during a fresh encoder run. The skip flags omit MOS, stereo, or both
-transient metrics independently.
+pre-echo and post-onset HF residual during a fresh encoder run. The skip flags
+omit MOS, stereo, or transient metrics independently.
 
 ```bash
 NUMBA_CACHE_DIR=/tmp/faac-benchmark-numba \
@@ -211,7 +211,8 @@ python phase3_stereo.py results/faac.json output/ data/external \
 ```
 
 The result fields include `attack_centroid_ms`, `pre_echo_db`,
-`pre_echo_metric_version`, coverage, and alignment lag. Failed measurements
+`pre_echo_metric_version`, `post_onset_residual_db`, `post_onset_metric_version`,
+shared coverage, and alignment lag. Failed measurements
 have `pre_echo_error`; missing, old-version, incomplete, or failed values are
 reported as N/A and can be retried during backfill. A valid empty score list
 means the measurement completed but found no scored events. Check event and
@@ -453,3 +454,18 @@ Each duplicate is `replace` (default: the lossless FLAC supersedes the older
 clip, which is left out of every corpus and removed from an existing checkout on
 rebuild, so the recording is scored once) or `skip` (the FLAC is left out). Run from the repo root:
 `python3 scripts/find_duplicate_clips.py`.
+
+### `scripts/check_encoder_alignment.py`
+
+Checks scorer alignment using a deterministic stereo click control, explicitly
+supplied encoders at 128 kbps LC, the scorer's FFmpeg decoder, and
+`transient._pre_echo_lag`. A nonzero lag fails. Optional `--trace-decoder`
+checks that short-window packets cover all five clicks; without a trace it
+reports that check as skipped. Only requested encoder binaries run.
+
+```bash
+python scripts/check_encoder_alignment.py --faac-bin /path/to/faac
+```
+
+See [transients.md](transients.md) for the signed post-onset HF residual
+computed alongside versioned NPER during fresh scoring and backfill.

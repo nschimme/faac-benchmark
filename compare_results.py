@@ -34,6 +34,16 @@ from utils import (get_scenario_sort_key, scenario_family, scenario_families,
 STRICT_DECODE = False
 
 
+# Fewer events let one attack dominate a clip mean.
+TRANSIENT_MIN_EVENTS = 3
+# Scores are deterministic, so this thresholds size, not noise: 1 dB is
+# about 26% energy, below the 1.9-2.9 dB eig/fatboy NPER regression from
+# FAAC 2.2 to later 3.0 HEAD. Pre-echo is the target metric; residual is
+# a cost, flagged only when pre-echo did not buy it (at least 1 dB better).
+# Flags invite review and never gate merges.
+TRANSIENT_FLAG_DB = 1.0
+
+
 # Footprint gate. Section sums are deterministic for a fixed source and
 # toolchain, so the only question is how large a legitimate commit-to-commit
 # step is. Replaying 30 commits put routine work at or below +1556 bytes and
@@ -582,8 +592,10 @@ def analyze_pair(base_file, cand_file):
     base_m = base.get("matrix", {})
     cand_m = cand.get("matrix", {})
 
+    transients = transient_comparison(base_m, cand_m)
     rc_mode = next((o.get("rate_control_mode") for o in cand_m.values() if o.get("rate_control_mode")), "abr")
     suite_results = {
+        "transients": transients,
         "gates": [],
         "bd_rate_segments": [],
         "bd_rate_notes": [],
@@ -928,6 +940,77 @@ def analyze_pair(base_file, cand_file):
     return suite_results
 
 
+def transient_comparison(base_m, cand_m):
+    """Collect paired clip means without changing quality gates or ranking."""
+    from transient import has_current_post_onset
+
+    pairs = []
+    total = 0
+    # Root benchmark matrices record successful validation as decode_error=None;
+    # codec comparison rows also carry decode_valid, which must not be false.
+    for key, cand in cand_m.items():
+        base = base_m.get(key, {})
+        if (not base or any(row.get("decode_error") or row.get("decode_valid") is False
+                            for row in (base, cand))
+                or any(base.get(field) != cand.get(field)
+                       for field in ("scenario", "filename"))):
+            continue
+        if not all(row.get("pre_echo_coverage", {}).get("scored", 0) > 0
+                   for row in (base, cand)):
+            continue
+        total += 1
+        if not all(has_current_post_onset(row)
+                   and row["pre_echo_coverage"]["scored"] >= TRANSIENT_MIN_EVENTS
+                   for row in (base, cand)):
+            continue
+        residuals = [[v for v in row["post_onset_residual_db"] if v is not None]
+                     for row in (base, cand)]
+        # A clip with no complete residual window cannot support both deltas.
+        if not all(residuals):
+            continue
+        nper = [sum(max(0, v) for v in row["pre_echo_db"]) / len(row["pre_echo_db"])
+                for row in (base, cand)]
+        res = [sum(values) / len(values) for values in residuals]
+        pairs.append({"clip": cand.get("filename", key), "scenario": cand.get("scenario", ""),
+                      "events": min(row["pre_echo_coverage"]["scored"] for row in (base, cand)),
+                      "base_nper": nper[0], "cand_nper": nper[1],
+                      "base_res": res[0], "cand_res": res[1],
+                      "dnper": nper[1] - nper[0], "dres": res[1] - res[0]})
+    return {"total": total, "pairs": pairs}
+
+
+def render_transient_block(metrics):
+    block = metrics.get("transients", {})
+    pairs = block.get("pairs", [])
+    if not pairs:
+        return []
+    # Pre-echo is the target metric; residual is a cost. A residual rise is
+    # only a problem when pre-echo did not buy it (at least 1 dB better).
+    regressed = sorted((p for p in pairs
+                        if p["dnper"] >= TRANSIENT_FLAG_DB
+                        or (p["dres"] >= TRANSIENT_FLAG_DB
+                            and p["dnper"] > -TRANSIENT_FLAG_DB)),
+                       key=lambda p: max(p["dnper"], p["dres"]), reverse=True)
+    traded = sum(p["dres"] >= TRANSIENT_FLAG_DB
+                 and p["dnper"] <= -TRANSIENT_FLAG_DB for p in pairs)
+    improved = sum(p["dnper"] <= -TRANSIENT_FLAG_DB
+                   and p["dres"] < TRANSIENT_FLAG_DB for p in pairs)
+    lines = ["", "**Transients (NPER / post-onset residual, dB, lower is better)**",
+             f"Covered pairs: {len(pairs)} of {block['total']} pairs with events."]
+    for label, suffix in (("NPER", "nper"), ("Residual", "res")):
+        base = sum(p[f"base_{suffix}"] for p in pairs) / len(pairs)
+        cand = sum(p[f"cand_{suffix}"] for p in pairs) / len(pairs)
+        lines.append(f"{label}: {base:.1f} → {cand:.1f} (Δ {cand - base:+.1f}).")
+    verdict = f"{len(regressed)} clip(s) regressed" if regressed else "no transient regression flagged"
+    lines.append(f"Improved / traded / regressed: {improved} / {traded} / {len(regressed)} — **{verdict}** (flag-only).")
+    if regressed:
+        lines.append("")
+    for p in regressed[:3]:
+        lines.append(f"- {p['clip']} @ {p['scenario']}: dNPER {p['dnper']:+.1f}, "
+                     f"dRes {p['dres']:+.1f} (events {p['events']})")
+    return lines
+
+
 def aggregate_suite_metrics(items):
     """Pool the per-suite dicts from analyze_pair() into one set of averages.
 
@@ -952,10 +1035,14 @@ def aggregate_suite_metrics(items):
     worst_mos_drop = (0, "N/A")
     worst_bitrate_err = (0, "N/A")
     scenario_tp_deltas = []
+    transients = {"total": 0, "pairs": []}
     n_suites = 0
 
     for name, data in items:
         n_suites += 1
+        block = data.get("transients", {})
+        transients["total"] += block.get("total", 0)
+        transients["pairs"].extend(block.get("pairs", []))
         total_mos_delta += data["mos_delta_sum"]
         total_mos_count += data["mos_count"]
         total_clip_wins += data.get("clip_wins", 0)
@@ -1016,6 +1103,7 @@ def aggregate_suite_metrics(items):
         worst_tp_scen, worst_tp_delta = min(scenario_tp_deltas, key=lambda x: x[1])
 
     return {
+        "transients": transients,
         "avg_mos_delta_str": avg_mos_delta_str,
         "total_mos_delta": total_mos_delta, "total_mos_count": total_mos_count,
         "total_clip_wins": total_clip_wins, "total_clip_losses": total_clip_losses,
@@ -1186,6 +1274,7 @@ def render_summary_table(metrics, mos_label, rc_mode):
     if metrics["total_missing_mos"] > 0:
         lines.append(f"\n⚠️ **Warning**: {metrics['total_missing_mos']} MOS scores were missing/failed (treated as ❌).")
 
+    lines.extend(render_transient_block(metrics))
     return lines
 
 

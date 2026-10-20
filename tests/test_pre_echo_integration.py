@@ -18,10 +18,22 @@ def metric(values=None):
         "pre_echo_coverage": {"candidates": 3, "refined": 3, "eligible": 2, "scored": len(values or [])},
         "pre_echo_metric_version": transient.PRE_ECHO_METRIC_VERSION,
         "pre_echo_lag_samples": 0,
+        "post_onset_residual_db": [-30.0] * len(values or []),
+        "post_onset_metric_version": transient.POST_ONSET_METRIC_VERSION,
     }
 
 
 class CompareResumeBackfillTests(unittest.TestCase):
+    def test_export_omits_stale_post_onset(self):
+        from scripts.tns_evaluation import post_onset_fields
+
+        row = metric([1.0])
+        self.assertEqual(post_onset_fields(row), {
+            "post_onset_residual_db": [-30.0],
+            "post_onset_metric_version": transient.POST_ONSET_METRIC_VERSION})
+        row["post_onset_metric_version"] = 0
+        self.assertEqual(post_onset_fields(row), {})
+
     def test_resolver_never_guesses_tagged_prefix_and_rejects_ambiguous_exact_files(self):
         with tempfile.TemporaryDirectory() as td:
             row = {"row_key": "enc", "scenario": "scenario", "filename": "clip.wav"}
@@ -76,6 +88,7 @@ class CompareResumeBackfillTests(unittest.TestCase):
                  mock.patch.object(compare_codecs.phase2_mos, "score_wav_pair") as mos:
                 self.assertEqual(compare_codecs.refresh_pre_echo_results([row, current], td), 1)
             self.assertEqual(row["pre_echo_db"], [2.5])
+            self.assertEqual(row["post_onset_residual_db"], [-30.0])
             self.assertNotIn("pre_echo_error", row)
             self.assertEqual(current["pre_echo_db"], [1.25])
             for k in ("mos", "ic_err", "attack_centroid_ms", "encode_cmd"):
@@ -86,6 +99,21 @@ class CompareResumeBackfillTests(unittest.TestCase):
             score.assert_called_once()
             encode.assert_not_called()
             mos.assert_not_called()
+
+    def test_current_nper_without_residual_is_backfilled(self):
+        row = metric([1.0])
+        row.pop("post_onset_residual_db")
+        row.pop("post_onset_metric_version")
+        saved = dict(row)
+        row.update(row_key="enc", scenario="unit", filename="missing.wav")
+        self.assertTrue(transient.has_current_pre_echo(row))
+        self.assertFalse(transient.has_current_post_onset(row))
+        self.assertEqual(compare_codecs.refresh_pre_echo_results([row], "/missing"), 1)
+        self.assertTrue(transient.has_current_pre_echo(row))
+        for field, value in saved.items():
+            self.assertEqual(row[field], value)
+        self.assertNotIn("pre_echo_error", row)
+        self.assertNotIn("post_onset_residual_db", row)
 
     def test_missing_audio_is_error_not_empty_perfect_result_and_skip_is_noop(self):
         row = {"row_key": "enc", "scenario": "unit", "filename": "missing.wav"}
@@ -225,6 +253,7 @@ class Phase3BackfillTests(unittest.TestCase):
             with open(result_path) as f:
                 saved = json.load(f)["matrix"]["enc_stereo_case_stereo.wav"]
             self.assertEqual(saved["pre_echo_db"], [3.0])
+            self.assertEqual(saved["post_onset_residual_db"], [-30.0])
             self.assertEqual(saved["pre_echo_coverage"]["scored"], 1)
             self.assertEqual(saved["ic_err"], 0.125)
             self.assertEqual(saved["attack_centroid_ms"], [0.25])
