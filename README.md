@@ -15,7 +15,6 @@ FAAC is the high-efficiency encoder for the resource-constrained world. This rep
 *   **[CI Integration](docs/ci.md)**: Using the benchmark suite in GitHub Actions.
 *   **[Metric Definitions](docs/metrics.md)**: Understanding MOS, Elementary Stream (ES) Bitrate Accuracy, BD-Rate, Stereo Image Δ, and other metrics.
 *   **[Ad Hoc / Diagnostic Scripts](docs/scripts.md)**: Local tooling under `scripts/` — per-band diagnostics, pre-echo/TNS A/B, VBR-q calibration.
-*   **[TNS evaluation](docs/tns-evaluation/README.md)**: Reproduce a pinned FAAC baseline/candidate, Apple AAC, and FDK LC comparison with per-clip evidence and provenance.
 
 ## Philosophy
 

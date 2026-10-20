@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUTS = ROOT / "docs/tns-evaluation/inputs-48k128.json"
+DEFAULT_INPUTS = ROOT / "scripts/tns_evaluation/inputs-48k128.json"
 sys.path.insert(0, str(ROOT))
 
 from utils import find_linked_lib, resolve_wrapper_target

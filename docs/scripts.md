@@ -1,9 +1,5 @@
 # Ad Hoc / Diagnostic Scripts
 
-## Pinned TNS comparison
-
-[`tns_evaluation.py`](../scripts/tns_evaluation.py) runs the established encoder comparison and records MOS, achieved bitrate, stereo, attack, and pre-echo measurements on hash-pinned LC inputs. See the [TNS evaluation guide](tns-evaluation/README.md) for setup, the checked-in 77-clip manifest, the command, provenance format, and evidence limits. The example evidence snapshot is FAAC baseline/candidate only; rerun on macOS to include Apple AAC and provide an `fdkaac` binary for FDK.
-
 Everything in `scripts/` is local tooling for investigating a specific
 question — pre-echo behavior, spectral distortion, tuning-knob A/B tests. None
 of it is invoked by CI (`.github/workflows/`, `action.yml`, `report/action.yml`);
@@ -13,6 +9,17 @@ repo root — see [usage.md](usage.md) and [ci.md](ci.md) for those.
 
 Run everything below from the repo root (so `data/external/...` and `config`/
 `utils` imports resolve); each script's own `--help` has the full flag list.
+
+### `scripts/tns_evaluation.py`
+
+Runs the standard encoder comparison for a pinned 48 kHz stereo LC scenario,
+using baseline and candidate FAAC executables plus fdkaac and Apple AAC where
+available. It writes raw comparison rows and a per-clip CSV with hashes and
+separate MOS, bitrate, stereo, attack, and pre-echo fields. See the script's
+`--help` for arguments; the checked-in input manifest is under
+[`scripts/tns_evaluation/`](../scripts/tns_evaluation/). TNS-specific findings
+and the compact measured evidence snapshot live with the FAAC encoder change,
+not in this benchmark tooling repository.
 
 ## Per-clip / per-band diagnostics
 
