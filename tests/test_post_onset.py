@@ -81,7 +81,12 @@ class PostOnsetTests(unittest.TestCase):
         for case in expected:
             d = np.roll(r * case['gain'], case['shift'], axis=0)
             actual = transient.pre_echo_metrics(r, d, case['sr'])
-            self.assertEqual({key: actual[key] for key in case['expected']}, case['expected'])
+            for key, value in case['expected'].items():
+                if key == 'pre_echo_db':
+                    self.assertEqual(len(actual[key]), len(value))
+                    np.testing.assert_allclose(actual[key], value, rtol=1e-9, atol=1e-9)
+                else:
+                    self.assertEqual(actual[key], value)
 
     def test_missing_window_retains_shared_event_and_own_floor(self):
         r = fixture()

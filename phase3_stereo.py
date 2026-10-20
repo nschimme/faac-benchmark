@@ -66,7 +66,7 @@ from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
                    WorkerPool, start_orphan_watchdog, loudest_window_start)
 from transient import (PRE_ECHO_METRIC_VERSION, POST_ONSET_METRIC_VERSION, attack_centroid_deltas,
-                       has_current_post_onset, pre_echo_metrics)
+                       has_current_post_onset, has_current_pre_echo, pre_echo_metrics)
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 # 48 kHz, 50 ms analysis frames.
@@ -401,7 +401,8 @@ def main():
                     ic_results[key] = ic
                 if centroid_ms is not None:
                     centroid_results[key] = centroid_ms
-                if pre_echo is not None:
+                if pre_echo is not None and not (
+                        has_current_pre_echo(matrix[key]) and "pre_echo_error" in pre_echo):
                     pre_echo_results[key] = pre_echo
                 ic_str = f"{ic:.4f}" if ic is not None else "N/A"
                 n_onsets = len(centroid_ms) if centroid_ms is not None else "N/A"
@@ -416,6 +417,8 @@ def main():
             matrix[key]["attack_centroid_ms"] = centroid_ms
     for key, pre_echo in pre_echo_results.items():
         if key in matrix:
+            if has_current_pre_echo(matrix[key]) and "pre_echo_error" in pre_echo:
+                continue
             for field in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
                           "pre_echo_lag_samples", "pre_echo_error",
                           "post_onset_residual_db", "post_onset_metric_version"):

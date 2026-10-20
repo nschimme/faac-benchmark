@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from utils import find_linked_lib, resolve_wrapper_target, safe_run
+from transient import has_current_post_onset
 
 
 def sha256(path):
@@ -57,6 +58,13 @@ def verify_inputs(manifest, data_dir):
         if sha256(path) != digest:
             raise ValueError(f"input hash mismatch: {path}")
     return corpus
+
+
+def post_onset_fields(row):
+    if not has_current_post_onset(row):
+        return {}
+    return {field: row[field] for field in
+            ("post_onset_residual_db", "post_onset_metric_version")}
 
 
 def main():
@@ -131,9 +139,7 @@ def main():
                              "attack_centroid_ms": row.get("attack_centroid_ms"),
                              "pre_echo_db": row.get("pre_echo_db"),
                              "pre_echo_coverage": row.get("pre_echo_coverage")})
-            for field in ("post_onset_residual_db", "post_onset_metric_version"):
-                if field in row:
-                    per_clip[-1][field] = row[field]
+            per_clip[-1].update(post_onset_fields(row))
     has_post = any("post_onset_residual_db" in row or "post_onset_metric_version" in row
                    for row in per_clip)
     provenance = {
@@ -149,8 +155,9 @@ def main():
                    "Pre-echo is N/A when the reference has no eligible quiet-onset events; N/A is not zero.",
                    "MOS, bitrate, stereo, attack, and pre-echo are separate measurements."]}
     if has_post:
-        from transient import POST_ONSET_METRIC_VERSION
-        provenance["metric_versions"]["post_onset"] = POST_ONSET_METRIC_VERSION
+        provenance["metric_versions"]["post_onset"] = next(
+            row["post_onset_metric_version"] for row in per_clip
+            if "post_onset_metric_version" in row)
     (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     with (out / "per-clip.csv").open("w", newline="") as stream:
         columns = ["encoder", "filename", "source_sha256", "aac_sha256", "status", "mos",

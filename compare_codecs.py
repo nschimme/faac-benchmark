@@ -122,6 +122,8 @@ def _pre_echo_error_fields(message):
 
 
 def _replace_pre_echo_fields(row, fields):
+    if transient.has_current_pre_echo(row) and "pre_echo_error" in fields:
+        return
     for key in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
                 "pre_echo_lag_samples", "pre_echo_error",
                 "post_onset_residual_db", "post_onset_metric_version"):

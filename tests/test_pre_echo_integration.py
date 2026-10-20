@@ -24,6 +24,16 @@ def metric(values=None):
 
 
 class CompareResumeBackfillTests(unittest.TestCase):
+    def test_export_omits_stale_post_onset(self):
+        from scripts.tns_evaluation import post_onset_fields
+
+        row = metric([1.0])
+        self.assertEqual(post_onset_fields(row), {
+            "post_onset_residual_db": [-30.0],
+            "post_onset_metric_version": transient.POST_ONSET_METRIC_VERSION})
+        row["post_onset_metric_version"] = 0
+        self.assertEqual(post_onset_fields(row), {})
+
     def test_resolver_never_guesses_tagged_prefix_and_rejects_ambiguous_exact_files(self):
         with tempfile.TemporaryDirectory() as td:
             row = {"row_key": "enc", "scenario": "scenario", "filename": "clip.wav"}
@@ -94,11 +104,15 @@ class CompareResumeBackfillTests(unittest.TestCase):
         row = metric([1.0])
         row.pop("post_onset_residual_db")
         row.pop("post_onset_metric_version")
+        saved = dict(row)
         row.update(row_key="enc", scenario="unit", filename="missing.wav")
         self.assertTrue(transient.has_current_pre_echo(row))
         self.assertFalse(transient.has_current_post_onset(row))
         self.assertEqual(compare_codecs.refresh_pre_echo_results([row], "/missing"), 1)
-        self.assertIn("pre_echo_error", row)
+        self.assertTrue(transient.has_current_pre_echo(row))
+        for field, value in saved.items():
+            self.assertEqual(row[field], value)
+        self.assertNotIn("pre_echo_error", row)
         self.assertNotIn("post_onset_residual_db", row)
 
     def test_missing_audio_is_error_not_empty_perfect_result_and_skip_is_noop(self):

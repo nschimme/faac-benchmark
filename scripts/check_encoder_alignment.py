@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import random
-import subprocess
 import sys
 import tempfile
 
@@ -17,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from codec_bench.encoders import get_encoder_instance
 from codec_bench.decoders import FFmpegDecoder
 from transient import _pre_echo_lag
+from utils import safe_run
 
 POSITIONS = [40037, 72501, 104219, 136777, 168093]
 RATE = 48000
@@ -36,9 +36,9 @@ def make_control(path):
 
 
 def run(cmd, env):
-    result = subprocess.run(list(map(str, cmd)), capture_output=True, env=env)
+    result = safe_run(list(map(str, cmd)), env=env, check=False)
     if result.returncode:
-        raise RuntimeError(f'{cmd}:\n{result.stderr.decode(errors="replace")}')
+        raise RuntimeError(f'{cmd}:\n{result.stderr}')
     return result
 
 
@@ -69,15 +69,15 @@ def check(encoder, directory, args, env):
         print(f'{encoder.tool_id}: SKIP (c): stock decoder window trace unavailable (use --trace-decoder)')
         return valid
     adts = directory / 'stream.aac'
-    adts.write_bytes(run([args.decode_ffmpeg, '-v', 'error', '-i', encoded,
-                         '-c:a', 'copy', '-f', 'adts', 'pipe:1'], env).stdout)
+    run([args.decode_ffmpeg, '-y', '-v', 'error', '-i', encoded,
+         '-c:a', 'copy', '-f', 'adts', adts], env)
     result = run([args.trace_decoder, '--overwrite', '-o', directory / 'traced.wav', adts],
                  dict(env, FAAD_GROUP_TRACE='1'))
-    frames = [json.loads(line[len('TOOL_TRACE '):]) for line in result.stderr.decode().splitlines()
+    frames = [json.loads(line[len('TOOL_TRACE '):]) for line in result.stderr.splitlines()
               if line.startswith('TOOL_TRACE ')]
     if not frames:
-        print(f'{encoder.tool_id}: SKIP (c): decoder emits no TOOL_TRACE records')
-        return valid
+        print(f'{encoder.tool_id}: FAIL (c): explicitly supplied decoder emits no TOOL_TRACE records')
+        return False
     packets = [p for p in probe['packets'] if p['stream_index'] == stream['index']]
     if len(frames) != len(packets):
         raise RuntimeError('trace/packet count mismatch')
