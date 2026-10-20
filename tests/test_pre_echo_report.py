@@ -92,6 +92,31 @@ class TestPreEchoReport(unittest.TestCase):
         self.assertNotIn("(n=", text)
         self.assertNotIn("Candidates / refined", text)
 
+    def test_optional_residual_column_is_signed(self):
+        encoder = DummyEncoder("Residual", "residual")
+        coverage = {"candidates": 3, "refined": 3, "eligible": 3, "scored": 3}
+        row = current_row([0.0, 0.0, 0.0], coverage,
+                          tool="Residual", profile="lc", row_key="residual_lc",
+                          scenario="48k_stereo_128k", filename="clip.wav",
+                          duration=1.0, audio_duration=1.0, actual_bitrate=128.0,
+                          target_bitrate=128.0, decode_valid=True, decode_error="",
+                          mos=4.0, ic_err=0.0)
+        from transient import POST_ONSET_METRIC_VERSION
+        with tempfile.TemporaryDirectory() as td:
+            output = os.path.join(td, "report.md")
+            report.generate_leaderboard([encoder], [row], output,
+                                        ["48k_stereo_128k"], skip_graphs=True)
+            legacy = pathlib.Path(output).read_text()
+            self.assertNotIn("Post-onset HF residual", legacy)
+            row.update(post_onset_residual_db=[-40.0, -20.0, None],
+                       post_onset_metric_version=POST_ONSET_METRIC_VERSION)
+            report.generate_leaderboard([encoder], [row], output,
+                                        ["48k_stereo_128k"], skip_graphs=True)
+            text = pathlib.Path(output).read_text()
+        self.assertIn("Post-onset HF residual, 12-50 ms", text)
+        self.assertIn("| 48k_stereo_128k | Residual | 0.000 | -30.000 |", text)
+        self.assertEqual(report._post_onset_summary([row]), -30.0)
+
     def test_legacy_report_renders_n_a(self):
         encoder = DummyEncoder("Legacy", "legacy")
         row = {

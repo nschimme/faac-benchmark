@@ -16,11 +16,11 @@
  * along with this program.  If not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
- * This module provides two independent transient diagnostics:
+ * This module provides transient diagnostics:
  * attack-centroid shift measures decoded attack timing in a forward window;
  * reference-locked pre-echo measures decoded energy before qualifying
- * reference onsets. They use separate calculations and report their own
- * coverage. Both are diagnostics and should be interpreted alongside the
+ * reference onsets; post-onset HF residual measures high-band error on the
+ * same events. These diagnostics should be interpreted alongside the
  * benchmark's other quality measures, not as standalone quality scores.
 """
 
@@ -137,6 +137,9 @@ PRE_ECHO_MIN_SPACING = 1024
 PRE_ECHO_PRE_START = 288   # -6 ms
 PRE_ECHO_PRE_END = 48      # -1 ms
 PRE_ECHO_POST_END = 576    # +12 ms
+POST_ONSET_METRIC_VERSION = 1
+POST_ONSET_START = PRE_ECHO_POST_END
+POST_ONSET_END = round(PRE_ECHO_RATE * 0.050)
 
 
 def has_current_pre_echo(row):
@@ -158,6 +161,17 @@ def has_current_pre_echo(row):
         return False
     return all(isinstance(value, (int, float, np.integer, np.floating))
                and np.isfinite(value) for value in values)
+
+
+def has_current_post_onset(row):
+    """Whether the residual list matches the shared current NPER events."""
+    if (not has_current_pre_echo(row)
+            or row.get('post_onset_metric_version') != POST_ONSET_METRIC_VERSION):
+        return False
+    values = row.get('post_onset_residual_db')
+    return (isinstance(values, list) and len(values) == row['pre_echo_coverage']['scored']
+            and all(value is None or (isinstance(value, (int, float, np.integer, np.floating))
+                                      and np.isfinite(value)) for value in values))
 
 
 def _audio_channels(audio, name):
@@ -233,41 +247,11 @@ def _refine_pre_echo_onset(filtered_ref, seed, power, slope=None):
     return rise - 288 + int(below[-1]) + 1
 
 
-def pre_echo_metrics(ref, dec, sr):
-    """Measure reference-locked pre-echo NPER around refined transient onsets.
-
-    Both inputs must contain the same number of channels and use the supplied
-    native sample rate. The returned lag is in 48 kHz samples and follows
-    ``align_signals`` semantics: positive means decoded audio starts ahead of
-    the reference.
-    """
-    if not isinstance(sr, (int, np.integer)) or sr <= 0:
-        raise ValueError('sr must be a positive integer')
-    ref = _audio_channels(ref, 'ref')
-    dec = _audio_channels(dec, 'dec')
-    if ref.shape[1] != dec.shape[1]:
-        raise ValueError('ref and dec must have equal channel counts')
-    empty = {'pre_echo_db': [], 'pre_echo_coverage':
-             {'candidates': 0, 'refined': 0, 'eligible': 0, 'scored': 0},
-             'pre_echo_metric_version': PRE_ECHO_METRIC_VERSION,
-             'pre_echo_lag_samples': 0}
-    if len(ref) < 2 or len(dec) < 2 or not np.any(ref):
-        return empty
-    ref48 = _resample_audio(ref, int(sr))
-    dec48 = _resample_audio(dec, int(sr))
-    if len(ref48) < 2 or len(dec48) < 2:
-        return empty
-    if len(ref48) < PRE_ECHO_SEED_WIN:
-        return empty
-    lag = _pre_echo_lag(ref48, dec48)
-    sos = scipy.signal.butter(4, 2000, btype='highpass', fs=PRE_ECHO_RATE, output='sos')
-    ref_hp = scipy.signal.sosfilt(sos, ref48, axis=0)
-    dec_hp = scipy.signal.sosfilt(sos, dec48, axis=0)
+def _scored_pre_echo_events(ref48, ref_hp, dec_hp, lag, coverage):
+    """Yield channel, onset and aligned window indices for each scored event."""
     ref_start = max(lag, 0)
     dec_start = max(-lag, 0)
-    coverage = empty['pre_echo_coverage']
-    values = []
-    for ch in range(ref48.shape[1]):
+    for ch in range(ref_hp.shape[1]):
         seeds = detect_onsets(ref48[:, ch], PRE_ECHO_RATE,
                               hop=PRE_ECHO_SEED_HOP, win_len=PRE_ECHO_SEED_WIN,
                               min_spacing=PRE_ECHO_MIN_SPACING)
@@ -303,14 +287,67 @@ def pre_echo_metrics(ref, dec, sr):
             dec_post = float(np.mean(dec_hp[dec_onset:dec_hi, ch] ** 2))
             if dec_post < 1e-12:
                 continue
-            dec_pre = float(np.mean(dec_hp[dec_lo:dec_lo + (pre_hi - pre_lo), ch] ** 2))
-            floor = ref_post * 1e-8
-            values.append(float(10.0 * np.log10(max(dec_pre, floor) /
-                                                   max(ref_pre, floor))))
             coverage['scored'] += 1
+            yield ch, onset, dec_onset, pre_lo, pre_hi, dec_lo, ref_pre, ref_post
+
+
+def pre_echo_metrics(ref, dec, sr):
+    """Measure NPER and signed post-onset HF residual on shared reference events.
+
+    Both inputs must contain the same number of channels and use the supplied
+    native sample rate. The returned lag is in 48 kHz samples and follows
+    ``align_signals`` semantics: positive means decoded audio starts ahead of
+    the reference.
+    """
+    if not isinstance(sr, (int, np.integer)) or sr <= 0:
+        raise ValueError('sr must be a positive integer')
+    ref = _audio_channels(ref, 'ref')
+    dec = _audio_channels(dec, 'dec')
+    if ref.shape[1] != dec.shape[1]:
+        raise ValueError('ref and dec must have equal channel counts')
+    empty = {'pre_echo_db': [], 'pre_echo_coverage':
+             {'candidates': 0, 'refined': 0, 'eligible': 0, 'scored': 0},
+             'pre_echo_metric_version': PRE_ECHO_METRIC_VERSION,
+             'pre_echo_lag_samples': 0,
+             'post_onset_residual_db': [],
+             'post_onset_metric_version': POST_ONSET_METRIC_VERSION}
+    if len(ref) < 2 or len(dec) < 2 or not np.any(ref):
+        return empty
+    ref48 = _resample_audio(ref, int(sr))
+    dec48 = _resample_audio(dec, int(sr))
+    if len(ref48) < 2 or len(dec48) < 2:
+        return empty
+    if len(ref48) < PRE_ECHO_SEED_WIN:
+        return empty
+    lag = _pre_echo_lag(ref48, dec48)
+    sos = scipy.signal.butter(4, 2000, btype='highpass', fs=PRE_ECHO_RATE, output='sos')
+    ref_hp = scipy.signal.sosfilt(sos, ref48, axis=0)
+    dec_hp = scipy.signal.sosfilt(sos, dec48, axis=0)
+    coverage = empty['pre_echo_coverage']
+    values = []
+    residuals = []
+    for ch, onset, dec_onset, pre_lo, pre_hi, dec_lo, ref_pre, ref_post in _scored_pre_echo_events(
+            ref48, ref_hp, dec_hp, lag, coverage):
+        dec_pre = float(np.mean(dec_hp[dec_lo:dec_lo + (pre_hi - pre_lo), ch] ** 2))
+        floor = ref_post * 1e-8
+        values.append(float(10.0 * np.log10(max(dec_pre, floor) /
+                                               max(ref_pre, floor))))
+        if onset + POST_ONSET_END > len(ref_hp) or dec_onset + POST_ONSET_END > len(dec_hp):
+            residuals.append(None)
+            continue
+        r = ref_hp[onset + POST_ONSET_START:onset + POST_ONSET_END, ch]
+        d = dec_hp[dec_onset + POST_ONSET_START:dec_onset + POST_ONSET_END, ch]
+        energy = float(np.mean(r ** 2))
+        if energy == 0.0:
+            residuals.append(None)
+            continue
+        floor = energy * 1e-8
+        residuals.append(float(10.0 * np.log10(max(float(np.mean((d - r) ** 2)), floor) / energy)))
     return {'pre_echo_db': values, 'pre_echo_coverage': coverage,
             'pre_echo_metric_version': PRE_ECHO_METRIC_VERSION,
-            'pre_echo_lag_samples': int(lag)}
+            'pre_echo_lag_samples': int(lag),
+            'post_onset_residual_db': residuals,
+            'post_onset_metric_version': POST_ONSET_METRIC_VERSION}
 
 
 def compute_attack_centroid_shift(ref, dec, onsets, sr, hop=ENVELOPE_HOP, win=ENVELOPE_WIN,

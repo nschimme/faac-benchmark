@@ -65,8 +65,8 @@ from scipy.signal import fftconvolve
 from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
                    WorkerPool, start_orphan_watchdog, loudest_window_start)
-from transient import (PRE_ECHO_METRIC_VERSION, attack_centroid_deltas,
-                       has_current_pre_echo, pre_echo_metrics)
+from transient import (PRE_ECHO_METRIC_VERSION, POST_ONSET_METRIC_VERSION, attack_centroid_deltas,
+                       has_current_post_onset, pre_echo_metrics)
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 # 48 kHz, 50 ms analysis frames.
@@ -233,6 +233,7 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
         else:
             if not ref_path or not os.path.exists(ref_path):
                 missing = ({"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                            "post_onset_metric_version": POST_ONSET_METRIC_VERSION,
                             "pre_echo_error": "reference WAV unavailable"} if want_pre_echo else None)
                 return key, None, None, missing
             ref_wav = decode_audio(ref_path, td, "ref", channels=channels)
@@ -240,6 +241,7 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
         deg_wav = decode_audio(aac_path, td, "deg", channels=channels, decoder=decoder)
         if not ref_wav or not deg_wav:
             missing = ({"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                        "post_onset_metric_version": POST_ONSET_METRIC_VERSION,
                         "pre_echo_error": "reference or decoded WAV unavailable"} if want_pre_echo else None)
             return key, None, None, missing
 
@@ -271,10 +273,11 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
                 if r_data.shape[1] != d_data.shape[1]:
                     raise ValueError(f"reference/decode channel mismatch: {r_data.shape[1]} vs {d_data.shape[1]}")
                 pre_echo = pre_echo_metrics(r_data, d_data, r_sr)
-                if not has_current_pre_echo(pre_echo):
+                if not has_current_post_onset(pre_echo):
                     raise ValueError("pre_echo_metrics returned an incomplete or stale result")
             except Exception as e:
                 pre_echo = {"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                            "post_onset_metric_version": POST_ONSET_METRIC_VERSION,
                             "pre_echo_error": str(e)}
 
         return key, ic, centroid_ms, pre_echo
@@ -323,7 +326,7 @@ def main():
             return False
         if want_ic and v.get("ic_err") is None:
             return True
-        if want_transient and (v.get("attack_centroid_ms") is None or not has_current_pre_echo(v)):
+        if want_transient and (v.get("attack_centroid_ms") is None or not has_current_post_onset(v)):
             return True
         return False
 
@@ -387,7 +390,7 @@ def main():
                     want_transient and entry.get("attack_centroid_ms") is None,
                     scenario_channels(SCENARIOS.get(entry.get("scenario"), {})),
                     decoder_inst,
-                    want_transient and not has_current_pre_echo(entry),
+                    want_transient and not has_current_post_onset(entry),
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }
@@ -414,7 +417,8 @@ def main():
     for key, pre_echo in pre_echo_results.items():
         if key in matrix:
             for field in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
-                          "pre_echo_lag_samples", "pre_echo_error"):
+                          "pre_echo_lag_samples", "pre_echo_error",
+                          "post_onset_residual_db", "post_onset_metric_version"):
                 matrix[key].pop(field, None)
             matrix[key].update(pre_echo)
 

@@ -31,7 +31,7 @@ def compute_p1_mos(mos_scores):
         return sorted_scores[idx]
 from codec_bench.encoders import PROFILE_LABELS, profile_label, encoder_row_key, FAACEncoder
 from codec_bench.decoders import decoder_row_key, CONFORMANCE_SNR_FLOOR_DB
-from transient import has_current_pre_echo
+from transient import has_current_pre_echo, has_current_post_onset
 
 CLIP_PEER_BUG_GAP = 0.75
 
@@ -56,6 +56,13 @@ def _pre_echo_summary(rows):
         if not has_current_pre_echo(row):
             continue
         values.extend(max(0.0, float(value)) for value in row["pre_echo_db"])
+    return sum(values) / len(values) if values else None
+
+
+def _post_onset_summary(rows):
+    """Mean signed residual, excluding events without a complete window."""
+    values = [float(value) for row in rows if has_current_post_onset(row)
+              for value in row['post_onset_residual_db'] if value is not None]
     return sum(values) / len(values) if values else None
 
 
@@ -523,19 +530,26 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             # Pre-echo remains available as a compact, collapsed diagnostic.
             f.write(f"<details><summary><b>Pre-echo diagnostic ({fam_label})</b></summary>\n\n")
             f.write("> Mean positive excess NPER in dB; lower is a smaller measured pre-echo excess. This diagnostic has no merge gate. N/A means no current scored value; check result status for unavailable measurements.\n\n")
+            show_post = any("post_onset_residual_db" in r for r in results
+                            if r.get("scenario") in fam_scenarios)
             for p in ["lc", "he", "hev2", "standard"]:
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
                     continue
                 f.write(f"#### {profile_label(p)} Profile\n\n")
-                f.write("| Scenario | Encoder | Mean positive excess (dB ↓) |\n")
-                f.write("| :--- | :--- | ---: |\n")
+                post_header = " Post-onset HF residual, 12-50 ms (dB ↓) |" if show_post else ""
+                f.write(f"| Scenario | Encoder | Mean positive excess (dB ↓) |{post_header}\n")
+                f.write("| :--- | :--- | ---: |" + (" ---: |" if show_post else "") + "\n")
                 for s_name in fam_scenarios:
                     for rk in p_rks:
                         selected = [r for r in results if r.get("row_key") == rk and r.get("scenario") == s_name]
                         summary = _pre_echo_summary(selected)
                         value = f"{summary:.3f}" if summary is not None else "N/A"
-                        f.write(f"| {s_name} | {encoder_info[rk].name} | {value} |\n")
+                        post_cell = ""
+                        if show_post:
+                            post = _post_onset_summary(selected)
+                            post_cell = f" {post:.3f} |" if post is not None else " N/A |"
+                        f.write(f"| {s_name} | {encoder_info[rk].name} | {value} |{post_cell}\n")
                 f.write("\n")
             f.write("</details>\n\n")
 
