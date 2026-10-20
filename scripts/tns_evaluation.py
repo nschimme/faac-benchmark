@@ -14,6 +14,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUTS = ROOT / "docs/tns-evaluation/inputs-48k128.json"
+sys.path.insert(0, str(ROOT))
+
+from utils import find_linked_lib, resolve_wrapper_target
 
 
 def sha256(path):
@@ -28,7 +31,20 @@ def binary_info(path):
     resolved = Path(path).expanduser().resolve(strict=True)
     if not resolved.is_file():
         raise ValueError(f"not a file: {resolved}")
-    return {"path": str(resolved), "sha256": sha256(resolved)}
+    target = resolve_wrapper_target(str(resolved))
+    linked_library = None
+    for library_name in ("libfaac", "libfdk-aac"):
+        try:
+            linked_library = find_linked_lib(str(target or resolved), library_name)
+        except Exception:
+            linked_library = None
+        if linked_library:
+            break
+    library_path = Path(linked_library).resolve() if linked_library else None
+    return {"path": str(resolved), "sha256": sha256(resolved),
+            "resolved_cli_target": str(target) if target else None,
+            "linked_library": str(library_path) if library_path else None,
+            "linked_library_sha256": sha256(library_path) if library_path and library_path.is_file() else None}
 
 
 def verify_inputs(manifest, data_dir):
