@@ -10,6 +10,17 @@ repo root — see [usage.md](usage.md) and [ci.md](ci.md) for those.
 Run everything below from the repo root (so `data/external/...` and `config`/
 `utils` imports resolve); each script's own `--help` has the full flag list.
 
+### `scripts/tns_evaluation.py`
+
+Runs the standard encoder comparison for a pinned 48 kHz stereo LC scenario,
+using baseline and candidate FAAC executables plus fdkaac and Apple AAC where
+available. It writes raw comparison rows and a per-clip CSV with hashes and
+separate MOS, bitrate, stereo, attack, and pre-echo fields. See the script's
+`--help` for arguments. Pass the pinned input manifest from the [FAAC #112
+evidence bundle](https://github.com/nschimme/faac/blob/tns-transient-pr/docs/tns-evaluation/inputs-48k128.json)
+using `--inputs`; this keeps TNS-specific inputs and evidence with the encoder
+change. TNS findings and the measured snapshot also live with FAAC #112.
+
 ## Per-clip / per-band diagnostics
 
 ### `scripts/compare_clips.py`
@@ -150,6 +161,62 @@ with `python3 -m unittest discover -s tests -p test_storage_ab.py`.
 
 ## Transient fidelity / TNS tooling
 
+The benchmark's attack-centroid and reference-locked pre-echo definitions,
+aggregation rules, and interpretation limits are in [Metric Definitions](metrics.md#transient-fidelity--attack-preservation).
+The commands below run or backfill those metrics. The standalone
+`score_transient.py` section later in this page describes a separate legacy
+NPER implementation; do not compare its values with the versioned benchmark
+pre-echo metric.
+
+### Fresh reference-locked measurements
+
+`compare_codecs.py` computes MOS, stereo image, attack-centroid shift, and
+pre-echo during a fresh encoder run. The skip flags omit MOS, stereo, or both
+transient metrics independently.
+
+```bash
+NUMBA_CACHE_DIR=/tmp/faac-benchmark-numba \
+  python compare_codecs.py --mode encoder \
+  --faac-bin ../faac/build/frontend/faac \
+  --faac-lib ../faac/build/libfaac/libfaac.3.dylib \
+  --gate --scenarios 44k1_stereo_128k,48k_stereo_128k \
+  --results-json results/faac-transients.json \
+  --output results/faac-transients.md
+```
+
+### Backfill saved results
+
+For a complete `compare_codecs.py` matrix, resume with MOS and stereo skipped
+to backfill versioned pre-echo from the recorded AAC and reference paths. This
+does not encode or recompute MOS, stereo, or attack-centroid values. Use a
+complete matrix so resume does not schedule missing encodes.
+
+```bash
+NUMBA_CACHE_DIR=/tmp/faac-benchmark-numba \
+  python compare_codecs.py --mode encoder --resume \
+  --skip-mos --skip-stereo \
+  --faac-bin ../faac/build/frontend/faac \
+  --faac-lib ../faac/build/libfaac/libfaac.3.dylib \
+  --gate --scenarios 44k1_stereo_128k,48k_stereo_128k \
+  --results-json results/faac-transients.json \
+  --output results/faac-transients.md
+```
+
+For `run_benchmark.py` matrices, Phase 3 can backfill attack-centroid and
+pre-echo from existing AAC files without encoding or running MOS/stereo:
+
+```bash
+python phase3_stereo.py results/faac.json output/ data/external \
+  --skip-stereo --decoder ffmpeg
+```
+
+The result fields include `attack_centroid_ms`, `pre_echo_db`,
+`pre_echo_metric_version`, coverage, and alignment lag. Failed measurements
+have `pre_echo_error`; missing, old-version, incomplete, or failed values are
+reported as N/A and can be retried during backfill. A valid empty score list
+means the measurement completed but found no scored events. Check event and
+clip coverage before comparing results.
+
 ### `scripts/score_transient.py`
 
 Three complementary transient-fidelity metrics for TNS/block-switch
@@ -157,6 +224,12 @@ evaluation, and the shared A/B/sweep helper library (`encode_aac`,
 `decode_aac`, `load_mono`, `find_lag`, `align_signals`, `zimtohrli_mos`,
 `bootstrap_ci`, `cmd_env_ab`, `require_tuning_build`, ...) that
 `scripts/sweep_binary_ab.py` and `scripts/visqol_env_ab.py` build on:
+
+This script's NPER implementation is a legacy metric. The versioned pre-echo
+metric used by `compare_codecs.py` and the encoder leaderboard is implemented
+in the top-level `transient.py` and has different onset selection and scoring
+rules. Treat their measurements as separate series; do not compare or combine
+their NPER values.
 
 - **NPER** — looks *backward* from a detected onset: energy leaking into
   the silence before a transient (pre-echo).
@@ -179,6 +252,20 @@ evaluation, and the shared A/B/sweep helper library (`encode_aac`,
   the full investigation. Still exposed via `--metric attack_smear` for
   reference, but do not build on it.
 
+The encoder leaderboard shows the current versioned **Pre-echo (dB)** mean per
+scenario inside a collapsed diagnostic section. It uses the high-pass-2-kHz
+NPER metric on reference-only fine onsets, with a 6-to-1 ms pre-window and a
+0-to-12 ms post-window anchored to the refined reference onset. Only onsets
+whose reference pre/post ratio is at most -20 dB are eligible; the energy
+floor is -80 dB. Per-channel measurements use a shared global alignment for
+each recording. The value is diagnostic only: it is not an audibility score,
+does not measure attack timing, and does not affect MOS ranking. Standard A/B
+comparison summaries omit transient values; inspect raw per-clip results or
+the dedicated TNS evaluation evidence for event-level analysis. `N/A` means
+there is no current scored value; result status and error details distinguish
+a valid empty measurement from a missing or failed one. Attenuation or
+high-frequency removal can reduce measured NPER without improving fidelity.
+
 ```bash
 scripts/score_transient.py REF.wav DEC.wav [--verbose]        # score a pair (all three metrics)
 scripts/score_transient.py --validate FAAC_BIN                # synthetic self-tests (all three metrics)
@@ -186,12 +273,6 @@ scripts/score_transient.py --sweep FAAC_BIN REF.wav            # all three metri
 scripts/score_transient.py --tns-ab FAAC_BIN REF.wav [REF2...] # paired TNS on/off proof
 scripts/score_transient.py --env-ab FAAC_BIN --env-a "K=V" --env-b "K=V" REF.wav [...]
 ```
-
-Note: `faac` builds encountered during this work produced byte-identical
-TNS on/off output at every tested bitrate (confirmed outside the harness) —
-per repo maintainer, TNS doesn't reliably engage in `faac`. Use
-`--tns-ab --encoder ffmpeg` (ffmpeg's AAC encoder does toggle TNS) for a
-real TNS A/B proof.
 
 ### `scripts/sweep_binary_ab.py`
 

@@ -25,7 +25,8 @@ from utils import (default_worker_count, get_scenario_sort_key, safe_run, corpus
                    select_corpus_clips, scenario_channels, scenario_rate,
                    get_audio_es_bytes, measure_peak_ram, wav_conv,
                    decode_validate, ffmpeg_probe, expand_scenario_list,
-                   get_cached_ref_wav, input_signature, WorkerPool, start_orphan_watchdog)
+                   get_cached_ref_wav, input_signature, WorkerPool,
+                   start_orphan_watchdog)
 import os
 if sys.platform == "darwin":
     os.environ["NUMBA_THREADING_LAYER"] = "workqueue"
@@ -111,6 +112,168 @@ def get_audio_info(path):
         return 44100, 2
 
 
+def _pre_echo_error_fields(message):
+    """Return an explicit failed measurement; an empty score list means no events."""
+    return {
+        "pre_echo_error": str(message),
+        "pre_echo_metric_version": transient.PRE_ECHO_METRIC_VERSION,
+    }
+
+
+def _replace_pre_echo_fields(row, fields):
+    for key in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
+                "pre_echo_lag_samples", "pre_echo_error"):
+        row.pop(key, None)
+    row.update(fields)
+
+
+def _pre_echo_fields(ref_data, dec_data, sample_rate):
+    try:
+        values = transient.pre_echo_metrics(ref_data, dec_data, sample_rate)
+        if not transient.has_current_pre_echo(values):
+            raise TypeError("pre_echo_metrics returned an incomplete or stale result")
+        return values
+    except Exception as exc:
+        return _pre_echo_error_fields(exc)
+
+
+def _resolve_existing_row_path(row, path_key, saved_jsons=(), output_dir=None):
+    """Resolve only recorded paths or an exact, unambiguous legacy AAC name."""
+    recorded = row.get(path_key)
+    if path_key == "aac_path" and not recorded:
+        recorded = row.get("aac")
+    if recorded:
+        if os.path.isabs(recorded) and os.path.exists(recorded):
+            return recorded
+        bases = [os.path.dirname(os.path.abspath(p)) for p in saved_jsons if p]
+        if output_dir:
+            bases.append(output_dir)
+        recorded_matches = set()
+        for base in bases:
+            candidate = os.path.join(base, recorded)
+            if os.path.exists(candidate):
+                recorded_matches.add(os.path.realpath(candidate))
+        if len(recorded_matches) > 1:
+            raise ValueError("ambiguous recorded audio path: " + ", ".join(sorted(recorded_matches)))
+        if recorded_matches:
+            return next(iter(recorded_matches))
+        # A row that records an exact path must not silently bind to another
+        # file whose name happens to match its inferred clip key.
+        return None
+    if path_key != "aac_path":
+        return None
+
+    key = row.get("row_key")
+    if not key:
+        return None
+    scenario = row.get("scenario", "")
+    filename = row.get("filename", "")
+    clip_key = f"{key}_{scenario}_{filename}".replace(" ", "_")
+    roots = [output_dir] if output_dir else []
+    roots.extend(os.path.dirname(os.path.abspath(p)) for p in saved_jsons if p)
+    suffixes = {"", "_base", "_cand"}
+    matches = set()
+    for root in roots:
+        if not root:
+            continue
+        for suffix in suffixes:
+            for ext in (".m4a", ".mp4", ".aac", ".opus", ".mp3"):
+                candidate = os.path.join(root, f"{clip_key}{suffix}{ext}")
+                if os.path.isfile(candidate):
+                    matches.add(os.path.realpath(candidate))
+    if len(matches) > 1:
+        raise ValueError("ambiguous exact AAC candidates: " + ", ".join(sorted(matches)))
+    if matches:
+        return next(iter(matches))
+    return None
+
+
+def _resolve_existing_reference(row, external_data_dir, saved_jsons=()):
+    recorded = row.get("ref_path")
+    if recorded:
+        if os.path.isabs(recorded) and os.path.exists(recorded):
+            return recorded
+        recorded_matches = set()
+        for result_path in saved_jsons:
+            candidate = os.path.join(os.path.dirname(os.path.abspath(result_path)), recorded)
+            if os.path.exists(candidate):
+                recorded_matches.add(os.path.realpath(candidate))
+        if len(recorded_matches) > 1:
+            raise ValueError("ambiguous recorded reference path: "
+                             + ", ".join(sorted(recorded_matches)))
+        if recorded_matches:
+            return next(iter(recorded_matches))
+        # Do not silently replace a missing recorded source with a different
+        # corpus file that happens to have the same basename.
+        return None
+    cfg = SCENARIOS.get(row.get("scenario"), {})
+    filename = row.get("filename")
+    if cfg and filename:
+        candidate = os.path.join(corpus_dir(cfg, external_data_dir), filename)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def refresh_pre_echo_results(rows, external_data_dir, saved_jsons=(), output_dir=None,
+                             skip_transient=False):
+    """Backfill only the new metric from existing bitstreams and source WAVs.
+
+    This path never encodes, scores MOS, or recomputes stereo/centroid values.
+    Returns the number of rows updated.
+    """
+    if skip_transient:
+        return 0
+    updated = 0
+    for row in rows:
+        if row.get("decode_valid") is False:
+            _replace_pre_echo_fields(
+                row, _pre_echo_error_fields("cannot backfill a row whose stream failed decode validation"))
+            updated += 1
+            continue
+        if transient.has_current_pre_echo(row):
+            continue
+        try:
+            aac_path = _resolve_existing_row_path(row, "aac_path", saved_jsons, output_dir)
+            ref_path = _resolve_existing_reference(row, external_data_dir, saved_jsons)
+        except Exception as exc:
+            _replace_pre_echo_fields(row, _pre_echo_error_fields(exc))
+            updated += 1
+            continue
+        if not aac_path or not ref_path:
+            missing = []
+            if not aac_path:
+                missing.append("existing AAC path unavailable")
+            if not ref_path:
+                missing.append("existing reference WAV unavailable")
+            _replace_pre_echo_fields(row, _pre_echo_error_fields("; ".join(missing)))
+            updated += 1
+            continue
+        try:
+            expected_sig = row.get("input_sig")
+            if expected_sig is not None and input_signature(ref_path) != expected_sig:
+                raise ValueError("recorded reference WAV no longer matches input_sig")
+            sample_rate, channels = get_audio_info(ref_path)
+            with tempfile.TemporaryDirectory(prefix="pre-echo-backfill-") as td:
+                ref_wav = os.path.join(td, "reference.wav")
+                dec_wav = os.path.join(td, "decoded.wav")
+                if not wav_conv(ref_path, ref_wav, rate=sample_rate, channels=channels):
+                    raise RuntimeError("reference WAV conversion failed")
+                if not wav_conv(aac_path, dec_wav, rate=sample_rate, channels=channels):
+                    raise RuntimeError("AAC decode/conversion failed")
+                r_data, r_sr = sf.read(ref_wav, dtype="float32", always_2d=True)
+                d_data, d_sr = sf.read(dec_wav, dtype="float32", always_2d=True)
+                if r_sr != d_sr or r_sr != sample_rate:
+                    raise ValueError(f"pre-echo input rate mismatch: {r_sr} vs {d_sr}, expected {sample_rate}")
+                if r_data.shape[1] != d_data.shape[1]:
+                    raise ValueError(f"pre-echo channel mismatch: {r_data.shape[1]} vs {d_data.shape[1]}")
+                _replace_pre_echo_fields(row, _pre_echo_fields(r_data, d_data, r_sr))
+        except Exception as exc:
+            _replace_pre_echo_fields(row, _pre_echo_error_fields(exc))
+        updated += 1
+    return updated
+
+
 def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_dir, skip_mos=False, skip_stereo=False, skip_transient=False, ref_cache_dir=None, conformance_dir=None):
     """Executes single encoder task in worker thread with colocated metric evaluation."""
     input_path = os.path.join(data_dir, sample)
@@ -155,7 +318,9 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
                 "decode_valid": False,
                 "decode_error": f"Encoding failed: {detail}",
                 "aac_path": None,
-                "ref_path": input_path
+                "ref_path": input_path,
+                **(_pre_echo_error_fields("encoding failed before transient analysis")
+                   if not skip_transient else {})
             }
 
         # A variant that muxes its elementary stream through a second tool
@@ -174,12 +339,16 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
                     "actual_bitrate": None, "target_bitrate": bitrate_kbps, "decode_valid": False,
                     "decode_error": f"Muxing failed: exit code {res.returncode}",
                     "aac_path": None, "ref_path": input_path,
+                    **(_pre_echo_error_fields("muxing failed before transient analysis")
+                       if not skip_transient else {}),
                 }
 
         audio_duration = ffmpeg_probe(input_path)
         mos_val = None
         ic_err_val = None
         centroid_deltas = None
+        pre_echo_fields = (_pre_echo_error_fields("decode or reference unavailable")
+                           if not skip_transient else {})
 
         with tempfile.TemporaryDirectory() as td:
             decoded_wav = os.path.join(td, "decoded.wav")
@@ -217,6 +386,14 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
                                 centroid_deltas = transient.attack_centroid_deltas(r_data.mean(axis=1), c_data.mean(axis=1), r_sr)
                             except Exception:
                                 pass
+                            try:
+                                if r_sr != c_sr:
+                                    raise ValueError(f"reference/decode sample-rate mismatch: {r_sr} vs {c_sr}")
+                                if r_data.shape[1] != c_data.shape[1]:
+                                    raise ValueError(f"reference/decode channel mismatch: {r_data.shape[1]} vs {c_data.shape[1]}")
+                                pre_echo_fields = _pre_echo_fields(r_data, c_data, r_sr)
+                            except Exception as exc:
+                                pre_echo_fields = _pre_echo_error_fields(exc)
             else:
                 valid, decode_err = False, "Decode failed (wav_conv)"
 
@@ -242,6 +419,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "mos": mos_val,
             "ic_err": ic_err_val,
             "attack_centroid_ms": centroid_deltas,
+            **pre_echo_fields,
             "aac_path": output_path if valid else None,
             "ref_path": input_path,
             "input_sig": input_signature(input_path),
@@ -271,7 +449,9 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
             "decode_valid": False,
             "decode_error": f"Encoding failed: {detail}",
             "aac_path": None,
-            "ref_path": input_path
+            "ref_path": input_path,
+            **(_pre_echo_error_fields("encoding or decode failed before transient analysis")
+               if not skip_transient else {})
         }
 
 
@@ -515,7 +695,7 @@ def main():
     parser.add_argument("--coverage", type=int, default=100, help="Percentage of dataset to cover (1-100)")
     parser.add_argument("--skip-mos", action="store_true", help="Skip perceptual MOS calculation")
     parser.add_argument("--skip-stereo", action="store_true", help="Skip inter-channel coherence calculation")
-    parser.add_argument("--skip-transient", action="store_true", help="Skip attack centroid shift calculation")
+    parser.add_argument("--skip-transient", action="store_true", help="Skip attack-centroid and pre-echo transient measurements")
     parser.add_argument("--skip-graphs", action="store_true", help="Skip generating Mermaid xychart-beta plots")
     parser.add_argument("--resume", action="store_true", help="Reuse saved results; default is a fresh run")
     parser.add_argument("--iterations", type=int, default=1,
@@ -691,6 +871,22 @@ def main():
 
             with open(args.results_json, "w") as f:
                 json.dump(encoder_results, f, indent=2)
+
+    elif candidate_jsons:
+        # Decoder-only/report runs may be pointed at explicit saved results.
+        # Load their encoder rows so metric backfill can use only the recorded
+        # AAC/reference paths; this does not schedule any encoding work.
+        encoder_results, _, _ = load_all_saved_results(candidate_jsons)
+
+    if not args.skip_transient and encoder_results:
+        refreshed = refresh_pre_echo_results(
+            encoder_results, external_data_dir, candidate_jsons, output_dir,
+            skip_transient=args.skip_transient)
+        if refreshed:
+            # Persist upgrades even when resume had no missing encode tasks.
+            with open(args.results_json, "w") as f:
+                json.dump(encoder_results, f, indent=2)
+            print(f"==> Added/refreshed pre-echo metric for {refreshed} saved rows.")
 
     # Decoder Benchmarking Phase
     decoder_results = []
