@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "scenario": "48k_stereo_128k",
+  "corpus": "audio_48k",
+  "sample_rate_hz": 48000,
+  "channels": 2,
+  "target_bitrate_kbps": 128,
+  "profile": "lc",
+  "clip_count": 77,
+  "clips": [
+    {
+      "filename": "01 castanets.wav",
+      "sha256": "e02b265e3446a3fd99da1b8b4792ad6ee2babcdaf1d066a3302f1202f92b3cf5"
+    },
+    {
+      "filename": "03 eig.wav",
+      "sha256": "7347ab4762555fa01f119ee5eb5f9d7f8654e5003a126d95f809af10b315f0ee"
+    },
+    {
+      "filename": "04 Bachpsichord.wav",
+      "sha256": "957299a81816bf4158ecf921567a248a0f7f765d48d7063f0ec5c93778bf0570"
+    },
+    {
+      "filename": "05 Enola.wav",
+      "sha256": "64badeaa24301514520d403d09bed39f96ec03ba713719f1b66b05e7b8b319dc"
+    },
+    {
+      "filename": "06 trumpet.wav",
+      "sha256": "a963cc641d8b20343b59a14788d870ea21bbd9e9057cb99cf23661a4b17a3e9b"
+    },
+    {
+      "filename": "07 applaud.wav",
+      "sha256": "d354ec07de24f06b500ddc2ccafa08735f171bd3466397bba536b7497f69b631"
+    },
+    {
+      "filename": "08 velvet.wav",
+      "sha256": "234e1ff3b00b42fffe5b044d46607a2f3927f53ad3c802456e2a9a43ee12d128"
+    },
+    {
+      "filename": "09 Linchpin.wav",
+      "sha256": "3cdf8feb7b3259a4095c1821bda1e43d3736130f1beb523cb8619eb24f5e0bb6"
+    },
+    {
+      "filename": "10 Angels_Fall_First_ringing.wav",
+      "sha256": "0a49f2c11969e81eb26aae8ec13310e165f6c4ed94775fc55b0e0dcd06a47821"
+    },
+    {
+      "filename": "10xh_.wav",
+      "sha256": "8017a2c71303967def3a6285235c3f3db11d30d392454a21c615a663f8e2aa96"
+    },
+    {
+      "filename": "11 You look good to me.wav",
+      "sha256": "656afaf0306a1e28a49a56b771634907d0dc7ced1b7908b76f79cfe8838b8ff4"
+    },
+    {
+      "filename": "11ff_.wav",
+      "sha256": "0ec10ab9533bb6cc73627e55d2ed32652a00f9255bb0cb6b586dac88564d9b5d"
+    },
+    {
+      "filename": "12-German-male-speech.441.16b48k.wav",
+      "sha256": "f5bd959db4e651710db955158de5353d5955f1b22a59d997265876ad32140918"
+    },
+    {
+      "filename": "12at_.wav",
+      "sha256": "71bfa87f4567156babb37f496414f46bc01e623e39e457b783df1269d1e78ec4"
+    },
+    {
+      "filename": "13 fatboy_30sec.wav",
+      "sha256": "1b67f3082891efaec6d99bb1f28138a9a8ee90a4034a1b16bd47d7c275e927cf"
+    },
+    {
+      "filename": "13by_.wav",
+      "sha256": "4a64c00af736ac002cbbd13e6edfa5aa1a264cb3390c1f1aab21ff07bc5d5068"
+    },
+    {
+      "filename": "14fe_.wav",
+      "sha256": "ed2ad3f528b0e5ff6767539a811e4197afe81ccc86ae5ec3747a178aa2c8929c"
+    },
+    {
+      "filename": "15-Good-evening.441.16b48k.wav",
+      "sha256": "202eecae01ee517134ee5e5da5155dfd9280a8fdee76e4ecacd35140313ee649"
+    },
+    {
+      "filename": "15ma_.wav",
+      "sha256": "f3850d37ce2c778f9df3a393efb0243477e6624840cf07e8153c64ca85afa014"
+    },
+    {
+      "filename": "16mb_.wav",
+      "sha256": "53ab6a5c37ce1c0f1d842111032973fe713d0e1cf7249a5e441b510a04f55964"
+    },
+    {
+      "filename": "17qu_.wav",
+      "sha256": "9aff5bb90c77705b76127ae06f45a76b9b409a67773184fe6ab638dae756a5ab"
+    },
+    {
+      "filename": "18vr_.wav",
+      "sha256": "7d74befdb554306e615d6d07f5f9c36c6258b875acb38d77075182df274d435a"
+    },
+    {
+      "filename": "19am_.wav",
+      "sha256": "8fbaf14a6296afae72d25cdaa683c21137e16773e2602b646a0db4f15946b41a"
+    },
+    {
+      "filename": "20tt_.wav",
+      "sha256": "f904f2ae034e7074d10028b326f5c8676bcdb6c752f30b954ef2275c5a0f0cec"
+    },
+    {
+      "filename": "21-classic.441.16b48k.wav",
+      "sha256": "740990cc92d88c21c3f6eabf177a7052b7cb39634433faaf9949a3417e046d88"
+    },
+    {
+      "filename": "21wa_.wav",
+      "sha256": "b0eb662fc15e7f2653b478c9c40c165f3b1b6ca0230aec117cbd65446fd4c0e4"
+    },
+    {
+      "filename": "22ex_.wav",
+      "sha256": "aabc40a818f72e20d0b21086f92dc3392c2b0aa7cb7c988da44d817e4bf0bff7"
+    },
+    {
+      "filename": "23ht_.wav",
+      "sha256": "7ad68401ec0965b75544d17cac70490952e66921db85223dd32d018954e6758e"
+    },
+    {
+      "filename": "24-Greensleeves-Korean-male-speech.441.16b48k.wav",
+      "sha256": "d1b2d88a7c2ff7c161473048b7810f8c9e0edae95127d68461bab87c8ef3cf48"
+    },
+    {
+      "filename": "24td_.wav",
+      "sha256": "e33a2c020cefb079b9d2974c8d417a848b45a16a41cb3fd74da96c50ed8b9fab"
+    },
+    {
+      "filename": "25-This-is-the-end.441.16b48k.wav",
+      "sha256": "d27145eea8097d8943be00328ae1c1611e70cb74e92ee66d0491a1aa0f05beb0"
+    },
+    {
+      "filename": "25rb_.wav",
+      "sha256": "357f71fe9d61b5471f1102d355ab69adbb74f1d7a06c186ad96982850fbb6cc8"
+    },
+    {
+      "filename": "26fr_.wav",
+      "sha256": "c1f6453b4be666b463107faba33e55b48a8856a396783eda4952ac8c13bc0b63"
+    },
+    {
+      "filename": "27-last-song-drums-and-trampets.441.16b48k.wav",
+      "sha256": "ab90e216630dc292e6747da47a9380cb5db812debcd00f574f5b8887720ef469"
+    },
+    {
+      "filename": "27ud_.wav",
+      "sha256": "74b7ce05392bc8dd92c5cb58b549bb1f22cd98fe079d4f6829e821c7c8e58010"
+    },
+    {
+      "filename": "28db_.wav",
+      "sha256": "935e52b51d97b24491465ef3be845f43a7a3e19604b1f5ef45da8f5d4bdacf0e"
+    },
+    {
+      "filename": "29ru_.wav",
+      "sha256": "f5da0cf2f663c646e9d25c7b9855c8ec3e8737845e929df3c015bff4ec25cac7"
+    },
+    {
+      "filename": "35_SQAM_glockenspiel_cut.16b48k.wav",
+      "sha256": "198d4e0cc82388e78980e15f0927652dc57432b98cbf8767a0edb5238c09e3b3"
+    },
+    {
+      "filename": "4-Sound-English-male.441.16b48k.wav",
+      "sha256": "be28b54dd6aa3ab3aedc772b932548a2b6cc7a8bfa482d676ff20c76868184a1"
+    },
+    {
+      "filename": "9-Have-big-expensive-car.441.16b48k.wav",
+      "sha256": "2c21820f4d000968237b18fbfbc8e2acc519326126041d82a895a7404b3d722a"
+    },
+    {
+      "filename": "Asleep__4.11-4.31_.16b48k.wav",
+      "sha256": "5ce1ada061550e76feea2f53d6d438640096b52439c0aee9bcfbecbaac1ca32c"
+    },
+    {
+      "filename": "Berling Drug.wav",
+      "sha256": "8ce24ad310c5c53794a598c0529e9525c6a8473cdf1579852fa95d5070bbb894"
+    },
+    {
+      "filename": "Can't Wait Until Tonight (Dry Wurlitzer Mix).16b48k.wav",
+      "sha256": "f0b581c25c5ffc9d10d01374dfe6ce66615df1edb3ec159fffbbea4a90cdd51f"
+    },
+    {
+      "filename": "Changes.16b48k.wav",
+      "sha256": "f9179911d8c22c99f46c46434447087cabcfc175c1f766130f7c157c6f7abafe"
+    },
+    {
+      "filename": "Coral.16b48k.wav",
+      "sha256": "4fdd7925c4dfccdfbc0cea7ab0a3cce759f51f26f5edd3f91743bf82f0fca1a4"
+    },
+    {
+      "filename": "ExitMusic.16b48k.wav",
+      "sha256": "b95b9bb9df06c1b52b51d91a66e1e10e0e4bd91f6680df32c5a3be3267a56d30"
+    },
+    {
+      "filename": "Girl_In_The_Fire__Sample_.16b48k.wav",
+      "sha256": "8093e69cf4e6a24fa1ea41b3fe2674b81381bdfdb96b277c287c2e9c1649ba9c"
+    },
+    {
+      "filename": "Greatest_Love_of_All_2min57.16b48k.wav",
+      "sha256": "72b7a0bb1ea075c93f0a51c6a3b6531bf3761ee672e56021161fb5d3d6f9ca48"
+    },
+    {
+      "filename": "Hey Tonight.16b48k.wav",
+      "sha256": "1adcaed331b5d7c4abd6db615e18e3b37f0eb414523e26a95bf044a7870deda8"
+    },
+    {
+      "filename": "Hotel California.16b48k.wav",
+      "sha256": "e2c16c34d7d21459f058188d0ec37347062cfb703cdac0ebce4aeab35b609c83"
+    },
+    {
+      "filename": "Jupiter, the Bringer of Jolity.16b48k.wav",
+      "sha256": "ec39b1e58a83f6f3c753c86cc48e5ac01e6cd29c1bf5dbb8620cb935733b81fc"
+    },
+    {
+      "filename": "Last_Of_The_Mohicanz__Sample_.16b48k.wav",
+      "sha256": "da133cf92d7e15aab3bd8f17d31e333dd6011f57753814066a10f0ec79322d61"
+    },
+    {
+      "filename": "NewYorkCity.16b48k.wav",
+      "sha256": "8417a04582a00850f0553fe516275cbbf86285446b7bb66bf1b820a6ae5dc600"
+    },
+    {
+      "filename": "Only Time.16b48k.wav",
+      "sha256": "d5e768a482d68bfd59ad28385a910e8af178b03147888adaabc043d36bf1c4d5"
+    },
+    {
+      "filename": "Robots_old.16b48k.wav",
+      "sha256": "35607d638bcba34a03f9703a16cb9fce9fd38d5d4665b6b8f1e8be9cd52d34ba"
+    },
+    {
+      "filename": "Severance__1.31-1.51_.16b48k.wav",
+      "sha256": "77787f32e287c9528407ad1b9b91fc354fd484cbd24d6f7b30836bc1f752f431"
+    },
+    {
+      "filename": "Shinsho_pool_3min45_4min4.16b48k.wav",
+      "sha256": "bcfbd583ce122c52ea31a258fc24a308d590e86b15a9c208e5fc9db3ff6a5e4b"
+    },
+    {
+      "filename": "SinceAlways.16b48k.wav",
+      "sha256": "e4f4b29eb205a407aae8dbe5b2de43155c1c7b34828f071ff6eb768db921ec57"
+    },
+    {
+      "filename": "SlavesOfFear.16b48k.wav",
+      "sha256": "a7e4b998d83bcbf1ce0a605f72d8bbafd510cbc5c38298f93ae9dac290f13dfc"
+    },
+    {
+      "filename": "The Chastising of Renegade.16b48k.wav",
+      "sha256": "5b01780e188a8bbb8312a6c8801ee93bde81a0515f36ecc9da2f5ab3df3f16b7"
+    },
+    {
+      "filename": "Through The Fire And Flames.16b48k.wav",
+      "sha256": "da81dbdab6812bcb25385f9336de2378db5be917cc75cf90ebfd4f67e742fef6"
+    },
+    {
+      "filename": "TrosYGareg.16b48k.wav",
+      "sha256": "111532f44b99e7a4f4f963ddceba229334ef3d1dfc6db9f981df3bc8d6ad5962"
+    },
+    {
+      "filename": "With Love (Outro).16b48k.wav",
+      "sha256": "67f71f1bf75416c0accc179120855046dec1e50e470c49f79da72b72100866ca"
+    },
+    {
+      "filename": "bah.wav",
+      "sha256": "16f71495031275ebac6cfa35a76d61b958c621f254eb856f4eecc5713c28c664"
+    },
+    {
+      "filename": "bas.wav",
+      "sha256": "c404c328ec38b0699ca600fc6ebac0298fd564ddd02464ab701f45ccf6d868a4"
+    },
+    {
+      "filename": "bonhemian_rhapsody.16b48k.wav",
+      "sha256": "01329d52ac448eb4dcbad750bc869eb3be35dc580b4633478339194e9855d0fc"
+    },
+    {
+      "filename": "clapton_44k.16b48k.wav",
+      "sha256": "6109d171ffc136058bf3453ebe056e0e98b85d88a65bd0280b04e68b0e9907b6"
+    },
+    {
+      "filename": "fms.wav",
+      "sha256": "20731c7519380d45c21c71cf2f9ee39896530f259a0e6d6be246c1d7e7925e2e"
+    },
+    {
+      "filename": "girl.16b48k.wav",
+      "sha256": "2451e46cb67bdf52fea142199ebf4cbbcc63e4a925100898b4eb9b83efd58665"
+    },
+    {
+      "filename": "glk.wav",
+      "sha256": "c4d747d12e2ad1d3c0c8794fade007f551945866838c5255cc3b1027533a5b23"
+    },
+    {
+      "filename": "hrp.wav",
+      "sha256": "d719db4fc00ae7b969f7f8723a79f98f817de87e3e9b821c4388b3d15f97f532"
+    },
+    {
+      "filename": "liberate.16b48k.wav",
+      "sha256": "d10d062f28ad6320e8a1b270752dc8322ac6577b5ef52f6eb8b59023d4bae36c"
+    },
+    {
+      "filename": "lob.wav",
+      "sha256": "60638ed1b318c6cacb47f3436e77be32f62a881867c0274560046024a4701d31"
+    },
+    {
+      "filename": "mof.wav",
+      "sha256": "d25bd7ce0f7d405405893d19d3a4460b6eb52e9d4a4d325681f57f4737ee0b83"
+    },
+    {
+      "filename": "qrt.wav",
+      "sha256": "fac740996fb3c86c8540cf32446273c774531ba8db26bf21a0fb78d738a4f6bd"
+    },
+    {
+      "filename": "sandman.16b48k.wav",
+      "sha256": "3d1be0a937c7a3a8c0f627f03a6a135d328dcf7657cc8c2bf30e4525502585b0"
+    },
+    {
+      "filename": "take_your_finger_frin_my_head.16b48k.wav",
+      "sha256": "706ef475a5df0e9b9c2d2ffef54dbbe90832a4c6ec0387a41395d00b3ffd378f"
+    }
+  ]
+}

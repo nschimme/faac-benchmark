@@ -1,5 +1,9 @@
 # Ad Hoc / Diagnostic Scripts
 
+## Pinned TNS comparison
+
+[`tns_evaluation.py`](../scripts/tns_evaluation.py) runs the established encoder comparison and records MOS, achieved bitrate, stereo, attack, and pre-echo measurements on hash-pinned LC inputs. See the [TNS evaluation guide](tns-evaluation/README.md) for setup, the checked-in 77-clip manifest, the command, provenance format, and evidence limits. The example evidence snapshot is FAAC baseline/candidate only; rerun on macOS to include Apple AAC and provide an `fdkaac` binary for FDK.
+
 Everything in `scripts/` is local tooling for investigating a specific
 question — pre-echo behavior, spectral distortion, tuning-knob A/B tests. None
 of it is invoked by CI (`.github/workflows/`, `action.yml`, `report/action.yml`);

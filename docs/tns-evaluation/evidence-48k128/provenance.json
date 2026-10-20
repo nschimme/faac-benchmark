@@ -1,0 +1,31 @@
+{
+  "snapshot_date": "2026-10-19",
+  "scenario": "48k_stereo_128k",
+  "profile": "forced LC",
+  "clip_count": 77,
+  "input_manifest_sha256": "56a3cd134746011edcc2ec06742f60a545a144a4ab76b41577f8a945da1ddda0",
+  "source_manifest_clip_count": 77,
+  "faac_pr": "#112",
+  "faac_candidate_commit": "2fe67251",
+  "faac_candidate_library_sha256": "144d8895a484e825414442d2f3a694df48abb702fc8c00d9edc0fb375380931e",
+  "faac_tns_source_sha256": "46a94300ce98976506593002a00151ae2dca314773dd4d76c1a3a969fe91483c",
+  "benchmark_pr": "#113",
+  "benchmark_commit": "e977e4f",
+  "candidate_policy": "direction1-gain2",
+  "candidate_parameters": {
+    "short_order": 2,
+    "coefficient_resolution": 4,
+    "direction": 1,
+    "estimated_gain_minimum": 2.0,
+    "quantized_gain_minimum": 2.0,
+    "lower_edge_hz": 2750.0
+  },
+  "source_evidence": "Local FAAC .cache/abx-transients/tuning-evidence/full48k128/per-clip-metrics.json; inputs rehashed from faac-benchmark data/external/audio. Raw AAC files and private tuning scripts are not included.",
+  "metrics": "Paired baseline/candidate rows; MOS, actual bitrate, stereo coherence error, attack-centroid absolute mean, and positive-clamped reference-locked pre-echo means with event coverage.",
+  "limits": [
+    "This snapshot compares only FAAC baseline and the frozen candidate; it has no per-clip Apple/FDK rows. Use the rerunnable harness for a four-encoder comparison.",
+    "The snapshot is descriptive and does not reproduce the original ABX reports.",
+    "Pre-echo N/A means no eligible/scored reference events; 41 of 77 clips were N/A.",
+    "MOS BD-rate costs across four target curves were +4.878% to +18.078%; this snapshot is not an overall quality win."
+  ]
+}
