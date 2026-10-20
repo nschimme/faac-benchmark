@@ -43,6 +43,47 @@ import transient
 MIN_CENTROID_ONSETS = 30
 
 
+def pre_echo_clip_comparison(candidate, baseline):
+    """Return descriptive positive-excess summaries for one valid row pair.
+
+    Values are reduced within each clip before scenario aggregation; event
+    positions are not included in the metric schema, so arrays are never
+    paired positionally. This is diagnostic only and is not a gate.
+    """
+    if not (transient.has_current_pre_echo(candidate)
+            and transient.has_current_pre_echo(baseline)):
+        return None
+    candidate_values = candidate['pre_echo_db']
+    baseline_values = baseline['pre_echo_db']
+    if not candidate_values or not baseline_values:
+        return None
+    candidate_mean = sum(max(0.0, float(value)) for value in candidate_values) / len(candidate_values)
+    baseline_mean = sum(max(0.0, float(value)) for value in baseline_values) / len(baseline_values)
+    return {
+        'baseline_mean': baseline_mean,
+        'candidate_mean': candidate_mean,
+        'delta': candidate_mean - baseline_mean,
+        'baseline_events': len(baseline_values),
+        'candidate_events': len(candidate_values),
+        'baseline_eligible': baseline['pre_echo_coverage']['eligible'],
+        'candidate_eligible': candidate['pre_echo_coverage']['eligible'],
+    }
+
+
+def format_pre_echo_summary(baseline_means, candidate_means, deltas,
+                            baseline_events, candidate_events,
+                            baseline_eligible, candidate_eligible):
+    """Format unweighted per-clip positive-excess means and coverage counts."""
+    if not deltas:
+        return 'N/A'
+    base_mean = sum(baseline_means) / len(baseline_means)
+    cand_mean = sum(candidate_means) / len(candidate_means)
+    delta = sum(deltas) / len(deltas)
+    return (f'{base_mean:.2f}→{cand_mean:.2f} dB (Δ{delta:+.2f}; '
+            f'events {baseline_events}/{candidate_events}, '
+            f'eligible {baseline_eligible}/{candidate_eligible})')
+
+
 # Set from main()'s --strict-decode. When False (default), a candidate that
 # failed decode validation is counted and reported but does NOT fail the run,
 # so the long-reliable LC benchmark can't be red-walled by a benign ffmpeg
@@ -619,6 +660,13 @@ def analyze_pair(base_file, cand_file):
         "centroid_o_abs": [],
         "centroid_b_abs": [],
         "worst_centroid_regression": (0, "N/A"),
+        "pre_echo_baseline_means": [],
+        "pre_echo_candidate_means": [],
+        "pre_echo_clip_deltas": [],
+        "pre_echo_baseline_events": 0,
+        "pre_echo_candidate_events": 0,
+        "pre_echo_baseline_eligible": 0,
+        "pre_echo_candidate_eligible": 0,
         "tp_reduction": 0,
         "lib_size_chg": 0,
         "lib_text_chg": 0,
@@ -659,6 +707,13 @@ def analyze_pair(base_file, cand_file):
                 "centroid_deltas": [],
                 "centroid_o_abs": [],
                 "centroid_b_abs": [],
+                "pre_echo_baseline_means": [],
+                "pre_echo_candidate_means": [],
+                "pre_echo_clip_deltas": [],
+                "pre_echo_baseline_events": 0,
+                "pre_echo_candidate_events": 0,
+                "pre_echo_baseline_eligible": 0,
+                "pre_echo_candidate_eligible": 0,
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
@@ -781,6 +836,24 @@ def analyze_pair(base_file, cand_file):
                 clip_mean = sum(clip_deltas) / len(clip_deltas)
                 if clip_mean > suite_results["worst_centroid_regression"][0]:
                     suite_results["worst_centroid_regression"] = (clip_mean, display_name)
+
+            pre_echo_pair = pre_echo_clip_comparison(o, b)
+            if pre_echo_pair is not None:
+                scenario_metrics = suite_results["scenario_stats"][scenario]
+                suite_results["pre_echo_baseline_means"].append(pre_echo_pair['baseline_mean'])
+                suite_results["pre_echo_candidate_means"].append(pre_echo_pair['candidate_mean'])
+                suite_results["pre_echo_clip_deltas"].append(pre_echo_pair['delta'])
+                suite_results["pre_echo_baseline_events"] += pre_echo_pair['baseline_events']
+                suite_results["pre_echo_candidate_events"] += pre_echo_pair['candidate_events']
+                suite_results["pre_echo_baseline_eligible"] += pre_echo_pair['baseline_eligible']
+                suite_results["pre_echo_candidate_eligible"] += pre_echo_pair['candidate_eligible']
+                scenario_metrics["pre_echo_baseline_means"].append(pre_echo_pair['baseline_mean'])
+                scenario_metrics["pre_echo_candidate_means"].append(pre_echo_pair['candidate_mean'])
+                scenario_metrics["pre_echo_clip_deltas"].append(pre_echo_pair['delta'])
+                scenario_metrics["pre_echo_baseline_events"] += pre_echo_pair['baseline_events']
+                scenario_metrics["pre_echo_candidate_events"] += pre_echo_pair['candidate_events']
+                scenario_metrics["pre_echo_baseline_eligible"] += pre_echo_pair['baseline_eligible']
+                scenario_metrics["pre_echo_candidate_eligible"] += pre_echo_pair['candidate_eligible']
 
             o_md5 = o.get("md5", "")
             b_md5 = b.get("md5", "")
@@ -998,6 +1071,13 @@ def aggregate_suite_metrics(items):
     total_centroid_o_abs = []
     total_centroid_b_abs = []
     worst_centroid_regression = (0, "N/A")
+    total_pre_echo_baseline_means = []
+    total_pre_echo_candidate_means = []
+    total_pre_echo_clip_deltas = []
+    total_pre_echo_baseline_events = 0
+    total_pre_echo_candidate_events = 0
+    total_pre_echo_baseline_eligible = 0
+    total_pre_echo_candidate_eligible = 0
     total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
     total_bitrate_chg = total_bitrate_count = 0
     total_bitrate_acc_sum = total_bitrate_acc_count = total_bitrate_bias_sum = 0
@@ -1028,6 +1108,13 @@ def aggregate_suite_metrics(items):
         total_centroid_b_abs.extend(data.get("centroid_b_abs", []))
         if data.get("worst_centroid_regression", (0, "N/A"))[0] > worst_centroid_regression[0]:
             worst_centroid_regression = data["worst_centroid_regression"]
+        total_pre_echo_baseline_means.extend(data.get("pre_echo_baseline_means", []))
+        total_pre_echo_candidate_means.extend(data.get("pre_echo_candidate_means", []))
+        total_pre_echo_clip_deltas.extend(data.get("pre_echo_clip_deltas", []))
+        total_pre_echo_baseline_events += data.get("pre_echo_baseline_events", 0)
+        total_pre_echo_candidate_events += data.get("pre_echo_candidate_events", 0)
+        total_pre_echo_baseline_eligible += data.get("pre_echo_baseline_eligible", 0)
+        total_pre_echo_candidate_eligible += data.get("pre_echo_candidate_eligible", 0)
         total_tp_reduction += data["tp_reduction"]
         total_lib_chg += data["lib_size_chg"]
         total_lib_text_chg += data.get("lib_text_chg", 0)
@@ -1089,6 +1176,13 @@ def aggregate_suite_metrics(items):
         "centroid_o_abs": total_centroid_o_abs,
         "centroid_b_abs": total_centroid_b_abs,
         "worst_centroid_regression": worst_centroid_regression,
+        "pre_echo_baseline_means": total_pre_echo_baseline_means,
+        "pre_echo_candidate_means": total_pre_echo_candidate_means,
+        "pre_echo_clip_deltas": total_pre_echo_clip_deltas,
+        "pre_echo_baseline_events": total_pre_echo_baseline_events,
+        "pre_echo_candidate_events": total_pre_echo_candidate_events,
+        "pre_echo_baseline_eligible": total_pre_echo_baseline_eligible,
+        "pre_echo_candidate_eligible": total_pre_echo_candidate_eligible,
         "avg_tp_reduction": avg_tp_reduction,
         "avg_lib_chg": avg_lib_chg, "avg_lib_text_chg": avg_lib_text_chg,
         "avg_lib_rodata_chg": avg_lib_rodata_chg,
@@ -1271,6 +1365,17 @@ def render_summary_table(metrics, mos_label, rc_mode):
                 f"| **Worst Transient Regression** | "
                 f"{metrics['worst_centroid_regression'][0]:+.3f}ms "
                 f"({metrics['worst_centroid_regression'][1]}) |")
+
+    pre_echo_text = format_pre_echo_summary(
+        metrics.get('pre_echo_baseline_means', []),
+        metrics.get('pre_echo_candidate_means', []),
+        metrics.get('pre_echo_clip_deltas', []),
+        metrics.get('pre_echo_baseline_events', 0),
+        metrics.get('pre_echo_candidate_events', 0),
+        metrics.get('pre_echo_baseline_eligible', 0),
+        metrics.get('pre_echo_candidate_eligible', 0))
+    if pre_echo_text != 'N/A':
+        lines.append(f"| **Pre-echo Excess Δ** | {pre_echo_text} |")
 
     if metrics["total_decode_errors"] > 0:
         gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
@@ -1637,10 +1742,10 @@ def main():
                     report.append(f"\n#### {mode.upper()} Scenario Performance")
 
                 bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
-                report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient | Throughput Δ | {bitrate_header} |")
-                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Attack centroid | Pre-echo excess | Throughput Δ | {bitrate_header} |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-                mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": []})
+                mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": [], "centroid_deltas": [], "centroid_o_abs": [], "centroid_b_abs": [], "pre_echo_baseline_means": [], "pre_echo_candidate_means": [], "pre_echo_clip_deltas": [], "pre_echo_baseline_events": 0, "pre_echo_candidate_events": 0, "pre_echo_baseline_eligible": 0, "pre_echo_candidate_eligible": 0})
                 for suite_data in all_suite_data.values():
                     if suite_data.get("rate_control_mode", "abr") != mode:
                         continue
@@ -1659,6 +1764,12 @@ def main():
                         mode_scenario_stats[sc_name]["centroid_deltas"] += sc_stats.get("centroid_deltas", [])
                         mode_scenario_stats[sc_name]["centroid_o_abs"] += sc_stats.get("centroid_o_abs", [])
                         mode_scenario_stats[sc_name]["centroid_b_abs"] += sc_stats.get("centroid_b_abs", [])
+                        mode_scenario_stats[sc_name]["pre_echo_baseline_means"] += sc_stats.get("pre_echo_baseline_means", [])
+                        mode_scenario_stats[sc_name]["pre_echo_candidate_means"] += sc_stats.get("pre_echo_candidate_means", [])
+                        mode_scenario_stats[sc_name]["pre_echo_clip_deltas"] += sc_stats.get("pre_echo_clip_deltas", [])
+                        for key in ("pre_echo_baseline_events", "pre_echo_candidate_events",
+                                    "pre_echo_baseline_eligible", "pre_echo_candidate_eligible"):
+                            mode_scenario_stats[sc_name][key] += sc_stats.get(key, 0)
 
                 # One table, not one per family: in CI the job here is "scan for a
                 # regressed row", and five tables means five places to look. The
@@ -1669,7 +1780,7 @@ def main():
                     fam = scenario_family(sc_name)
                     if fam != current_family:
                         current_family = fam
-                        report.append(f"| **{family_label(fam)}** | | | | | | | | |")
+                        report.append(f"| **{family_label(fam)}** | | | | | | | | | |")
                     gs = mode_scenario_stats[sc_name]
                     sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
                     sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
@@ -1703,6 +1814,15 @@ def main():
                     else:
                         sc_transient = f"➖ (n={n_c_total})"
 
+                    sc_pre_echo = format_pre_echo_summary(
+                        gs.get("pre_echo_baseline_means", []),
+                        gs.get("pre_echo_candidate_means", []),
+                        gs.get("pre_echo_clip_deltas", []),
+                        gs.get("pre_echo_baseline_events", 0),
+                        gs.get("pre_echo_candidate_events", 0),
+                        gs.get("pre_echo_baseline_eligible", 0),
+                        gs.get("pre_echo_candidate_eligible", 0))
+
                     ci = bootstrap_mean_ci(gs["mos_deltas"])
                     if ci:
                         if ci["lo"] <= 0 <= ci["hi"]:
@@ -1717,9 +1837,9 @@ def main():
 
                     report.append(
                         f"| {sc_name} | {format_scenario_rate(sc_name)} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                        f"{sc_ic_delta} | {sc_transient} | {sc_tp_delta} | {sc_bitrate_val} |")
+                        f"{sc_ic_delta} | {sc_transient} | {sc_pre_echo} | {sc_tp_delta} | {sc_bitrate_val} |")
 
-            report.append("\n_Transient fidelity measures attack centroid shift (smearing/delay of transient attacks, in ms). 📈 = improved, 📉 = regression, ➖ = neutral/insufficient onsets (<30)._")
+            report.append("\n_Attack centroid reports decoded attack timing shift in milliseconds. Pre-echo excess reports the per-clip mean positive signed NPER in dB (10 log10 decoded/reference pre-energy); Δ is candidate minus baseline, so negative is lower pre-echo excess. Event and eligible counts are baseline/candidate. This diagnostic is descriptive only, has no significance test or gate, and is N/A when either side has no scored events._")
             if has_sig_mark:
                 report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
             report.append("\n</details>")

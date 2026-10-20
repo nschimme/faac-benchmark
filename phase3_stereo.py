@@ -38,9 +38,10 @@
  ensure stereo changes do not silently degrade the image, and to detect when a
  change trades real stereo fidelity (higher is better) for a higher (monaural) MOS.
 
- This phase also computes attack-centroid-shift (see transient.py), a
- transient-fidelity diagnostic unrelated to the stereo image but folded in
- here rather than given its own phase: both metrics need the same
+ This phase also computes attack-centroid-shift and reference-selected
+ pre-echo measurements (see transient.py), transient-fidelity diagnostics
+ unrelated to the stereo image but folded in here rather than given their
+ own phase: all metrics need the same
  reference/decoded audio decoded once, and a fourth full decode pass over
  the matrix (after phase1 encode and phase2 MOS) would be pure added cost
  for no benefit. mono-mixed from the same decoded stereo WAVs this phase
@@ -58,12 +59,14 @@ import concurrent.futures
 import hashlib
 
 import numpy as np
+import soundfile as sf
 from scipy.signal import fftconvolve
 
 from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
                    WorkerPool, start_orphan_watchdog, loudest_window_start)
-from transient import attack_centroid_deltas
+from transient import (PRE_ECHO_METRIC_VERSION, attack_centroid_deltas,
+                       has_current_pre_echo, pre_echo_metrics)
 from codec_bench.decoders import get_decoder_instance, resolve_scoring_decoder
 
 # 48 kHz, 50 ms analysis frames.
@@ -220,7 +223,8 @@ def coherence_error(ref_path, deg_path):
 
 
 def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None,
-                    ref_cache_dir=None, want_ic=True, want_transient=True, channels=2, decoder=None):
+                    ref_cache_dir=None, want_ic=True, want_transient=True, channels=2, decoder=None,
+                    want_pre_echo=True):
     with tempfile.TemporaryDirectory() as td:
         if ref_wav_path and os.path.exists(ref_wav_path):
             ref_wav = ref_wav_path
@@ -228,12 +232,16 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
             ref_wav = get_cached_ref_wav(ref_cache_dir, ref_path, 48000, channels)
         else:
             if not ref_path or not os.path.exists(ref_path):
-                return key, None, None
+                missing = ({"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                            "pre_echo_error": "reference WAV unavailable"} if want_pre_echo else None)
+                return key, None, None, missing
             ref_wav = decode_audio(ref_path, td, "ref", channels=channels)
 
         deg_wav = decode_audio(aac_path, td, "deg", channels=channels, decoder=decoder)
         if not ref_wav or not deg_wav:
-            return key, None, None
+            missing = ({"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                        "pre_echo_error": "reference or decoded WAV unavailable"} if want_pre_echo else None)
+            return key, None, None, missing
 
         ic = None
         if want_ic:
@@ -253,20 +261,36 @@ def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None
             except Exception as e:
                 print(f"  attack-centroid-shift error for {key}: {e}")
 
-        return key, ic, centroid_ms
+        pre_echo = None
+        if want_pre_echo:
+            try:
+                r_data, r_sr = sf.read(ref_wav, dtype="float32", always_2d=True)
+                d_data, d_sr = sf.read(deg_wav, dtype="float32", always_2d=True)
+                if r_sr != d_sr:
+                    raise ValueError(f"reference/decode sample-rate mismatch: {r_sr} vs {d_sr}")
+                if r_data.shape[1] != d_data.shape[1]:
+                    raise ValueError(f"reference/decode channel mismatch: {r_data.shape[1]} vs {d_data.shape[1]}")
+                pre_echo = pre_echo_metrics(r_data, d_data, r_sr)
+                if not has_current_pre_echo(pre_echo):
+                    raise ValueError("pre_echo_metrics returned an incomplete or stale result")
+            except Exception as e:
+                pre_echo = {"pre_echo_metric_version": PRE_ECHO_METRIC_VERSION,
+                            "pre_echo_error": str(e)}
+
+        return key, ic, centroid_ms, pre_echo
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Stereo image fidelity (inter-channel coherence) and "
-                     "transient fidelity (attack-centroid-shift) — Phase 3")
+                     "transient fidelity (attack-centroid and pre-echo metrics) — Phase 3")
     parser.add_argument("results_json", help="Path to results JSON file")
     parser.add_argument("aac_dir", help="Path to directory containing AAC files")
     parser.add_argument("external_data_dir", help="Path to external data directory")
     parser.add_argument("--skip-stereo", action="store_true",
                         help="Skip inter-channel coherence (stereo image) scoring")
     parser.add_argument("--skip-transient", action="store_true",
-                        help="Skip attack-centroid-shift (transient fidelity) scoring")
+                        help="Skip attack-centroid-shift and pre-echo transient measurements")
     parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
@@ -299,7 +323,7 @@ def main():
             return False
         if want_ic and v.get("ic_err") is None:
             return True
-        if want_transient and v.get("attack_centroid_ms") is None:
+        if want_transient and (v.get("attack_centroid_ms") is None or not has_current_pre_echo(v)):
             return True
         return False
 
@@ -334,6 +358,7 @@ def main():
 
     ic_results = {}
     centroid_results = {}
+    pre_echo_results = {}
     with tempfile.TemporaryDirectory() as ref_cache_dir:
         ref_wav_map = {}
         if len(unique_ref_tuples) < len(resolved):
@@ -362,19 +387,23 @@ def main():
                     want_transient and entry.get("attack_centroid_ms") is None,
                     scenario_channels(SCENARIOS.get(entry.get("scenario"), {})),
                     decoder_inst,
+                    want_transient and not has_current_pre_echo(entry),
                 ): k
                 for k, (entry, aac_path) in resolved.items()
             }
             total = len(futures)
             for i, fut in enumerate(concurrent.futures.as_completed(futures)):
-                key, ic, centroid_ms = fut.result()
+                key, ic, centroid_ms, pre_echo = fut.result()
                 if ic is not None:
                     ic_results[key] = ic
                 if centroid_ms is not None:
                     centroid_results[key] = centroid_ms
+                if pre_echo is not None:
+                    pre_echo_results[key] = pre_echo
                 ic_str = f"{ic:.4f}" if ic is not None else "N/A"
                 n_onsets = len(centroid_ms) if centroid_ms is not None else "N/A"
-                print(f"  ({i+1}/{total}) {key}: ic_err={ic_str}  centroid_onsets={n_onsets}")
+                pre_n = len(pre_echo.get("pre_echo_db", [])) if isinstance(pre_echo, dict) else "N/A"
+                print(f"  ({i+1}/{total}) {key}: ic_err={ic_str}  centroid_onsets={n_onsets}  pre_echo_events={pre_n}")
 
     for key, ic in ic_results.items():
         if key in matrix:
@@ -382,6 +411,12 @@ def main():
     for key, centroid_ms in centroid_results.items():
         if key in matrix:
             matrix[key]["attack_centroid_ms"] = centroid_ms
+    for key, pre_echo in pre_echo_results.items():
+        if key in matrix:
+            for field in ("pre_echo_db", "pre_echo_coverage", "pre_echo_metric_version",
+                          "pre_echo_lag_samples", "pre_echo_error"):
+                matrix[key].pop(field, None)
+            matrix[key].update(pre_echo)
 
     with open(args.results_json, "w") as f:
         json.dump(data, f, indent=2)

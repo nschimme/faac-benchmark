@@ -1,5 +1,5 @@
 """
- * FAAC Benchmark Suite — Transient Fidelity (attack-centroid-shift)
+ * FAAC Benchmark Suite — transient metrics
  * Copyright (C) 2026 Nils Schimmelmann
  *
  * This library is free software; you can redistribute it and/or
@@ -16,38 +16,18 @@
  * along with this program.  If not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
- ----------------------------------------------------------------------------
-
- Why this module exists
- -----------------------
- NPER (compare_results.py's stereo/MOS neighbors don't cover this either)
- only looks *backward* from a detected onset -- energy leaking into the
- silence before a transient (pre-echo). It says nothing about whether the
- attack itself, once it starts, is preserved or blurred.
-
- attack-centroid-shift looks *forward*: within a fixed post-onset window
- [onset, onset+fwd_ms) (capped at the next onset), it computes each side's
- own energy-weighted temporal centroid (sum(t*e)/sum(e)) and reports
- dec_centroid - ref_centroid in milliseconds. Positive means decoded energy
- arrives later on average (smeared/delayed attack).
-
- This is the validated survivor of a two-design investigation done in
- scripts/score_transient.py (see that file's module docstring and
- docs/scripts.md for the full history, including a crossing-based
- "attack-smear" design that was killed by real-material testing: it
- required a quiet pre-onset gap that dense percussive material routinely
- doesn't have). Only the logic that passed validation is ported here, into
- a root-level module, because root CI-critical code (phase*.py) doesn't
- import from scripts/ -- that dependency direction is backwards; scripts/
- is explicitly non-CI-critical per docs/scripts.md. Keep this module's
- onset detection, alignment, and centroid math in sync with
- scripts/score_transient.py's copies by hand if either changes; they are
- deliberately duplicated, not shared, across that boundary.
+ * This module provides two independent transient diagnostics:
+ * attack-centroid shift measures decoded attack timing in a forward window;
+ * reference-locked pre-echo measures decoded energy before qualifying
+ * reference onsets. They use separate calculations and report their own
+ * coverage. Both are diagnostics and should be interpreted alongside the
+ * benchmark's other quality measures, not as standalone quality scores.
 """
 
 import numpy as np
 import scipy.ndimage
 import scipy.signal
+from math import gcd
 
 from utils import loudest_window_start
 
@@ -144,7 +124,193 @@ def envelope(audio, sr, hop=ENVELOPE_HOP, win=ENVELOPE_WIN):
     """Short-time RMS envelope, subsampled at `hop`. Frame i <-> sample i*hop."""
     power = audio.astype(np.float64) ** 2
     smoothed = scipy.ndimage.uniform_filter1d(power, size=win, mode='nearest')
-    return np.sqrt(smoothed[::hop])
+    return np.sqrt(np.maximum(smoothed[::hop], 0.0))
+
+
+# ── reference-locked pre-echo measurement ───────────────────────────────────
+
+PRE_ECHO_METRIC_VERSION = 1
+PRE_ECHO_RATE = 48000
+PRE_ECHO_SEED_HOP = 48
+PRE_ECHO_SEED_WIN = 512
+PRE_ECHO_MIN_SPACING = 1024
+PRE_ECHO_PRE_START = 288   # -6 ms
+PRE_ECHO_PRE_END = 48      # -1 ms
+PRE_ECHO_POST_END = 576    # +12 ms
+
+
+def has_current_pre_echo(row):
+    """Whether a result row contains a current, versioned pre-echo metric."""
+    if (not isinstance(row, dict)
+            or 'pre_echo_error' in row
+            or row.get('pre_echo_metric_version') != PRE_ECHO_METRIC_VERSION):
+        return False
+    coverage = row.get('pre_echo_coverage')
+    counts = ('candidates', 'refined', 'eligible', 'scored')
+    values = row.get('pre_echo_db')
+    if not (isinstance(values, list) and isinstance(coverage, dict)
+            and all(isinstance(coverage.get(key), int) and coverage[key] >= 0 for key in counts)
+            and isinstance(row.get('pre_echo_lag_samples'), int)):
+        return False
+    if not (coverage['candidates'] >= coverage['refined'] >= coverage['eligible'] >= coverage['scored']):
+        return False
+    if coverage['scored'] != len(values):
+        return False
+    return all(isinstance(value, (int, float, np.integer, np.floating))
+               and np.isfinite(value) for value in values)
+
+
+def _audio_channels(audio, name):
+    arr = np.asarray(audio, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr[:, None]
+    if arr.ndim != 2 or arr.shape[1] < 1:
+        raise ValueError(f'{name} must be a 1D or 2D audio array')
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f'{name} must contain only finite samples')
+    return arr
+
+
+def _resample_audio(audio, sr):
+    if sr == PRE_ECHO_RATE:
+        return audio
+    divisor = gcd(int(sr), PRE_ECHO_RATE)
+    return scipy.signal.resample_poly(audio, PRE_ECHO_RATE // divisor,
+                                      int(sr) // divisor, axis=0)
+
+
+def _pre_echo_lag(ref, dec):
+    """Bounded global lag from summed normalized channel correlations."""
+    n = min(len(ref), len(dec))
+    if n <= 1:
+        return 0
+    window = min(n, PRE_ECHO_RATE * 3)
+    energy = np.sum(ref[:n] * ref[:n], axis=1)
+    if n <= window:
+        start = 0
+    else:
+        cs = np.concatenate(([0.0], np.cumsum(energy, dtype=np.float64)))
+        start = int(np.argmax(cs[window:] - cs[:-window]))
+    # Use the same loud reference segment in both recordings. Normalize each
+    # channel independently so loud channels do not suppress quieter ones.
+    length = min(window, len(ref) - start, len(dec) - start)
+    if length <= 1:
+        return 0
+    total = None
+    for ch in range(ref.shape[1]):
+        r = ref[start:start + length, ch]
+        d = dec[start:start + length, ch]
+        r_scale = float(np.sqrt(np.mean(r * r)))
+        d_scale = float(np.sqrt(np.mean(d * d)))
+        if r_scale <= 1e-20 or d_scale <= 1e-20:
+            continue
+        corr = scipy.signal.correlate(r / r_scale, d / d_scale, mode='full', method='fft')
+        total = corr if total is None else total + corr
+    if total is None:
+        return 0
+    max_lag = int(round(PRE_ECHO_RATE * 0.250))
+    center = length - 1
+    lo, hi = max(0, center - max_lag), min(len(total), center + max_lag + 1)
+    return int(np.argmax(total[lo:hi]) + lo - center)
+
+
+def _refine_pre_echo_onset(filtered_ref, seed, power, slope=None):
+    step = 24
+    if slope is None:
+        slope = power[2 * step:] - power[:-2 * step]
+    lo, hi = max(seed - 576, 576), min(seed + 576, len(filtered_ref) - 576)
+    if hi <= lo:
+        return None
+    rise = lo + int(np.argmax(slope[lo - step:hi - step]))
+    base = float(np.median(power[rise - 288:rise - 96]))
+    peak = float(np.max(power[rise:rise + 96]))
+    if peak < 1e-12 or peak <= 4.0 * max(base, 1e-20):
+        return None
+    threshold = base + 0.1 * (peak - base)
+    below = np.flatnonzero(power[rise - 288:rise + 1] <= threshold)
+    if not len(below):
+        return None
+    return rise - 288 + int(below[-1]) + 1
+
+
+def pre_echo_metrics(ref, dec, sr):
+    """Measure reference-locked pre-echo NPER around refined transient onsets.
+
+    Both inputs must contain the same number of channels and use the supplied
+    native sample rate. The returned lag is in 48 kHz samples and follows
+    ``align_signals`` semantics: positive means decoded audio starts ahead of
+    the reference.
+    """
+    if not isinstance(sr, (int, np.integer)) or sr <= 0:
+        raise ValueError('sr must be a positive integer')
+    ref = _audio_channels(ref, 'ref')
+    dec = _audio_channels(dec, 'dec')
+    if ref.shape[1] != dec.shape[1]:
+        raise ValueError('ref and dec must have equal channel counts')
+    empty = {'pre_echo_db': [], 'pre_echo_coverage':
+             {'candidates': 0, 'refined': 0, 'eligible': 0, 'scored': 0},
+             'pre_echo_metric_version': PRE_ECHO_METRIC_VERSION,
+             'pre_echo_lag_samples': 0}
+    if len(ref) < 2 or len(dec) < 2 or not np.any(ref):
+        return empty
+    ref48 = _resample_audio(ref, int(sr))
+    dec48 = _resample_audio(dec, int(sr))
+    if len(ref48) < 2 or len(dec48) < 2:
+        return empty
+    if len(ref48) < PRE_ECHO_SEED_WIN:
+        return empty
+    lag = _pre_echo_lag(ref48, dec48)
+    sos = scipy.signal.butter(4, 2000, btype='highpass', fs=PRE_ECHO_RATE, output='sos')
+    ref_hp = scipy.signal.sosfilt(sos, ref48, axis=0)
+    dec_hp = scipy.signal.sosfilt(sos, dec48, axis=0)
+    ref_start = max(lag, 0)
+    dec_start = max(-lag, 0)
+    coverage = empty['pre_echo_coverage']
+    values = []
+    for ch in range(ref48.shape[1]):
+        seeds = detect_onsets(ref48[:, ch], PRE_ECHO_RATE,
+                              hop=PRE_ECHO_SEED_HOP, win_len=PRE_ECHO_SEED_WIN,
+                              min_spacing=PRE_ECHO_MIN_SPACING)
+        coverage['candidates'] += len(seeds)
+        power = scipy.ndimage.uniform_filter1d(ref_hp[:, ch] ** 2, size=12)
+        slope = power[48:] - power[:-48]
+        refined = []
+        for seed in seeds:
+            onset = _refine_pre_echo_onset(ref_hp[:, ch], seed, power, slope)
+            if onset is not None:
+                refined.append(onset)
+        refined.sort()
+        unique = []
+        for onset in refined:
+            if not unique or onset - unique[-1] >= PRE_ECHO_MIN_SPACING:
+                unique.append(onset)
+        coverage['refined'] += len(unique)
+        for onset in unique:
+            pre_lo, pre_hi = onset - PRE_ECHO_PRE_START, onset - PRE_ECHO_PRE_END
+            post_hi = onset + PRE_ECHO_POST_END
+            if pre_lo < 0 or post_hi > len(ref_hp):
+                continue
+            ref_pre = float(np.mean(ref_hp[pre_lo:pre_hi, ch] ** 2))
+            ref_post = float(np.mean(ref_hp[onset:post_hi, ch] ** 2))
+            if ref_post < 1e-12 or 10.0 * np.log10(max(ref_pre, 1e-300) / ref_post) > -20.0:
+                continue
+            coverage['eligible'] += 1
+            dec_lo = dec_start + pre_lo - ref_start
+            dec_onset = dec_start + onset - ref_start
+            dec_hi = dec_start + post_hi - ref_start
+            if dec_lo < 0 or dec_hi > len(dec_hp):
+                continue
+            dec_post = float(np.mean(dec_hp[dec_onset:dec_hi, ch] ** 2))
+            if dec_post < 1e-12:
+                continue
+            dec_pre = float(np.mean(dec_hp[dec_lo:dec_lo + (pre_hi - pre_lo), ch] ** 2))
+            floor = ref_post * 1e-8
+            values.append(float(10.0 * np.log10(max(dec_pre, floor) /
+                                                   max(ref_pre, floor))))
+            coverage['scored'] += 1
+    return {'pre_echo_db': values, 'pre_echo_coverage': coverage,
+            'pre_echo_metric_version': PRE_ECHO_METRIC_VERSION,
+            'pre_echo_lag_samples': int(lag)}
 
 
 def compute_attack_centroid_shift(ref, dec, onsets, sr, hop=ENVELOPE_HOP, win=ENVELOPE_WIN,

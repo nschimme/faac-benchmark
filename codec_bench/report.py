@@ -10,6 +10,7 @@
 
 import os
 import re
+import math
 import statistics
 from collections import defaultdict
 
@@ -31,6 +32,7 @@ def compute_p1_mos(mos_scores):
         return sorted_scores[idx]
 from codec_bench.encoders import PROFILE_LABELS, profile_label, encoder_row_key, FAACEncoder
 from codec_bench.decoders import decoder_row_key, CONFORMANCE_SNR_FLOOR_DB
+from transient import has_current_pre_echo
 
 CLIP_PEER_BUG_GAP = 0.75
 
@@ -46,6 +48,57 @@ def cell_peer_gap(clip_mos, rk, s_name, filename):
     if peer_avg - this_mos > CLIP_PEER_BUG_GAP:
         return (this_mos, peer_avg)
     return None
+
+
+def _pre_echo_row_data(row):
+    """Return versioned pre-echo samples and coverage, or None for legacy rows."""
+    if not has_current_pre_echo(row):
+        return None
+    values = row.get("pre_echo_db")
+    if not isinstance(values, list):
+        values = []
+    coverage = row.get("pre_echo_coverage") or {}
+    counts = {key: max(0, int(coverage.get(key, 0) or 0))
+              for key in ("candidates", "refined", "eligible", "scored")}
+    positive = []
+    for value in values:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(parsed):
+            positive.append(max(0.0, parsed))
+    counts["scored"] = len(positive)
+    return positive, counts
+
+
+def _pre_echo_summary(rows):
+    """Pool scored, current-version NPER values without canceling signed deficits."""
+    values = []
+    totals = {key: 0 for key in ("candidates", "refined", "eligible", "scored")}
+    clips_current = clips_eligible = clips_scored = 0
+    for row in rows:
+        data = _pre_echo_row_data(row)
+        if data is None:
+            continue
+        positive, coverage = data
+        clips_current += 1
+        for key in totals:
+            totals[key] += coverage[key]
+        if coverage["eligible"] > 0:
+            clips_eligible += 1
+        if positive:
+            clips_scored += 1
+            values.extend(positive)
+    return {
+        "values": values,
+        "mean": sum(values) / len(values) if values else None,
+        "p95": float(np.percentile(values, 95)) if values else None,
+        "coverage": totals,
+        "clips_current": clips_current,
+        "clips_eligible": clips_eligible,
+        "clips_scored": clips_scored,
+    }
 
 
 def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False, has_decoders=False):
@@ -162,6 +215,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
 
         e_mos, e_speed, e_br_err, e_ic, e_centroid, e_ram = [], [], [], [], [], []
+        e_pre_echo_rows = []
         e_mos_min = 6.0
         scenario_count = 0
         has_data = False
@@ -173,6 +227,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             rk = scenario_best_row_key(candidates, s_name)
             if rk is None:
                 continue
+            e_pre_echo_rows.extend(r for r in results
+                                   if r.get("row_key") == rk and r.get("scenario") == s_name)
             s_stats = stats[rk][s_name]
             s_has_data = False
             if s_stats["mos_count"] > 0:
@@ -211,6 +267,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             tool_clip_mos.extend(sc_clips)
 
         tool_p1_mos = compute_p1_mos(tool_clip_mos) if tool_clip_mos else (e_mos_min if e_mos else 0)
+        pre_echo = _pre_echo_summary(e_pre_echo_rows)
 
         tool_overall[tool_name] = {
             "tool": tool_name,
@@ -219,6 +276,12 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
             "p1_mos": tool_p1_mos,
             "avg_ic": sum(e_ic) / len(e_ic) if e_ic else 0,
             "avg_centroid_ms": sum(e_centroid) / len(e_centroid) if e_centroid else 0,
+            "pre_echo_mean_db": pre_echo["mean"],
+            "pre_echo_p95_db": pre_echo["p95"],
+            "pre_echo_scored_count": len(pre_echo["values"]),
+            "pre_echo_eligible_count": pre_echo["coverage"]["eligible"],
+            "pre_echo_scored_clips": pre_echo["clips_scored"],
+            "pre_echo_eligible_clips": pre_echo["clips_eligible"],
             "avg_speed": sum(e_speed) / len(e_speed) if e_speed else 0,
             "avg_br_err": sum(e_br_err) / len(e_br_err) if e_br_err else 0,
             "avg_ram_kb": sum(e_ram) / len(e_ram) if e_ram else 0,
@@ -258,8 +321,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 "with **Overall MOS** (averaging all scenarios) as tiebreaker. "
                 "Per-scenario curves (e.g., 48 kHz Average MOS) display average performance on specific subsets "
                 "and may show different relative standings than the overall floor resilience metric.\n\n")
-        f.write("| Rank | Encoder | Status | 1st Percentile MOS | Overall MOS | Scenarios | Stereo Fidelity | Transient Fidelity | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
-        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
+        f.write("| Rank | Encoder | Status | 1st Percentile MOS | Overall MOS | Scenarios | Stereo Fidelity | Attack Fidelity | Pre-echo (dB ↓) | Speed (xRT) | Bitrate Error | Peak RAM | ROM (Flash) |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
 
         best_mos = max(o['overall_mos'] for o in tool_overall.values()) if tool_overall else 0
         best_p1_mos = max(o['p1_mos'] for o in tool_overall.values()) if tool_overall else 0
@@ -268,6 +331,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         best_ic = max(1.0 - o['avg_ic'] for o in tool_overall.values() if o['avg_ic'] > 0) if has_ic else None
         has_centroid = any(o['avg_centroid_ms'] > 0 for o in tool_overall.values())
         best_centroid_fid = max(1.0 / (1.0 + o['avg_centroid_ms']) for o in tool_overall.values() if o['avg_centroid_ms'] > 0) if has_centroid else None
+        pre_echo_means = [o['pre_echo_mean_db'] for o in tool_overall.values()
+                          if o['pre_echo_mean_db'] is not None and o['pre_echo_scored_count'] > 0]
+        best_pre_echo = min(pre_echo_means) if pre_echo_means else None
         valid_br = [o['avg_br_err'] for o in tool_overall.values()]
         best_br = min(valid_br) if valid_br else 0
 
@@ -301,13 +367,19 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             cent_fid = 1.0 / (1.0 + o['avg_centroid_ms'])
             centroid_str = f"**{cent_fid:.4f}**" if best_centroid_fid and abs(cent_fid - best_centroid_fid) < 1e-6 and o['avg_centroid_ms'] > 0 else (f"{cent_fid:.4f}" if o['avg_centroid_ms'] > 0 else "N/A")
+            if o['pre_echo_scored_count'] > 0 and o['pre_echo_mean_db'] is not None:
+                pre_echo_str = f"{o['pre_echo_mean_db']:.3f} dB (n={o['pre_echo_scored_count']})"
+                if best_pre_echo is not None and abs(o['pre_echo_mean_db'] - best_pre_echo) < 1e-9:
+                    pre_echo_str = f"**{pre_echo_str}**"
+            else:
+                pre_echo_str = "N/A"
 
             s_str = f"**{o['avg_speed']:.1f}x**" if abs(o['avg_speed'] - best_speed) < 1e-6 and o['avg_speed'] > 0 else f"{o['avg_speed']:.1f}x"
             br_str = f"**{o['avg_br_err']:.1f}%**" if abs(o['avg_br_err'] - best_br) < 1e-6 and o['avg_br_err'] >= 0 else f"{o['avg_br_err']:.1f}%"
             ram_str = format_size(int(o['avg_ram_kb'] * 1024)) if o['avg_ram_kb'] > 0 else "N/A"
             rom_str = format_size(o['text_size'] + o['rodata_size'] + o.get('data_size', 0))
 
-            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {sc_str} | {ic_str} | {centroid_str} | {s_str} | {br_str} | {ram_str} | {rom_str} |\n")
+            f.write(f"| {rank_str} | {o['tool']} | {status_str} | {w_str} | {m_str} | {sc_str} | {ic_str} | {centroid_str} | {pre_echo_str} | {s_str} | {br_str} | {ram_str} | {rom_str} |\n")
 
         f.write("\n<a name=\"per-scenario-encoder-breakdowns\"></a>\n")
         f.write("<details><summary><b>📊 View Per-Scenario Breakdowns & Visualizations</b></summary>\n\n")
@@ -525,8 +597,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write("\n")
                 f.write("</details>\n\n")
 
-            # 5. Transient Fidelity per rate family
-            f.write(f"### Transient Fidelity ({fam_label})\n\n")
+            # 5. Attack Fidelity per rate family
+            f.write(f"### Attack Fidelity ({fam_label})\n\n")
             f.write("> **Note**: Measured as 1 / (1 + mean |attack-centroid-shift| ms) across onsets. **Higher is truer** (attack timing closer to reference).\n\n")
 
             tool_line_data_cent = {}
@@ -547,9 +619,9 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 axis_lo_c, axis_hi_c = zoomed_y_range(chart_vals_cent, "0.0 --> 1.0")
                 f.write("```mermaid\n")
                 f.write("xychart-beta\n")
-                f.write(f'    title "Transient Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
+                f.write(f'    title "Attack Fidelity across Bitrates - {fam_label} (Higher is Better)"\n')
                 f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
-                f.write(f'    y-axis "Transient Fidelity" {axis_lo_c:.4g} --> {axis_hi_c:.4g}\n')
+                f.write(f'    y-axis "Attack Fidelity" {axis_lo_c:.4g} --> {axis_hi_c:.4g}\n')
                 for tool_name, vals in tool_line_data_cent.items():
                     last_v = next((v for v in vals if v is not None), 0.0)
                     clean_v = []
@@ -560,7 +632,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
                 f.write("```\n\n")
 
-            f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({fam_label})</b></summary>\n\n")
+            f.write(f"<details><summary><b>View Detailed Attack Fidelity Table ({fam_label})</b></summary>\n\n")
             for p in ["lc", "he", "hev2", "standard"]:
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
@@ -594,6 +666,26 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write(row_str + "\n")
                 f.write("\n")
             f.write("</details>\n\n")
+
+            # NPER is an independent diagnostic dimension; it never affects MOS ranking.
+            f.write(f"### Pre-echo ({fam_label})\n\n")
+            f.write("> Mean and p95 are pooled positive excess NPER in dB (lower is better); signed attenuation is clamped at zero per onset, so it cannot cancel positive excess. Coverage reports scored/eligible events and scored/eligible/current clips.\n\n")
+            for p in ["lc", "he", "hev2", "standard"]:
+                p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
+                if not p_rks:
+                    continue
+                f.write(f"#### {profile_label(p)} Profile\n\n")
+                f.write("| Scenario | Encoder | Mean positive excess (dB ↓) | P95 positive excess (dB ↓) | Events scored / eligible | Clips scored / eligible / current | Candidates / refined |\n")
+                f.write("| :--- | :--- | ---: | ---: | ---: | ---: | ---: |\n")
+                for s_name in fam_scenarios:
+                    for rk in p_rks:
+                        selected = [r for r in results if r.get("row_key") == rk and r.get("scenario") == s_name]
+                        summary = _pre_echo_summary(selected)
+                        cov = summary["coverage"]
+                        mean_cell = f"{summary['mean']:.3f}" if summary["mean"] is not None else "N/A"
+                        p95_cell = f"{summary['p95']:.3f}" if summary["p95"] is not None else "N/A"
+                        f.write(f"| {s_name} | {encoder_info[rk].name} | {mean_cell} | {p95_cell} | {cov['scored']} / {cov['eligible']} | {summary['clips_scored']} / {summary['clips_eligible']} / {summary['clips_current']} | {cov['candidates']} / {cov['refined']} |\n")
+                f.write("\n")
 
             # 7. Encoding Speed per rate family
             f.write(f"### Encoding Speed ({fam_label})\n\n")
@@ -927,7 +1019,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("- **1st Percentile MOS ($P_1$)**: Score threshold that 99% of tested clips equal or exceed (**Higher is Better**)\n")
         f.write("- **Quality (MOS)**: Perceptual audio quality (1-5, **Higher is Better**)\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
-        f.write("- **Transient Fidelity**: How little attacks are smeared/delayed (0-1, **Higher is Better**)\n")
+        f.write("- **Attack Fidelity**: Attack-centroid timing similarity (0-1, **Higher is Better**)\n")
+        f.write("- **Pre-echo (dB)**: Mean positive NPER excess across scored onsets (**Lower is Better**); separate diagnostic dimension, not part of MOS ranking.\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
         f.write("- **ROM (Flash)**: Codec code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
