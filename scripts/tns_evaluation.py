@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import platform
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUTS = ROOT / "scripts/tns_evaluation/inputs-48k128.json"
 sys.path.insert(0, str(ROOT))
 
-from utils import find_linked_lib, resolve_wrapper_target
+from utils import find_linked_lib, resolve_wrapper_target, safe_run
 
 
 def sha256(path):
@@ -92,7 +91,8 @@ def main():
     env["EXTERNAL_DATA_DIR"] = str(Path(args.data).expanduser().resolve())
     env.setdefault("NUMBA_CACHE_DIR", str(out / "numba-cache"))
     (out / "command.json").write_text(json.dumps({"argv": command, "cwd": str(ROOT)}, indent=2) + "\n")
-    subprocess.run(command, cwd=ROOT, env=env, check=True)
+    os.chdir(ROOT)
+    safe_run(command, env=env, capture_output=False)
 
     rows = json.loads(raw.read_text())
     rows = [row for row in rows if row.get("scenario") == manifest["scenario"]
@@ -133,7 +133,7 @@ def main():
                              "pre_echo_coverage": row.get("pre_echo_coverage")})
     provenance = {
         "schema_version": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
-        "benchmark_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "benchmark_commit": safe_run(["git", "rev-parse", "HEAD"]).stdout.strip(),
         "python": sys.version, "platform": platform.platform(), "scenario": manifest["scenario"],
         "profile_requested": "LC", "sample_rate_hz": manifest["sample_rate_hz"],
         "channels": manifest["channels"], "target_bitrate_kbps": manifest["target_bitrate_kbps"],
