@@ -527,9 +527,44 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     f.write("\n")
                 f.write("</details>\n\n")
 
-            # Pre-echo remains available as a compact, collapsed diagnostic.
-            f.write(f"<details><summary><b>Pre-echo diagnostic ({fam_label})</b></summary>\n\n")
-            f.write("> Mean positive excess NPER in dB; lower is a smaller measured pre-echo excess. This diagnostic has no merge gate. N/A means no current scored value; check result status for unavailable measurements.\n\n")
+            # Transient Fidelity & Attack Preservation
+            f.write(f"### Transient Fidelity & Attack Preservation ({fam_label})\n\n")
+            f.write("> **Note**: Measured as mean positive excess pre-echo noise (NPER in dB). **Lower is Better**.\n\n")
+
+            tool_line_data_trans = {}
+            for tool_name in sorted_tools:
+                candidates = [rk for rk in all_row_keys if rk in encoder_info and encoder_info[rk].name == tool_name]
+                vals = []
+                for s in fam_scenarios:
+                    best_rk = scenario_best_row_key(candidates, s)
+                    if best_rk:
+                        selected = [r for r in results if r.get("row_key") == best_rk and r.get("scenario") == s]
+                        p_summary = _pre_echo_summary(selected)
+                        vals.append(p_summary)
+                    else:
+                        vals.append(None)
+                if any(v is not None for v in vals):
+                    tool_line_data_trans[tool_name] = vals
+
+            if not skip_graphs and tool_line_data_trans:
+                chart_vals_tr = [v for vals in tool_line_data_trans.values() for v in vals if v is not None]
+                axis_lo_tr, axis_hi_tr = zoomed_y_range(chart_vals_tr, "0.0 --> 20.0")
+                f.write("```mermaid\n")
+                f.write("xychart-beta\n")
+                f.write(f'    title "Transient Excess NPER across Bitrates - {fam_label} (Lower is Better)"\n')
+                f.write(f"    x-axis [{', '.join([f'\"{x}\"' for x in x_labels])}]\n")
+                f.write(f'    y-axis "Excess NPER (dB)" {axis_lo_tr:.4g} --> {axis_hi_tr:.4g}\n')
+                for tool_name, vals in tool_line_data_trans.items():
+                    last_v = next((v for v in vals if v is not None), 0.0)
+                    clean_v = []
+                    for v in vals:
+                        if v is not None:
+                            last_v = v
+                        clean_v.append(f"{last_v:.4f}")
+                    f.write(f'    line "{chart_line_label(tool_name)}" [{", ".join(clean_v)}]\n')
+                f.write("```\n\n")
+
+            f.write(f"<details><summary><b>View Detailed Transient Fidelity Table ({fam_label})</b></summary>\n\n")
             show_post = any("post_onset_residual_db" in r for r in results
                             if r.get("scenario") in fam_scenarios)
             for p in ["lc", "he", "hev2", "standard"]:
@@ -537,8 +572,8 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                 if not p_rks:
                     continue
                 f.write(f"#### {profile_label(p)} Profile\n\n")
-                post_header = " Post-onset HF residual, 12-50 ms (dB ↓) |" if show_post else ""
-                f.write(f"| Scenario | Encoder | Mean positive excess (dB ↓) |{post_header}\n")
+                post_header = " Post-onset HF residual, 12-50 ms (dB) |" if show_post else ""
+                f.write(f"| Scenario | Encoder | Mean positive excess (dB) |{post_header}\n")
                 f.write("| :--- | :--- | ---: |" + (" ---: |" if show_post else "") + "\n")
                 for s_name in fam_scenarios:
                     for rk in p_rks:
@@ -885,6 +920,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
         f.write("- **1st Percentile MOS ($P_1$)**: Score threshold that 99% of tested clips equal or exceed (**Higher is Better**)\n")
         f.write("- **Quality (MOS)**: Perceptual audio quality (1-5, **Higher is Better**)\n")
         f.write("- **Stereo Fidelity**: Faithfulness of stereo image (0-1, **Higher is Better**)\n")
+        f.write("- **Transient Fidelity**: Excess pre-echo noise (NPER in dB, **Lower is Better**)\n")
         f.write("- **Speed**: Encoding throughput (**Higher is Better**)\n")
         f.write("- **Bitrate Error**: Deviation from target bitrate (**Lower is Better**)\n")
         f.write("- **ROM (Flash)**: Codec code + read-only + initialized data size (`.text` + `.rodata` + `.data`, **Lower is Better**)\n")
