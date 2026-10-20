@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUTS = ROOT / "scripts/tns_evaluation/inputs-48k128.json"
 sys.path.insert(0, str(ROOT))
 
 from utils import find_linked_lib, resolve_wrapper_target, safe_run
@@ -67,7 +66,8 @@ def main():
     parser.add_argument("--fdkaac", required=True, help="fdkaac executable")
     parser.add_argument("--data", required=True, help="Benchmark external data directory")
     parser.add_argument("--out", required=True, help="New or empty evidence output directory")
-    parser.add_argument("--inputs", type=Path, default=DEFAULT_INPUTS, help="Pinned input manifest")
+    parser.add_argument("--inputs", type=Path, required=True,
+                        help="Pinned JSON input manifest (for TNS, use the one shipped with FAAC PR #112)")
     parser.add_argument("--faac-version", nargs=2, default=("baseline", "tns-candidate"), metavar=("BASE", "CAND"))
     args = parser.parse_args()
 

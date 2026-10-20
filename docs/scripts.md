@@ -16,10 +16,10 @@ Runs the standard encoder comparison for a pinned 48 kHz stereo LC scenario,
 using baseline and candidate FAAC executables plus fdkaac and Apple AAC where
 available. It writes raw comparison rows and a per-clip CSV with hashes and
 separate MOS, bitrate, stereo, attack, and pre-echo fields. See the script's
-`--help` for arguments; the checked-in input manifest is under
-[`scripts/tns_evaluation/`](../scripts/tns_evaluation/). TNS-specific findings
-and the compact measured evidence snapshot live with the FAAC encoder change,
-not in this benchmark tooling repository.
+`--help` for arguments. Pass the pinned input manifest from the [FAAC #112
+evidence bundle](https://github.com/nschimme/faac/blob/tns-transient-pr/docs/tns-evaluation/inputs-48k128.json)
+using `--inputs`; this keeps TNS-specific inputs and evidence with the encoder
+change. TNS findings and the measured snapshot also live with FAAC #112.
 
 ## Per-clip / per-band diagnostics
 
