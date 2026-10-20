@@ -25,34 +25,6 @@ import re
 from collections import defaultdict
 from utils import (get_scenario_sort_key, scenario_family, scenario_families,
                    family_label, format_scenario_rate)
-import transient
-
-
-def pre_echo_clip_comparison(candidate, baseline):
-    """Return descriptive positive-excess summaries for one valid row pair.
-
-    Values are reduced within each clip before scenario aggregation; event
-    positions are not included in the metric schema, so arrays are never
-    paired positionally. This is diagnostic only and is not a gate.
-    """
-    if not (transient.has_current_pre_echo(candidate)
-            and transient.has_current_pre_echo(baseline)):
-        return None
-    candidate_values = candidate['pre_echo_db']
-    baseline_values = baseline['pre_echo_db']
-    if not candidate_values or not baseline_values:
-        return None
-    candidate_mean = sum(max(0.0, float(value)) for value in candidate_values) / len(candidate_values)
-    baseline_mean = sum(max(0.0, float(value)) for value in baseline_values) / len(baseline_values)
-    return {
-        'baseline_mean': baseline_mean,
-        'candidate_mean': candidate_mean,
-        'delta': candidate_mean - baseline_mean,
-        'baseline_events': len(baseline_values),
-        'candidate_events': len(candidate_values),
-        'baseline_eligible': baseline['pre_echo_coverage']['eligible'],
-        'candidate_eligible': candidate['pre_echo_coverage']['eligible'],
-    }
 
 
 # Set from main()'s --strict-decode. When False (default), a candidate that
@@ -627,17 +599,6 @@ def analyze_pair(base_file, cand_file):
         "ic_delta_sum": 0,
         "ic_count": 0,
         "worst_ic_regression": (0, "N/A"),
-        "centroid_deltas": [],
-        "centroid_o_abs": [],
-        "centroid_b_abs": [],
-        "worst_centroid_regression": (0, "N/A"),
-        "pre_echo_baseline_means": [],
-        "pre_echo_candidate_means": [],
-        "pre_echo_clip_deltas": [],
-        "pre_echo_baseline_events": 0,
-        "pre_echo_candidate_events": 0,
-        "pre_echo_baseline_eligible": 0,
-        "pre_echo_candidate_eligible": 0,
         "tp_reduction": 0,
         "lib_size_chg": 0,
         "lib_text_chg": 0,
@@ -675,16 +636,6 @@ def analyze_pair(base_file, cand_file):
                 "vbr_bitrate_chg_sum": 0,
                 "vbr_bitrate_chg_count": 0,
                 "mos_deltas": [],
-                "centroid_deltas": [],
-                "centroid_o_abs": [],
-                "centroid_b_abs": [],
-                "pre_echo_baseline_means": [],
-                "pre_echo_candidate_means": [],
-                "pre_echo_clip_deltas": [],
-                "pre_echo_baseline_events": 0,
-                "pre_echo_candidate_events": 0,
-                "pre_echo_baseline_eligible": 0,
-                "pre_echo_candidate_eligible": 0,
                 "count": 0}),
         "base_tp": base.get("throughput", {}),
         "cand_tp": cand.get("throughput", {}),
@@ -777,54 +728,6 @@ def analyze_pair(base_file, cand_file):
                 suite_results["scenario_stats"][scenario]["ic_count"] += 1
                 if ic_delta < suite_results["worst_ic_regression"][0]:
                     suite_results["worst_ic_regression"] = (ic_delta, display_name)
-
-            # Transient fidelity (Phase 3 fold-in, see phase3_stereo.py).
-            # attack_centroid_ms is itself a per-onset "decoded vs reference"
-            # delta (ms); comparing |cand| against |base| per onset shows
-            # whether the candidate smears attacks more or less than
-            # baseline. Sign convention: negative == the candidate's onset
-            # moved closer to 0 (the reference) == improvement, matching
-            # docs/metrics.md. Paired positionally per onset -- lengths
-            # match in the near-100% yield case Stage 1 validated; a clip
-            # where they don't (a dropped onset on one side) is skipped
-            # rather than guessed at.
-            o_centroid = o.get("attack_centroid_ms")
-            b_centroid = b.get("attack_centroid_ms")
-            if o_centroid and b_centroid and len(o_centroid) == len(b_centroid):
-                clip_deltas = [abs(ov) - abs(bv) for ov, bv in zip(o_centroid, b_centroid)]
-                suite_results["centroid_deltas"].extend(clip_deltas)
-                suite_results["scenario_stats"][scenario]["centroid_deltas"].extend(clip_deltas)
-                # Raw |ms| pooled separately (not just the paired delta) so a
-                # significant verdict can be paired with the same 0-1
-                # fidelity number compare_codecs.py's leaderboard reports
-                # (1 / (1 + mean|ms|)), for a maintainer to read as "how much".
-                o_abs_list = [abs(v) for v in o_centroid]
-                b_abs_list = [abs(v) for v in b_centroid]
-                suite_results["centroid_o_abs"].extend(o_abs_list)
-                suite_results["centroid_b_abs"].extend(b_abs_list)
-                suite_results["scenario_stats"][scenario]["centroid_o_abs"].extend(o_abs_list)
-                suite_results["scenario_stats"][scenario]["centroid_b_abs"].extend(b_abs_list)
-                clip_mean = sum(clip_deltas) / len(clip_deltas)
-                if clip_mean > suite_results["worst_centroid_regression"][0]:
-                    suite_results["worst_centroid_regression"] = (clip_mean, display_name)
-
-            pre_echo_pair = pre_echo_clip_comparison(o, b)
-            if pre_echo_pair is not None:
-                scenario_metrics = suite_results["scenario_stats"][scenario]
-                suite_results["pre_echo_baseline_means"].append(pre_echo_pair['baseline_mean'])
-                suite_results["pre_echo_candidate_means"].append(pre_echo_pair['candidate_mean'])
-                suite_results["pre_echo_clip_deltas"].append(pre_echo_pair['delta'])
-                suite_results["pre_echo_baseline_events"] += pre_echo_pair['baseline_events']
-                suite_results["pre_echo_candidate_events"] += pre_echo_pair['candidate_events']
-                suite_results["pre_echo_baseline_eligible"] += pre_echo_pair['baseline_eligible']
-                suite_results["pre_echo_candidate_eligible"] += pre_echo_pair['candidate_eligible']
-                scenario_metrics["pre_echo_baseline_means"].append(pre_echo_pair['baseline_mean'])
-                scenario_metrics["pre_echo_candidate_means"].append(pre_echo_pair['candidate_mean'])
-                scenario_metrics["pre_echo_clip_deltas"].append(pre_echo_pair['delta'])
-                scenario_metrics["pre_echo_baseline_events"] += pre_echo_pair['baseline_events']
-                scenario_metrics["pre_echo_candidate_events"] += pre_echo_pair['candidate_events']
-                scenario_metrics["pre_echo_baseline_eligible"] += pre_echo_pair['baseline_eligible']
-                scenario_metrics["pre_echo_candidate_eligible"] += pre_echo_pair['candidate_eligible']
 
             o_md5 = o.get("md5", "")
             b_md5 = b.get("md5", "")
@@ -1038,17 +941,6 @@ def aggregate_suite_metrics(items):
     total_clip_wins = total_clip_losses = 0
     total_ic_delta = total_ic_count = 0
     worst_ic_regression = (0, "N/A")
-    total_centroid_deltas = []
-    total_centroid_o_abs = []
-    total_centroid_b_abs = []
-    worst_centroid_regression = (0, "N/A")
-    total_pre_echo_baseline_means = []
-    total_pre_echo_candidate_means = []
-    total_pre_echo_clip_deltas = []
-    total_pre_echo_baseline_events = 0
-    total_pre_echo_candidate_events = 0
-    total_pre_echo_baseline_eligible = 0
-    total_pre_echo_candidate_eligible = 0
     total_tp_reduction = total_lib_chg = total_lib_text_chg = total_lib_rodata_chg = 0
     total_bitrate_chg = total_bitrate_count = 0
     total_bitrate_acc_sum = total_bitrate_acc_count = total_bitrate_bias_sum = 0
@@ -1074,18 +966,6 @@ def aggregate_suite_metrics(items):
         total_ic_count += data["ic_count"]
         if data["worst_ic_regression"][0] < worst_ic_regression[0]:
             worst_ic_regression = data["worst_ic_regression"]
-        total_centroid_deltas.extend(data.get("centroid_deltas", []))
-        total_centroid_o_abs.extend(data.get("centroid_o_abs", []))
-        total_centroid_b_abs.extend(data.get("centroid_b_abs", []))
-        if data.get("worst_centroid_regression", (0, "N/A"))[0] > worst_centroid_regression[0]:
-            worst_centroid_regression = data["worst_centroid_regression"]
-        total_pre_echo_baseline_means.extend(data.get("pre_echo_baseline_means", []))
-        total_pre_echo_candidate_means.extend(data.get("pre_echo_candidate_means", []))
-        total_pre_echo_clip_deltas.extend(data.get("pre_echo_clip_deltas", []))
-        total_pre_echo_baseline_events += data.get("pre_echo_baseline_events", 0)
-        total_pre_echo_candidate_events += data.get("pre_echo_candidate_events", 0)
-        total_pre_echo_baseline_eligible += data.get("pre_echo_baseline_eligible", 0)
-        total_pre_echo_candidate_eligible += data.get("pre_echo_candidate_eligible", 0)
         total_tp_reduction += data["tp_reduction"]
         total_lib_chg += data["lib_size_chg"]
         total_lib_text_chg += data.get("lib_text_chg", 0)
@@ -1143,17 +1023,6 @@ def aggregate_suite_metrics(items):
         "total_decode_errors": total_decode_errors,
         "total_ic_delta": total_ic_delta, "total_ic_count": total_ic_count,
         "worst_ic_regression": worst_ic_regression,
-        "centroid_deltas": total_centroid_deltas,
-        "centroid_o_abs": total_centroid_o_abs,
-        "centroid_b_abs": total_centroid_b_abs,
-        "worst_centroid_regression": worst_centroid_regression,
-        "pre_echo_baseline_means": total_pre_echo_baseline_means,
-        "pre_echo_candidate_means": total_pre_echo_candidate_means,
-        "pre_echo_clip_deltas": total_pre_echo_clip_deltas,
-        "pre_echo_baseline_events": total_pre_echo_baseline_events,
-        "pre_echo_candidate_events": total_pre_echo_candidate_events,
-        "pre_echo_baseline_eligible": total_pre_echo_baseline_eligible,
-        "pre_echo_candidate_eligible": total_pre_echo_candidate_eligible,
         "avg_tp_reduction": avg_tp_reduction,
         "avg_lib_chg": avg_lib_chg, "avg_lib_text_chg": avg_lib_text_chg,
         "avg_lib_rodata_chg": avg_lib_rodata_chg,

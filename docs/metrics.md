@@ -1,5 +1,3 @@
-# Metric Definitions
-
 # Metric Definitions & Audio Quality Assessment
 
 This document outlines the perceptual, acoustic, and efficiency metrics used to evaluate audio encoders.
@@ -35,7 +33,7 @@ Stereo fidelity measures how accurately an encoder preserves the spatial soundst
 
 ## Transient Fidelity & Attack Preservation
 
-Percussive attacks can expose two distinct errors: energy may arrive too early before an onset (pre-echo), or the attack may be smeared and arrive late. FAAC Benchmark reports these separately from MOS and stereo image fidelity.
+Percussive attacks can expose two distinct errors: energy may arrive too early before an onset (pre-echo), or the attack may be smeared and arrive late. The scoring pipeline retains these as diagnostics separate from MOS and stereo image fidelity. The leaderboard shows pre-echo in a collapsed diagnostic section; the standard A/B comparison report does not show transient values.
 
 ### Attack-centroid shift
 
@@ -45,9 +43,9 @@ Percussive attacks can expose two distinct errors: energy may arrive too early b
 
 `pre_echo_db` measures high-pass (2 kHz) energy in the 6-to-1 ms interval before a refined onset selected from the reference. The 0-to-12 ms post-onset interval supplies event context. Events are eligible only when reference pre-onset energy is at least 20 dB below post-onset energy. The energy floor is -80 dB relative to that event's reference post-window power. A bounded global alignment lag (±250 ms at 48 kHz) is estimated per recording; measurements are retained per channel.
 
-Raw per-event values are signed: positive values indicate excess decoded pre-onset energy; negative values can reflect attenuation. For the leaderboard, each event is clamped to `max(0, dB)` before pooling, so attenuation cannot cancel excess elsewhere. The leaderboard pools events and reports mean, p95, and event/clip coverage. A/B comparisons first average within each clip, then report an unweighted mean across comparable clips; these aggregation values answer different questions.
+Raw per-event values are signed: positive values indicate excess decoded pre-onset energy; negative values can reflect attenuation. The leaderboard clamps each event to `max(0, dB)` before pooling, so attenuation cannot cancel excess elsewhere. It shows only the mean positive excess per scenario, inside a collapsed details section; the value does not affect ranking and is not a merge gate. Raw per-clip values remain available in result data and the dedicated TNS evaluation output.
 
-Quiet-reference eligibility limits coverage. Dense material can have no eligible events; a clip with no eligible or scored events is N/A, not zero. A valid empty score list with zero eligible and scored events is a completed measurement. Attenuation or high-frequency removal can also lower pre-echo energy without improving fidelity. Compare matched event and clip coverage, and treat pre-echo and attack measurements as diagnostics rather than audibility or overall-quality scores. See [Diagnostic scripts](scripts.md) for fresh-run and backfill commands.
+Quiet-reference eligibility limits coverage. Dense material can have no eligible events; a valid empty score list is N/A, not zero. In the leaderboard, N/A also covers rows without a current scored metric, such as failed, missing, or legacy measurements; consult result status and error details to distinguish those cases. Attenuation or high-frequency removal can also lower pre-echo energy without improving fidelity. Treat pre-echo and attack measurements as diagnostics rather than audibility or overall-quality scores. See [Diagnostic scripts](scripts.md) for fresh-run and backfill commands.
 
 ---
 

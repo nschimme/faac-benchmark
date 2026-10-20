@@ -1,4 +1,4 @@
-"""Coverage-aware rendering for the versioned reference-locked NPER metric."""
+"""Rendering for the versioned reference-locked NPER metric."""
 
 import os
 import pathlib
@@ -33,20 +33,13 @@ def current_row(values, coverage, **extra):
 
 
 class TestPreEchoReport(unittest.TestCase):
-    def test_positive_excess_mean_p95_and_coverage(self):
+    def test_positive_excess_mean(self):
         rows = [current_row(
             [-4.0, 0.0, 3.0, 7.0],
             {"candidates": 8, "refined": 6, "eligible": 5, "scored": 4},
         )]
         summary = report._pre_echo_summary(rows)
-        self.assertEqual(summary["values"], [0.0, 0.0, 3.0, 7.0])
-        self.assertEqual(summary["mean"], 2.5)
-        self.assertAlmostEqual(summary["p95"], 6.4)
-        self.assertEqual(summary["coverage"], {
-            "candidates": 8, "refined": 6, "eligible": 5, "scored": 4,
-        })
-        self.assertEqual((summary["clips_scored"], summary["clips_eligible"],
-                          summary["clips_current"]), (1, 1, 1))
+        self.assertEqual(summary, 2.5)
 
     def test_empty_and_legacy_rows_are_not_perfect_scores(self):
         empty = current_row(
@@ -60,12 +53,7 @@ class TestPreEchoReport(unittest.TestCase):
             pre_echo_metric_version=PRE_ECHO_METRIC_VERSION - 1,
         )
         summary = report._pre_echo_summary([empty, legacy, wrong_version])
-        self.assertIsNone(summary["mean"])
-        self.assertIsNone(summary["p95"])
-        self.assertEqual(summary["coverage"]["eligible"], 0)
-        self.assertEqual(summary["clips_current"], 1)
-        self.assertEqual(summary["clips_eligible"], 0)
-        self.assertEqual(summary["clips_scored"], 0)
+        self.assertIsNone(summary)
 
     def test_leaderboard_ranking_stays_mos_based_and_zero_is_displayed(self):
         encoders = [DummyEncoder("Higher MOS", "high"), DummyEncoder("Lower MOS", "low")]
@@ -127,7 +115,7 @@ class TestPreEchoReport(unittest.TestCase):
             text = pathlib.Path(output).read_text(encoding="utf-8")
         self.assertIn("| 🥇 1 | Legacy |", text)
         self.assertIn("| 48k_stereo_128k | Legacy | N/A |", text)
-        self.assertIn("N/A means no eligible scored events", text)
+        self.assertIn("N/A means no current scored value", text)
         self.assertNotIn("(n=", text)
 
 

@@ -252,26 +252,19 @@ their NPER values.
   the full investigation. Still exposed via `--metric attack_smear` for
   reference, but do not build on it.
 
-The encoder leaderboard reports versioned **Pre-echo (dB)** separately from
-MOS and Attack Fidelity. It uses the high-pass-2-kHz NPER metric on
-reference-only fine onsets, with a 6-to-1 ms pre-window and a 0-to-12 ms
-post-window anchored to the refined reference onset. Only onsets whose
-reference pre/post ratio is at most -20 dB are eligible; the energy floor is
--80 dB. Per-channel measurements use a shared global alignment for each
-recording, and the report pools scored onsets. It reports mean and 95th
-percentile positive excess, event coverage (scored/eligible), and clip
-coverage, so missing or unscorable clips are not presented as perfect scores.
-Dense audio can have no eligible quiet-prewindow onsets; those cases show N/A
-with zero coverage. The metric is a diagnostic, not a calibrated audibility
-score, and positive-excess mean is not an audibility threshold. It measures
-pre-onset energy; it does not measure attack timing. It does not affect the
-existing MOS-based ranking. Legacy rows without the current metric version are
-shown as N/A and are excluded from aggregates.
-
-Attenuation or high-frequency removal can also reduce measured NPER without
-improving fidelity. Weigh it alongside MOS, stereo fidelity, and Attack
-Fidelity, and compare only with matched scored-event and clip coverage. An
-all-zero score or a low-coverage score is not a win by itself.
+The encoder leaderboard shows the current versioned **Pre-echo (dB)** mean per
+scenario inside a collapsed diagnostic section. It uses the high-pass-2-kHz
+NPER metric on reference-only fine onsets, with a 6-to-1 ms pre-window and a
+0-to-12 ms post-window anchored to the refined reference onset. Only onsets
+whose reference pre/post ratio is at most -20 dB are eligible; the energy
+floor is -80 dB. Per-channel measurements use a shared global alignment for
+each recording. The value is diagnostic only: it is not an audibility score,
+does not measure attack timing, and does not affect MOS ranking. Standard A/B
+comparison summaries omit transient values; inspect raw per-clip results or
+the dedicated TNS evaluation evidence for event-level analysis. `N/A` means
+there is no current scored value; result status and error details distinguish
+a valid empty measurement from a missing or failed one. Attenuation or
+high-frequency removal can reduce measured NPER without improving fidelity.
 
 ```bash
 scripts/score_transient.py REF.wav DEC.wav [--verbose]        # score a pair (all three metrics)

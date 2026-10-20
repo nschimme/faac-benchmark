@@ -10,7 +10,6 @@
 
 import os
 import re
-import math
 import statistics
 from collections import defaultdict
 
@@ -50,55 +49,14 @@ def cell_peer_gap(clip_mos, rk, s_name, filename):
     return None
 
 
-def _pre_echo_row_data(row):
-    """Return versioned pre-echo samples and coverage, or None for legacy rows."""
-    if not has_current_pre_echo(row):
-        return None
-    values = row.get("pre_echo_db")
-    if not isinstance(values, list):
-        values = []
-    coverage = row.get("pre_echo_coverage") or {}
-    counts = {key: max(0, int(coverage.get(key, 0) or 0))
-              for key in ("candidates", "refined", "eligible", "scored")}
-    positive = []
-    for value in values:
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(parsed):
-            positive.append(max(0.0, parsed))
-    counts["scored"] = len(positive)
-    return positive, counts
-
-
 def _pre_echo_summary(rows):
-    """Pool scored positive NPER values and retain coverage for diagnostics."""
+    """Return the mean positive NPER excess for current-version rows."""
     values = []
-    totals = {key: 0 for key in ("candidates", "refined", "eligible", "scored")}
-    clips_current = clips_eligible = clips_scored = 0
     for row in rows:
-        data = _pre_echo_row_data(row)
-        if data is None:
+        if not has_current_pre_echo(row):
             continue
-        positive, coverage = data
-        clips_current += 1
-        for key in totals:
-            totals[key] += coverage[key]
-        if coverage["eligible"] > 0:
-            clips_eligible += 1
-        if positive:
-            clips_scored += 1
-            values.extend(positive)
-    return {
-        "values": values,
-        "mean": sum(values) / len(values) if values else None,
-        "p95": float(np.percentile(values, 95)) if values else None,
-        "coverage": totals,
-        "clips_current": clips_current,
-        "clips_eligible": clips_eligible,
-        "clips_scored": clips_scored,
-    }
+        values.extend(max(0.0, float(value)) for value in row["pre_echo_db"])
+    return sum(values) / len(values) if values else None
 
 
 def generate_leaderboard(encoders, results, output_path, scenario_list, skip_graphs=False, has_decoders=False):
@@ -564,7 +522,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
 
             # Pre-echo remains available as a compact, collapsed diagnostic.
             f.write(f"<details><summary><b>Pre-echo diagnostic ({fam_label})</b></summary>\n\n")
-            f.write("> Mean positive excess NPER in dB; lower is a smaller measured pre-echo excess. This diagnostic has no merge gate. N/A means no eligible scored events.\n\n")
+            f.write("> Mean positive excess NPER in dB; lower is a smaller measured pre-echo excess. This diagnostic has no merge gate. N/A means no current scored value; check result status for unavailable measurements.\n\n")
             for p in ["lc", "he", "hev2", "standard"]:
                 p_rks = [rk for rk in all_row_keys if encoder_info[rk].profile == p]
                 if not p_rks:
@@ -576,7 +534,7 @@ def generate_leaderboard(encoders, results, output_path, scenario_list, skip_gra
                     for rk in p_rks:
                         selected = [r for r in results if r.get("row_key") == rk and r.get("scenario") == s_name]
                         summary = _pre_echo_summary(selected)
-                        value = f"{summary['mean']:.3f}" if summary["mean"] is not None else "N/A"
+                        value = f"{summary:.3f}" if summary is not None else "N/A"
                         f.write(f"| {s_name} | {encoder_info[rk].name} | {value} |\n")
                 f.write("\n")
             f.write("</details>\n\n")
