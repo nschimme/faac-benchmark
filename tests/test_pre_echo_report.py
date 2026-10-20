@@ -86,7 +86,7 @@ class TestPreEchoReport(unittest.TestCase):
         self.assertIn("| Rank | Encoder | Status | 1st Percentile MOS | Overall MOS | Scenarios | Stereo Fidelity | Speed (xRT) |", text)
         self.assertNotIn("| Attack Fidelity |", text)
         self.assertNotIn("| Pre-echo (dB ↓) |", text)
-        self.assertIn("<details><summary><b>Pre-echo diagnostic (", text)
+        self.assertIn("### Transient Fidelity & Attack Preservation (", text)
         self.assertIn("| 48k_stereo_128k | Higher MOS | 10.000 |", text)
         self.assertIn("| 48k_stereo_128k | Lower MOS | 0.000 |", text)
         self.assertNotIn("(n=", text)
@@ -140,7 +140,7 @@ class TestPreEchoReport(unittest.TestCase):
             text = pathlib.Path(output).read_text(encoding="utf-8")
         self.assertIn("| 🥇 1 | Legacy |", text)
         self.assertIn("| 48k_stereo_128k | Legacy | N/A |", text)
-        self.assertIn("N/A means no current scored value", text)
+        self.assertIn("Measured as mean positive excess pre-echo noise", text)
         self.assertNotIn("(n=", text)
 
 

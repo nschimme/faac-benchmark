@@ -90,12 +90,27 @@ class TestTransientComparison(unittest.TestCase):
             after = analyze_pair(base, cand)
         stripped = copy.deepcopy(after)
         stripped['transients'] = before['transients']
+        stripped['scenario_stats'] = copy.deepcopy(before['scenario_stats'])
         self.assertEqual(before, stripped)
         metrics = aggregate_suite_metrics([('test', after)])
-        self.assertIn('1 clip(s) regressed', '\n'.join(render_summary_table(metrics, 'MOS', 'ABR')))
+        summary_table_text = '\n'.join(render_summary_table(metrics, 'MOS', 'ABR'))
+        self.assertIn('1 clip(s) regressed', summary_table_text)
+        self.assertIn('| **Avg Transient Δ** |', summary_table_text)
+        self.assertIn('| **Worst Transient Drop** |', summary_table_text)
         self.assertIn('1 clip(s) regressed', render_job_summary(metrics))
         self.assertIn('1 clip(s) regressed', render_job_summary(
             {'matrix': {'k': row(nper=5)}}, baseline={'matrix': {'k': row()}}))
+
+    def test_scenario_performance_transient_column(self):
+        with tempfile.TemporaryDirectory() as td:
+            base, cand = Path(td)/'test_base.json', Path(td)/'test_cand.json'
+            base.write_text(json.dumps({'matrix': {'k': row(nper=3)}}))
+            cand.write_text(json.dumps({'matrix': {'k': row(nper=1)}}))
+            suite_data = analyze_pair(base, cand)
+            sc_stats = suite_data['scenario_stats']['48k_stereo_128k']
+            self.assertEqual(sc_stats['transient_count'], 1)
+            self.assertEqual(sc_stats['transient_wins'], 1)
+            self.assertEqual(sc_stats['transient_nper_delta_sum'], -2.0)
 
     def test_coverage_and_top_three(self):
         base = {str(i): row() for i in range(5)}

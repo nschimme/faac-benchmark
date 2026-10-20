@@ -643,6 +643,10 @@ def analyze_pair(base_file, cand_file):
                 "mos_count": 0,
                 "ic_delta_sum": 0,
                 "ic_count": 0,
+                "transient_nper_delta_sum": 0,
+                "transient_count": 0,
+                "transient_wins": 0,
+                "transient_losses": 0,
                 "bitrate_acc_sum": 0,
                 "bitrate_acc_count": 0,
                 "vbr_bitrate_chg_sum": 0,
@@ -656,6 +660,18 @@ def analyze_pair(base_file, cand_file):
         "rate_control_mode": rc_mode,
         "mos_backend": next((o.get("mos_backend") or o.get("mos_provider") for o in cand_m.values() if o.get("mos_backend") or o.get("mos_provider")), "zimtohrli")
     }
+
+    # Aggregate scenario-level transient stats from paired clips
+    if transients.get("pairs"):
+        for p in transients["pairs"]:
+            sc = p.get("scenario", "")
+            if sc:
+                suite_results["scenario_stats"][sc]["transient_nper_delta_sum"] += p["dnper"]
+                suite_results["scenario_stats"][sc]["transient_count"] += 1
+                if p["dnper"] <= -TRANSIENT_FLAG_DB and p["dres"] < TRANSIENT_FLAG_DB:
+                    suite_results["scenario_stats"][sc]["transient_wins"] += 1
+                elif p["dnper"] >= TRANSIENT_FLAG_DB or (p["dres"] >= TRANSIENT_FLAG_DB and p["dnper"] > -TRANSIENT_FLAG_DB):
+                    suite_results["scenario_stats"][sc]["transient_losses"] += 1
 
     if cand_m:
         suite_results["total_cases"] = len(cand_m)
@@ -1267,6 +1283,29 @@ def render_summary_table(metrics, mos_label, rc_mode):
         if metrics["worst_ic_regression"][0] < -0.005:
             lines.append(f"| **Worst Stereo Drop** | {metrics['worst_ic_regression'][0]:+.4f} ({metrics['worst_ic_regression'][1]}) |")
 
+    # Transient metrics summary row in Summary table
+    trans_block = metrics.get("transients", {})
+    trans_pairs = trans_block.get("pairs", [])
+    if trans_pairs:
+        t_improved = sum(1 for p in trans_pairs if p["dnper"] <= -TRANSIENT_FLAG_DB and p["dres"] < TRANSIENT_FLAG_DB)
+        t_regressed = [p for p in trans_pairs if p["dnper"] >= TRANSIENT_FLAG_DB or (p["dres"] >= TRANSIENT_FLAG_DB and p["dnper"] > -TRANSIENT_FLAG_DB)]
+        t_degraded = len(t_regressed)
+        avg_dnper = sum(p["dnper"] for p in trans_pairs) / len(trans_pairs)
+        t_icon = "🚀" if avg_dnper < -0.1 else "⚠️" if t_degraded > 0 else "✅"
+
+        t_clip_parts = []
+        if t_improved > 0:
+            t_clip_parts.append(f"{t_improved} clip{'s' if t_improved != 1 else ''} improved")
+        if t_degraded > 0:
+            t_clip_parts.append(f"{t_degraded} degraded")
+        t_clip_str = f" ({', '.join(t_clip_parts)})" if t_clip_parts else ""
+
+        lines.append(f"| **Avg Transient Δ** | {avg_dnper:+.1f} dB NPER {t_icon}{t_clip_str} |")
+        if t_regressed:
+            worst_p = max(t_regressed, key=lambda p: max(p["dnper"], p["dres"]))
+            worst_val = max(worst_p["dnper"], worst_p["dres"])
+            lines.append(f"| **Worst Transient Drop** | {worst_val:+.1f} dB ({worst_p['clip']} @ {worst_p['scenario']}) ⚠️ |")
+
     if metrics["total_decode_errors"] > 0:
         gate = "hard-failed" if STRICT_DECODE else "warning only — pass --strict-decode to gate"
         lines.append(f"| **Decode Errors** | {metrics['total_decode_errors']} 🧨 ({gate}) |")
@@ -1633,10 +1672,10 @@ def main():
                     report.append(f"\n#### {mode.upper()} Scenario Performance")
 
                 bitrate_header = "Bitrate Δ (vs Base)" if mode == "vbr" else "Bitrate Acc"
-                report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Throughput Δ | {bitrate_header} |")
-                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+                report.append(f"| Scenario | Rate | {mos_label} Δ | 95% Conf. Interval | Wins / Losses | Stereo Fid. Δ | Transient Δ | Throughput Δ | {bitrate_header} |")
+                report.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-                mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": []})
+                mode_scenario_stats = defaultdict(lambda: {"mos_delta": 0, "mos_count": 0, "ic_delta": 0, "ic_count": 0, "transient_nper_delta": 0, "transient_count": 0, "transient_wins": 0, "transient_losses": 0, "tp_cand": 0, "tp_base": 0, "acc_sum": 0, "acc_count": 0, "vbr_chg_sum": 0, "vbr_chg_count": 0, "mos_deltas": []})
                 for suite_data in all_suite_data.values():
                     if suite_data.get("rate_control_mode", "abr") != mode:
                         continue
@@ -1645,6 +1684,10 @@ def main():
                         mode_scenario_stats[sc_name]["mos_count"] += sc_stats["mos_count"]
                         mode_scenario_stats[sc_name]["ic_delta"] += sc_stats["ic_delta_sum"]
                         mode_scenario_stats[sc_name]["ic_count"] += sc_stats["ic_count"]
+                        mode_scenario_stats[sc_name]["transient_nper_delta"] += sc_stats.get("transient_nper_delta_sum", 0)
+                        mode_scenario_stats[sc_name]["transient_count"] += sc_stats.get("transient_count", 0)
+                        mode_scenario_stats[sc_name]["transient_wins"] += sc_stats.get("transient_wins", 0)
+                        mode_scenario_stats[sc_name]["transient_losses"] += sc_stats.get("transient_losses", 0)
                         mode_scenario_stats[sc_name]["tp_cand"] += sc_stats["tp_sum_cand"]
                         mode_scenario_stats[sc_name]["tp_base"] += sc_stats["tp_sum_base"]
                         mode_scenario_stats[sc_name]["acc_sum"] += sc_stats["bitrate_acc_sum"]
@@ -1662,10 +1705,14 @@ def main():
                     fam = scenario_family(sc_name)
                     if fam != current_family:
                         current_family = fam
-                        report.append(f"| **{family_label(fam)}** | | | | | | | |")
+                        report.append(f"| **{family_label(fam)}** | | | | | | | | |")
                     gs = mode_scenario_stats[sc_name]
                     sc_mos_delta = f"{(gs['mos_delta'] / gs['mos_count']):+.3f}" if gs['mos_count'] > 0 else "N/A"
                     sc_ic_delta = f"{(gs['ic_delta'] / gs['ic_count']):+.4f}" if gs['ic_count'] > 0 else "N/A"
+                    if gs['transient_count'] > 0:
+                        sc_trans_nper = f"{(gs['transient_nper_delta'] / gs['transient_count']):+.1f} dB [{gs['transient_wins']}/{gs['transient_losses']}]"
+                    else:
+                        sc_trans_nper = "N/A"
                     sc_tp_delta = f"{(1 - gs['tp_cand'] / gs['tp_base']) * 100:+.1f}%" if gs['tp_base'] > 0 else "N/A"
 
                     if mode == "vbr":
@@ -1687,7 +1734,7 @@ def main():
 
                     report.append(
                         f"| {sc_name} | {format_scenario_rate(sc_name)} | {sc_mos_delta} | {sc_ci} | {sc_wl} | "
-                        f"{sc_ic_delta} | {sc_tp_delta} | {sc_bitrate_val} |")
+                        f"{sc_ic_delta} | {sc_trans_nper} | {sc_tp_delta} | {sc_bitrate_val} |")
 
             if has_sig_mark:
                 report.append("_✳ Statistically significant change (95% confidence interval excludes 0)_")
