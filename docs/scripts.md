@@ -161,8 +161,61 @@ with `python3 -m unittest discover -s tests -p test_storage_ab.py`.
 
 ## Transient fidelity / TNS tooling
 
-For the reference-selected pre-echo metric, result-field semantics, resume
-backfill commands, and comparison caveats, see [Transient measurements](transients.md).
+The benchmark's attack-centroid and reference-locked pre-echo definitions,
+aggregation rules, and interpretation limits are in [Metric Definitions](metrics.md#transient-fidelity--attack-preservation).
+The commands below run or backfill those metrics. The standalone
+`score_transient.py` section later in this page describes a separate legacy
+NPER implementation; do not compare its values with the versioned benchmark
+pre-echo metric.
+
+### Fresh reference-locked measurements
+
+`compare_codecs.py` computes MOS, stereo image, attack-centroid shift, and
+pre-echo during a fresh encoder run. The skip flags omit MOS, stereo, or both
+transient metrics independently.
+
+```bash
+NUMBA_CACHE_DIR=/tmp/faac-benchmark-numba \
+  python compare_codecs.py --mode encoder \
+  --faac-bin ../faac/build/frontend/faac \
+  --faac-lib ../faac/build/libfaac/libfaac.3.dylib \
+  --gate --scenarios 44k1_stereo_128k,48k_stereo_128k \
+  --results-json results/faac-transients.json \
+  --output results/faac-transients.md
+```
+
+### Backfill saved results
+
+For a complete `compare_codecs.py` matrix, resume with MOS and stereo skipped
+to backfill versioned pre-echo from the recorded AAC and reference paths. This
+does not encode or recompute MOS, stereo, or attack-centroid values. Use a
+complete matrix so resume does not schedule missing encodes.
+
+```bash
+NUMBA_CACHE_DIR=/tmp/faac-benchmark-numba \
+  python compare_codecs.py --mode encoder --resume \
+  --skip-mos --skip-stereo \
+  --faac-bin ../faac/build/frontend/faac \
+  --faac-lib ../faac/build/libfaac/libfaac.3.dylib \
+  --gate --scenarios 44k1_stereo_128k,48k_stereo_128k \
+  --results-json results/faac-transients.json \
+  --output results/faac-transients.md
+```
+
+For `run_benchmark.py` matrices, Phase 3 can backfill attack-centroid and
+pre-echo from existing AAC files without encoding or running MOS/stereo:
+
+```bash
+python phase3_stereo.py results/faac.json output/ data/external \
+  --skip-stereo --decoder ffmpeg
+```
+
+The result fields include `attack_centroid_ms`, `pre_echo_db`,
+`pre_echo_metric_version`, coverage, and alignment lag. Failed measurements
+have `pre_echo_error`; missing, old-version, incomplete, or failed values are
+reported as N/A and can be retried during backfill. A valid empty score list
+means the measurement completed but found no scored events. Check event and
+clip coverage before comparing results.
 
 ### `scripts/score_transient.py`
 
