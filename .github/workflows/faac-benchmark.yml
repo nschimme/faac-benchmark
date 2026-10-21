@@ -95,7 +95,6 @@ jobs:
           path: |
             results/faac_${{ matrix.rate_control }}_*.json
             report_${{ matrix.rate_control }}.md
-            summary_${{ matrix.rate_control }}.md
             cases_${{ matrix.rate_control }}.md
 
   consolidated-report:
@@ -126,15 +125,10 @@ jobs:
         with:
           results-path: results
           report-output: faac_benchmark_report.md
-          summary-output: pooled_summary.md
+          summary-output: summary.md
           gates: mos,footprint,throughput,bd_rate,haze,gapless
-          github-summary: false
+          summary-only: true
           fail-on-regression: false
-
-      - name: Generate Summary of Per-Rate Summaries
-        run: |
-          python3 scripts/consolidate_rate_summaries.py results --output summary.md
-          cat summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Consolidated Report Artifact
         uses: actions/upload-artifact@v7

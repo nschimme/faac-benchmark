@@ -1162,7 +1162,7 @@ def aggregate_suite_metrics(items):
     }
 
 
-def render_summary_table(metrics, mos_label, rc_mode):
+def render_summary_table(metrics, mos_label, rc_mode, include_transients=True):
     """Render the '| Metric | Value |' rows for one metrics dict.
 
     Shared by the single-mode summary and by each per-mode (ABR/VBR)
@@ -1299,10 +1299,10 @@ def render_summary_table(metrics, mos_label, rc_mode):
         if metrics["worst_ic_regression"][0] < -0.005:
             lines.append(f"| **Worst Stereo Drop** | {metrics['worst_ic_regression'][0]:+.4f} ({metrics['worst_ic_regression'][1]}) |")
 
-    # Transient metrics summary row in Summary table
+    # Transient detail belongs in per-rate reports, not the consolidated rollup.
     trans_block = metrics.get("transients", {})
     trans_pairs = trans_block.get("pairs", [])
-    if trans_pairs:
+    if include_transients and trans_pairs:
         t_improved = sum(1 for p in trans_pairs if p["dnper"] <= -TRANSIENT_FLAG_DB and p["dres"] < TRANSIENT_FLAG_DB)
         t_regressed = [p for p in trans_pairs if p["dnper"] >= TRANSIENT_FLAG_DB or (p["dres"] >= TRANSIENT_FLAG_DB and p["dnper"] > -TRANSIENT_FLAG_DB)]
         t_degraded = len(t_regressed)
@@ -1329,7 +1329,8 @@ def render_summary_table(metrics, mos_label, rc_mode):
     if metrics["total_missing_mos"] > 0:
         lines.append(f"\n⚠️ **Warning**: {metrics['total_missing_mos']} MOS scores were missing/failed (treated as ❌).")
 
-    lines.extend(render_transient_block(metrics))
+    if include_transients:
+        lines.extend(render_transient_block(metrics))
     return lines
 
 
@@ -1592,9 +1593,11 @@ def main():
                                  if d.get("rate_control_mode", "abr") == mode)
             mode_metrics = aggregate_suite_metrics(mode_items)
             summary_lines.append(f"\n#### {mode.upper()}")
-            summary_lines.extend(render_summary_table(mode_metrics, mos_label, mode.upper()))
+            summary_lines.extend(render_summary_table(
+                mode_metrics, mos_label, mode.upper(), include_transients=not summary_only))
     else:
-        summary_lines.extend(render_summary_table(global_metrics, mos_label, modes_present[0].upper()))
+        summary_lines.extend(render_summary_table(
+            global_metrics, mos_label, modes_present[0].upper(), include_transients=not summary_only))
 
     # Per-family MOS rollup
     family_deltas = defaultdict(list)
@@ -1652,22 +1655,23 @@ def main():
                         summary_lines.append(f"\n_...and {len(data['regressions']) - 3} additional regressed clips collapsed below._\n")
 
     # Build the full report
-    from phase5_decoder_diff import summary as decoder_summary
-    decoder_blocks = [c.get("decoder_diff") for b, c in sanity_inputs.values()]
-    measured = [b for b in decoder_blocks if b and "skipped" not in b]
-    errors = [b["error"] for b in decoder_blocks if b and "error" in b]
-    if errors:
-        summary_lines.append("\n" + decoder_summary({"error": "; ".join(errors)}))
-    elif measured:
-        combined = {"streams": sum(b["streams"] for b in measured),
-                    "unchanged": sum(b["unchanged"] for b in measured),
-                    "changed": [x for b in measured for x in b["changed"]],
-                    "failed": [x for b in measured for x in b["failed"]],
-                    "reference_decoder": measured[0].get("reference_decoder"),
-                    "candidate_decoder": measured[0].get("candidate_decoder")}
-        summary_lines.append("\n" + decoder_summary(combined))
-    else:
-        summary_lines.append("\n" + decoder_summary(next((b for b in decoder_blocks if b), None)))
+    if not summary_only:
+        from phase5_decoder_diff import summary as decoder_summary
+        decoder_blocks = [c.get("decoder_diff") for b, c in sanity_inputs.values()]
+        measured = [b for b in decoder_blocks if b and "skipped" not in b]
+        errors = [b["error"] for b in decoder_blocks if b and "error" in b]
+        if errors:
+            summary_lines.append("\n" + decoder_summary({"error": "; ".join(errors)}))
+        elif measured:
+            combined = {"streams": sum(b["streams"] for b in measured),
+                        "unchanged": sum(b["unchanged"] for b in measured),
+                        "changed": [x for b in measured for x in b["changed"]],
+                        "failed": [x for b in measured for x in b["failed"]],
+                        "reference_decoder": measured[0].get("reference_decoder"),
+                        "candidate_decoder": measured[0].get("candidate_decoder")}
+            summary_lines.append("\n" + decoder_summary(combined))
+        else:
+            summary_lines.append("\n" + decoder_summary(next((b for b in decoder_blocks if b), None)))
 
     report = list(summary_lines)
 
