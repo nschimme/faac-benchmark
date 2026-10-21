@@ -294,7 +294,7 @@ def main():
                         help="Skip inter-channel coherence (stereo image) scoring")
     parser.add_argument("--skip-transient", action="store_true",
                         help="Skip attack-centroid-shift and pre-echo transient measurements")
-    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (provided FAAD3 if given, else the merged FAAD3 build), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
     args = parser.parse_args()

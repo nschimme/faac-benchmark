@@ -106,7 +106,7 @@ def load_mono(path):
 
 
 def decode_aac(aac_path, wav_path, sr=48000, channels=1):
-    """Decode AAC to WAV via FAAD2 (with ffmpeg fallback)."""
+    """Decode AAC to WAV via FAAD3 (with ffmpeg fallback)."""
     if not wav_conv(aac_path, wav_path, rate=sr, channels=channels):
         raise RuntimeError(f'AAC decode failed for {aac_path}')
 

@@ -147,7 +147,7 @@ Evaluating library memory requirements separates non-volatile code storage (Flas
 An MP4 records the encoder delay and padding in an edit list (`elst`) and an
 `iTunSMPB` tag. Without them a player cannot trim the priming samples. The gapless check
 (`gapless.py`, run alongside Phase 2) reads, for up to 100 streams per run, whether either tag is
-present, then decodes the stream with the pinned FAAD2 (which trims by them) and
+present, then decodes the stream with the merged FAAD3 (which trims by them) and
 reports `frame_error` (decoded minus source frames, at the source rate) and `lag`
 (sample offset against the source, searched within the codec-delay window).
 

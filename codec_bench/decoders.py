@@ -206,21 +206,15 @@ def probe_decoder_capability(decoder):
 
 
 @lru_cache(maxsize=1)
-def pinned_faad2_path():
-    """The FAAD2 that scores runs: $FAAD_BIN, else bin/faad from scripts/build_faad2.sh.
-
-    Never the first faad on PATH: a distro package lags the pinned release and
-    lacks its gapless trimming, which would shift scores between machines."""
-    env_faad = os.environ.get("FAAD_BIN")
-    if env_faad and os.path.exists(env_faad):
-        return env_faad
-    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "build_faad2.sh")
-    res = safe_run([script], capture_output=True, check=False)
-    path = (res.stdout or "").strip().splitlines()[-1:] if res.returncode == 0 else []
-    if path and os.path.exists(path[0]):
-        return path[0]
-    raise RuntimeError("the pinned FAAD2 is unavailable (scripts/build_faad2.sh failed); "
-                       "set FAAD_BIN or score with --decoder ffmpeg")
+def default_faad3_path():
+    """Return the merged FAAD3 binary used for scoring."""
+    bench_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    faac_root = os.environ.get("FAAC_SRC", os.path.join(bench_root, "..", "faac"))
+    build_dir = os.environ.get("FAAC_BUILD_DIR", os.path.join(faac_root, "build"))
+    binary = os.path.join(build_dir, "frontend", "faad")
+    if os.path.isfile(binary) and os.access(binary, os.X_OK):
+        return binary
+    raise RuntimeError(f"FAAD3 is unavailable at {binary}; build FAAC/FAAD3 or use --decoder ffmpeg")
 
 
 def resolve_scoring_decoder(decoder_type="auto", decoder_bin=None, lib_override=None):
@@ -228,15 +222,15 @@ def resolve_scoring_decoder(decoder_type="auto", decoder_bin=None, lib_override=
 
     "auto" scores with the run's own FAAD3 when decoder_bin is one (the caller
     passes it only when the baseline and the candidate both ship a FAAD3), and
-    with the pinned FAAD2 otherwise. Any other type is used as given."""
+    with the merged FAAD3 build otherwise. Any other type is used as given."""
     if (decoder_type or "auto").lower().strip() != "auto":
         return get_decoder_instance(decoder_type, binary_path=decoder_bin, lib_override=lib_override), decoder_type, decoder_bin
     if decoder_bin:
         inst = get_decoder_instance("faad", binary_path=decoder_bin, lib_override=lib_override)
         if inst.is_faad3:
             return inst, "faad", decoder_bin
-    faad2 = pinned_faad2_path()
-    return get_decoder_instance("faad", binary_path=faad2, lib_override=lib_override), "faad", faad2
+    faad3 = default_faad3_path()
+    return get_decoder_instance("faad", binary_path=faad3, lib_override=lib_override), "faad", faad3
 
 
 def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=None, version=None):

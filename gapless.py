@@ -17,7 +17,7 @@
    frame_error  decoded frames minus source frames, at the source rate
    lag          sample offset of the decode against the source (0 = aligned)
 
- with the pinned FAAD2, which trims by those tags. Builds that predate the tags
+ with FAAD3, which trims by those tags. Builds that predate the tags
  write neither and decode with whatever offset their muxer happened to produce,
  so the gate (compare_results.check_gapless) never asks an untagged stream to be
  exact: it asks a tagged one to be, and a stream that lost its tags to stay lost.
@@ -35,7 +35,7 @@ import numpy as np
 import scipy.signal
 import soundfile as sf
 
-from codec_bench.decoders import pinned_faad2_path
+from codec_bench.decoders import default_faad3_path
 from phase2_mos import get_sample_info
 from utils import MAX_LAG_S, scenario_rate, wav_conv
 
@@ -110,7 +110,7 @@ def measure(aac_path, ref_input, rate, channels, faad):
         ref, ref_rate = sf.read(ref_wav, dtype="float32", always_2d=True)
         dec, dec_rate = sf.read(dec_wav, dtype="float32", always_2d=True)
 
-    # FAAD2 may emit a different rate than the source (it doubles low-rate LC on
+    # FAAD3 may emit a different rate than the source (it doubles low-rate LC on
     # an implicit-SBR guess); compare at the source rate.
     if dec_rate != ref_rate:
         g = math.gcd(ref_rate, dec_rate)
@@ -177,13 +177,13 @@ def main():
     parser.add_argument("results_json", help="Result JSON to update in place")
     parser.add_argument("aac_dir", help="Phase 1 output directory")
     parser.add_argument("external_data_dir", help="Reference corpus directory")
-    parser.add_argument("--faad-bin", help="Gapless-aware faad (default: the pinned FAAD2)")
+    parser.add_argument("--faad-bin", help="FAAD3 binary (default: the sibling FAAC build)")
     parser.add_argument("--snapshot", help="Read the matrix from this copy of the result JSON (it may be rewritten while this runs)")
     parser.add_argument("--out", help="Write the block to this file instead of into the result JSON")
     args = parser.parse_args()
     with open(args.snapshot or args.results_json) as f:
         data = json.load(f)
-    faad = args.faad_bin or pinned_faad2_path()
+    faad = args.faad_bin or default_faad3_path()
     block = measure_matrix(data, args.aac_dir, args.external_data_dir, args.results_json, faad)
     if not block["cases"]:
         block = {"skipped": "no MP4 streams could be measured" + (f" ({block['failed'][0]['error']})" if block["failed"] else "")}

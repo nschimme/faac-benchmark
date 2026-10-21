@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--encoder", default="faac", help="Encoder type: faac, ffmpeg, fdkaac, aac_enc, falabaac, afconvert, opus, lame, exhale, xhe")
     parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary")
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library override")
-    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (provided FAAD3 if given, else the merged FAAD3 build), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-ref-bin", help="Baseline faad binary for exact decoder comparison")
     parser.add_argument("--skip-decoder-diff", action="store_true", help="Skip Phase 5 decoder comparison")

@@ -1821,7 +1821,7 @@ class LagSearchWindowTests(unittest.TestCase):
 
 
 class ScoringDecoderResolutionTests(unittest.TestCase):
-    """The scoring decoder is the run's own FAAD3 when it has one, else the pinned FAAD2."""
+    """Auto scoring uses the supplied or local merged FAAD3 build."""
 
     def _fake_faad(self, td, banner):
         path = os.path.join(td, "faad")
@@ -1834,23 +1834,23 @@ class ScoringDecoderResolutionTests(unittest.TestCase):
         from codec_bench import decoders
         with tempfile.TemporaryDirectory() as td:
             faad3 = self._fake_faad(td, "FAAD 3.0 decoder")
-            with patch.object(decoders, "pinned_faad2_path", return_value="/pinned/faad"):
+            with patch.object(decoders, "default_faad3_path", return_value="/built/faad"):
                 inst, dec_type, dec_bin = decoders.resolve_scoring_decoder("auto", faad3)
             self.assertTrue(inst.is_faad3)
             self.assertEqual((dec_type, dec_bin), ("faad", faad3))
 
-    def test_auto_scores_with_the_pinned_faad2_unless_a_faad3_is_given(self):
+    def test_auto_defaults_to_faad3_and_does_not_fall_back_to_legacy_faad2(self):
         from codec_bench import decoders
         with tempfile.TemporaryDirectory() as td:
-            faad2 = self._fake_faad(td, "FAAD2 2.10.0")
-            with patch.object(decoders, "pinned_faad2_path", return_value="/pinned/faad"):
-                for given in (None, faad2):
-                    _, dec_type, dec_bin = decoders.resolve_scoring_decoder("auto", given)
-                    self.assertEqual((dec_type, dec_bin), ("faad", "/pinned/faad"))
+            faad2 = self._fake_faad(td, "FAAD2 2.11.4")
+            with patch.object(decoders, "default_faad3_path", return_value="/built/faad"):
+                for provided in (None, faad2):
+                    _, dec_type, dec_bin = decoders.resolve_scoring_decoder("auto", provided)
+                    self.assertEqual((dec_type, dec_bin), ("faad", "/built/faad"))
 
     def test_explicit_decoder_is_used_as_given(self):
         from codec_bench import decoders
-        with patch.object(decoders, "pinned_faad2_path", side_effect=AssertionError("not needed")):
+        with patch.object(decoders, "default_faad3_path", side_effect=AssertionError("not needed")):
             _, dec_type, dec_bin = decoders.resolve_scoring_decoder("ffmpeg", None)
         self.assertEqual((dec_type, dec_bin), ("ffmpeg", None))
 

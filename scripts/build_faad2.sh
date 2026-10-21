@@ -1,33 +1,27 @@
 #!/usr/bin/env bash
 #
-# Build the reference FAAD2 decoder (faad) for the decoder gate and the
-# conformance reference.
+# Build the optional FAAD2 2.11.4 reference decoder for compare_codecs.py.
 #
-# Pinned to an upstream commit rather than the distro package: the Ubuntu
-# package lags upstream. 2.11.4 is the first release that trims the encoder
-# delay and the SBR decoder delay from MP4 output using the elst atom and
-# iTunSMPB (gapless); the pinned commit also drains the SBR decoder delay at the
-# end of the stream (FreewareAdvancedAudio/faad2#16), without which a stream
-# whose padding is under 481 samples decodes short. Decodes line up with the
-# source without a search.
+# The binary is versioned so it cannot be mistaken for the default FAAD3 `faad`.
+# Pass its printed path to compare_codecs.py with --faad-bin when a FAAD2
+# reference row is wanted. It is not used by the main benchmark automatically.
 #
-# Prints the path of the built binary. Idempotent: reuses bin/faad when it was
-# built from this version.
+# Prints the path of the built binary. Idempotent: reuses bin/faad2-2.11.4
+# when it was built from this version.
 #
 
 set -euo pipefail
 
-FAAD2_COMMIT="015e0caec066a28c1b2db77f0e24edddffd5b836"
-FAAD2_VERSION="2.11.4+${FAAD2_COMMIT:0:7}"
-FAAD2_SHA256="bf1fca855c5b854c27aa1c8f575791f735c697e8f9b32e5481a44120d586a0c7"
+FAAD2_VERSION="2.11.4"
+FAAD2_SHA256="ee479ccbae4a8387ab696e6f21a481bd83fe3881471cafa81b4ae59d7d3aed43"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BUILD_DIR="${FAAD2_BUILD_DIR:-$BENCH_ROOT/build/faad2-$FAAD2_VERSION}"
 BIN_DIR="$BENCH_ROOT/bin"
-TARGET_BIN="$BIN_DIR/faad"
-STAMP="$BIN_DIR/faad.version"
+TARGET_BIN="$BIN_DIR/faad2-$FAAD2_VERSION"
+STAMP="$BIN_DIR/faad2-$FAAD2_VERSION.version"
 
 if [[ -x "$TARGET_BIN" && "$(cat "$STAMP" 2>/dev/null)" == "$FAAD2_VERSION" ]]; then
     echo "$TARGET_BIN"
@@ -39,7 +33,7 @@ TARBALL="$BUILD_DIR/faad2-$FAAD2_VERSION.tar.gz"
 
 if [[ ! -f "$TARBALL" ]]; then
     echo "==> Downloading FAAD2 $FAAD2_VERSION..." >&2
-    curl -fsSL -o "$TARBALL" "https://github.com/FreewareAdvancedAudio/faad2/archive/$FAAD2_COMMIT.tar.gz" >&2
+    curl -fsSL -o "$TARBALL" "https://github.com/FreewareAdvancedAudio/faad2/archive/refs/tags/$FAAD2_VERSION.tar.gz" >&2
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then

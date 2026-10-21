@@ -321,11 +321,11 @@ Supply `faad-bin` (candidate) and `faad-ref-bin` (baseline), both defaulting to
 empty, to enable Phase 5. The equivalent runner options are `--decoder-bin` and
 `--decoder-ref-bin`; `--skip-decoder-diff` disables it.
 
-The scoring decoder defaults to `auto`: the pinned FAAD2 (built by
-`scripts/build_faad2.sh`), or, when `faad-bin` is a FAAD3, that build's own FAAD3.
-Pass `faad-bin` to the baseline run as well as the candidate run, and only when
-both builds ship a FAAD3; otherwise leave it empty so both runs are scored by
-the same pinned FAAD2.
+The scoring decoder defaults to `auto`: the merged FAAD3 at
+`$FAAC_SRC/build/frontend/faad` (with `$FAAC_BUILD_DIR` available for a custom
+build directory). When `faad-bin` is a FAAD3, auto uses that build's own
+decoder. Pass `faad-bin` to both baseline and candidate runs when comparing
+builds so both runs use the corresponding FAAD3.
 
 The candidate's `decoder_diff` block compares both binaries on the same Phase 1
 matrix streams, sorted by path and capped at 200. Missing binaries or a missing
