@@ -348,6 +348,11 @@ consolidated report uses `compare_results.py` in summary-only mode to roll up
 the ABR and VBR results. It omits decoder and transient details, which remain
 in the per-rate reports.
 
+The FAAC repository's CI also uses this report action and posts `summary.md` as
+a pull request comment. Its consolidated report invocation should set
+`summary-only: true` so the comment stays a rollup. Decoder and transient details
+remain available in the per-rate reports uploaded by its benchmark jobs.
+
 `--gates` lists gates permitted to fail the job, exactly as for `haze` and
 `footprint`. Include `decoder` to enforce it. To acknowledge an intentional decoder
 change, explicitly select the other gates and omit `decoder`, for example
