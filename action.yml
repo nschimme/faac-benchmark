@@ -80,13 +80,12 @@ runs:
     # ffmpeg decodes and validates every encode; valgrind makes Throughput a
     # Cachegrind instruction count rather than wall-clock time, which on a
     # shared runner moves by a few percent between byte-identical builds.
-    # cmake builds the pinned FAAD2 that scores each run (scripts/build_faad2.sh,
-    # about ten seconds, on first use); the distro faad is never used.
+    # The benchmark scores with the FAAD3 built by the FAAC checkout.
     - name: Install system dependencies
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg valgrind cmake
+        sudo apt-get install -y ffmpeg valgrind
 
     # hashFiles() only resolves paths under GITHUB_WORKSPACE, and action_path
     # is outside it, so the expression form of this key evaluated to the empty

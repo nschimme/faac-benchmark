@@ -321,19 +321,37 @@ Supply `faad-bin` (candidate) and `faad-ref-bin` (baseline), both defaulting to
 empty, to enable Phase 5. The equivalent runner options are `--decoder-bin` and
 `--decoder-ref-bin`; `--skip-decoder-diff` disables it.
 
-The scoring decoder defaults to `auto`: the pinned FAAD2 (built by
-`scripts/build_faad2.sh`), or, when `faad-bin` is a FAAD3, that build's own FAAD3.
-Pass `faad-bin` to the baseline run as well as the candidate run, and only when
-both builds ship a FAAD3; otherwise leave it empty so both runs are scored by
-the same pinned FAAD2.
+The scoring decoder defaults to `auto`: the merged FAAD3 at
+`$FAAC_SRC/build/frontend/faad` (with `$FAAC_BUILD_DIR` available for a custom
+build directory). When `faad-bin` is a FAAD3, auto uses that build's own
+decoder. Pass `faad-bin` to both baseline and candidate runs when comparing
+builds so both runs use the corresponding FAAD3.
+
+The FAAC benchmark CI builds the pinned FAAD2 2.11.4 and passes it explicitly
+as `faad-ref-bin`, with the in-tree FAAD3 passed as `faad-bin`. This enables
+Phase 5 output comparisons without changing the default scoring decoder. Other
+workflows do not build or select the pinned FAAD2 automatically.
 
 The candidate's `decoder_diff` block compares both binaries on the same Phase 1
 matrix streams, sorted by path and capped at 200. Missing binaries or a missing
 candidate block skip the `decoder` gate with a reason. A candidate decode failure
 where the baseline succeeds, a frame-count difference, or any PCM difference
 fails. Baseline decode failures are recorded in cases, not counted as candidate
-regressions. The PR summary contains one decoder-output line; changed and failed
-stream details appear only in the cases document.
+regressions. The decoder-output section reports exact matches, differences, and
+decode failures; per-stream details appear only in the cases document. Differences
+do not indicate which decoder has better quality.
+
+The FAAC benchmark workflow keeps this cross-version FAAD2-vs-FAAD3 comparison
+informational by excluding the `decoder` gate. The per-rate summaries show exact
+PCM match counts and explain that differences are not a quality verdict. The
+consolidated report uses `compare_results.py` in summary-only mode to roll up
+the ABR and VBR results. It omits decoder and transient details, which remain
+in the per-rate reports.
+
+The FAAC repository's CI also uses this report action and posts `summary.md` as
+a pull request comment. Its consolidated report invocation should set
+`summary-only: true` so the comment stays a rollup. Decoder and transient details
+remain available in the per-rate reports uploaded by its benchmark jobs.
 
 `--gates` lists gates permitted to fail the job, exactly as for `haze` and
 `footprint`. Include `decoder` to enforce it. To acknowledge an intentional decoder

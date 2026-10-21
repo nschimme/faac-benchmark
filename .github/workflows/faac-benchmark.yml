@@ -27,14 +27,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y faac fdkaac ffmpeg valgrind meson ninja-build cmake
 
-      - name: Cache FAAD2
+      - name: Cache FAAD2 reference
         uses: actions/cache@v6
         with:
-          path: bin/faad*
-          key: faad2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_faad2.sh') }}
+          path: bin/faad2-2.11.4*
+          key: faad2-2.11.4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_faad2.sh') }}
 
-      - name: Build FAAD2
-        run: echo "FAAD_BIN=$(./scripts/build_faad2.sh)" >> "$GITHUB_ENV"
+      - name: Build FAAD2 reference
+        run: ./scripts/build_faad2.sh
 
       - name: Install Python dependencies
         run: |
@@ -46,8 +46,8 @@ jobs:
 
       - name: Build FAAC HEAD from Source
         run: |
-          git clone https://github.com/FreewareAdvancedAudio/faac.git ../faac_src
-          cd ../faac_src
+          git clone https://github.com/FreewareAdvancedAudio/faac.git ../faac
+          cd ../faac
           meson setup build --buildtype=release
           ninja -C build
 
@@ -55,6 +55,8 @@ jobs:
         uses: ./
         with:
           faac-bin: /usr/bin/faac
+          faad-bin: ${{ github.workspace }}/../faac/build/frontend/faad
+          faad-ref-bin: ${{ github.workspace }}/bin/faad2-2.11.4
           run-name: faac_${{ matrix.rate_control }}_base
           output-json: results/faac_${{ matrix.rate_control }}_base.json
           rate-control: ${{ matrix.rate_control }}
@@ -63,8 +65,10 @@ jobs:
       - name: Run Benchmark (Candidate - FAAC HEAD)
         uses: ./
         with:
-          faac-bin: ${{ github.workspace }}/../faac_src/build/frontend/faac
-          libfaac-so: ${{ github.workspace }}/../faac_src/build/libfaac/libfaac.so
+          faac-bin: ${{ github.workspace }}/../faac/build/frontend/faac
+          faad-bin: ${{ github.workspace }}/../faac/build/frontend/faad
+          faad-ref-bin: ${{ github.workspace }}/bin/faad2-2.11.4
+          libfaac-so: ${{ github.workspace }}/../faac/build/libfaac/libfaac.so
           run-name: faac_${{ matrix.rate_control }}_cand
           output-json: results/faac_${{ matrix.rate_control }}_cand.json
           baseline-json: results/faac_${{ matrix.rate_control }}_base.json
@@ -78,6 +82,8 @@ jobs:
           report-output: report_${{ matrix.rate_control }}.md
           summary-output: summary_${{ matrix.rate_control }}.md
           cases-output: cases_${{ matrix.rate_control }}.md
+          # FAAD2-vs-FAAD3 PCM differences are informational, not encoder regressions.
+          gates: mos,footprint,throughput,bd_rate,haze,gapless
           fail-on-regression: false
           summary-only: false
 
@@ -119,6 +125,9 @@ jobs:
         with:
           results-path: results
           report-output: faac_benchmark_report.md
+          summary-output: summary.md
+          gates: mos,footprint,throughput,bd_rate,haze,gapless
+          summary-only: true
           fail-on-regression: false
 
       - name: Upload Consolidated Report Artifact

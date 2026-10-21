@@ -441,6 +441,15 @@ FFmpeg and FAAD2. `build_odr_fdk.sh` builds the fdk-aac fork that can encode a
 960-sample granule; `run_matrix.sh` encodes and compares a matrix of rates and
 channel layouts. See `scripts/dabplus_960/README.md`.
 
+## drc_probe/
+
+Probes MPEG-4 `dynamic_range_info` handling by generating streams with FDK's
+metadata encoder and decoding the same streams with FAAD3, FAAD2, FDK and
+FFmpeg. It records integrated loudness, peak/clipping counts, raw and
+level-matched MOS, and sample differences from FAAD3. This is a diagnostic
+comparison of the selected profiles and program reference levels, not a claim
+that one decoder is the ground truth.
+
 ## find_duplicate_clips.py
 
 Finds clips in the FLAC listening-test sets (IgorCPBLT2020, Kamedo2PLT2012)

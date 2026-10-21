@@ -11,9 +11,6 @@ reflect your code and the provenance hashing stays meaningful.
 # System (Ubuntu/Debian)
 sudo apt-get update && sudo apt-get install -y meson ninja-build bc cmake ffmpeg
 
-# FAAD2 reference decoder: built from the pinned commit into bin/faad. The distro
-# package lags upstream and lacks the gapless MP4 trimming (pinned FAAD2 commit).
-export FAAD_BIN="$(./scripts/build_faad2.sh)"
 
 # Python
 python3 -m venv .venv
@@ -47,7 +44,7 @@ Common options:
 | :--- | :--- |
 | `--encoder faac\|ffmpeg\|fdkaac\|aac_enc\|falabaac\|afconvert\|opus\|lame\|exhale\|xhe` | Pluggable encoder choice for Phase 1 encoding (default: `faac`) |
 | `--encoder-bin <path>` / `--encoder-lib <path>` | Path overrides for pluggable encoder binary or library |
-| `--decoder auto\|ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Decoder for Phase 2 (MOS) and Phase 3 (Stereo/Transient). `auto` (default) scores with the run's own FAAD3 when `--decoder-bin` is one, else the pinned FAAD2 (`$FAAD_BIN` or `bin/faad` from `scripts/build_faad2.sh`); streams it cannot decode (Opus, MP3, xHE-AAC) fall back to FFmpeg |
+| `--decoder auto\|ffmpeg\|faad\|fdkdec\|helix\|afconvert` | Decoder for Phase 2 (MOS) and Phase 3 (Stereo/Transient). `auto` (default) scores with the supplied FAAD3 when `--decoder-bin` is one, else the merged FAAD3 at `$FAAC_SRC/build/frontend/faad`; streams it cannot decode (Opus, MP3, xHE-AAC) fall back to FFmpeg |
 | `--decoder-bin <path>` / `--decoder-lib <path>` | Path overrides for pluggable decoder binary or library |
 | `--rate-control abr\|vbr\|cbr` | Choose rate control mode (`abr` using `-b` bitrates, `vbr` using `-q` quality targets, or `cbr` using `-b --cbr`: the bit reservoir holds the rate exactly, so `bias_percent` is a hard target there) |
 | `--scenarios 16k_mono_20k,48k_stereo_64k` | Restrict to specific scenarios, or to a whole rate family (`--scenarios 44k1_stereo`); default: all |
@@ -71,7 +68,7 @@ The script runs five phases:
 
 5. **Phase 5** — exact decoder PCM comparison on the Phase 1 streams, when both faad binaries are supplied. See [Decoder output equality](metrics.md#decoder-output-equality).
 
-Alongside Phase 2 (not a phase of its own), the **gapless check** (`gapless.py`) looks at whether each stream carries the `elst` / `iTunSMPB` tags and whether the pinned FAAD2 then reproduces the source exactly. It is skipped with `--skip-gapless`. See [Gapless playback](metrics.md#gapless-playback).
+Alongside Phase 2 (not a phase of its own), the **gapless check** (`gapless.py`) looks at whether each stream carries the `elst` / `iTunSMPB` tags and whether FAAD3 then reproduces the source exactly. It is skipped with `--skip-gapless`. See [Gapless playback](metrics.md#gapless-playback).
 
 ### Filtering tests and scenarios
 
@@ -137,6 +134,17 @@ Options:
 - `--skip-mos`: Skip perceptual quality (MOS) calculation.
 - `--faac-bin`, `--fdkaac-bin`, `--ffmpeg-bin`, `--faad-bin`, `--afconvert-bin`: Manual paths to encoder/decoder binaries.
 - `--output <file.md>`: Path to write the Markdown leaderboard (default: `leaderboard.md`).
+
+To include the optional FAAD2 2.11.4 reference row, build it and pass the
+printed path explicitly through the normal `--faad-bin` option:
+
+```bash
+python3 compare_codecs.py --mode decoder --faad-bin "$(./scripts/build_faad2.sh)"
+```
+
+Benchmark scoring and gapless checks use the merged FAAD3 build by default.
+The pinned FAAD2 is only used when explicitly passed as a reference, including
+the FAAD3-vs-FAAD2 Phase 5 comparison in benchmark CI.
 
 The leaderboard evaluates key dimensions:
 1. **Quality**: Average and 1st Percentile MOS ($P_1$) / 99% Floor MOS across scenarios (higher is better).

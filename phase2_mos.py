@@ -402,7 +402,7 @@ def main():
     parser.add_argument("--encoder-bin", "--faac-bin", dest="encoder_bin", help="Path to encoder binary for provenance verification")
     parser.add_argument("--encoder-lib", "--lib-path", dest="encoder_lib", help="Path to encoder shared library for provenance verification")
     parser.add_argument("--extra-args", help="Extra arguments string for provenance verification")
-    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (own FAAD3 if given, else the pinned FAAD2), ffmpeg, faad, fdkdec, helix, afconvert")
+    parser.add_argument("--decoder", default="auto", help="Decoder type: auto (provided FAAD3 if given, else the merged FAAD3 build), ffmpeg, faad, fdkdec, helix, afconvert")
     parser.add_argument("--decoder-bin", help="Path to decoder binary")
     parser.add_argument("--decoder-lib", help="Path to decoder shared library override")
 

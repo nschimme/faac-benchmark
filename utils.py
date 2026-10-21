@@ -458,7 +458,7 @@ def compute_snr(ref_wav_path, cand_wav_path):
         c_data, c_sr = sf.read(cand_wav_path, dtype='float32', always_2d=True)
 
         if r_sr != c_sr:
-            # A decoder may emit a different rate (e.g. FAAD2 upsamples low-rate
+            # A decoder may emit a different rate (e.g. FAAD3 upsamples low-rate
             # LC on an implicit-SBR guess); compare at the reference rate.
             from math import gcd
             g = gcd(r_sr, c_sr)

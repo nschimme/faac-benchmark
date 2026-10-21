@@ -31,7 +31,7 @@ inputs:
     required: false
     default: 'false'
   gates:
-    description: 'Comma-separated gate names allowed to fail (mos, footprint, throughput, bd_rate)'
+    description: 'Comma-separated gate names allowed to fail (mos, footprint, throughput, bd_rate, haze, decoder, gapless)'
     required: false
     default: ''
   footprint-allow:
@@ -76,21 +76,27 @@ runs:
         # Run report generation, but don't fail immediately so we can post the summary
         python3 ${{ github.action_path }}/../compare_results.py $ARGS || EXIT_CODE=$?
 
-        # Also append to the GitHub Step Summary for visibility
-        if [ -n "${{ inputs.cases-output }}" ]; then
-          echo "<details><summary><b>📊 Benchmark Comparison Report (${{ inputs.report-output }})</b></summary>" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f "${{ inputs.report-output }}" ]; then
-            cat "${{ inputs.report-output }}" >> $GITHUB_STEP_SUMMARY
+        # A summary-only run posts the compact summary; normal runs post the full report.
+        if [ "${{ inputs.summary-only }}" == "true" ]; then
+          if [ -f "${{ inputs.summary-output }}" ]; then
+            cat "${{ inputs.summary-output }}" >> $GITHUB_STEP_SUMMARY
           fi
-          if [ -f "${{ inputs.cases-output }}" ]; then
-            cat "${{ inputs.cases-output }}" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "</details>" >> $GITHUB_STEP_SUMMARY
         else
-          if [ -f "${{ inputs.report-output }}" ]; then
-            cat "${{ inputs.report-output }}" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ inputs.cases-output }}" ]; then
+            echo "<details><summary><b>📊 Benchmark Comparison Report (${{ inputs.report-output }})</b></summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ -f "${{ inputs.report-output }}" ]; then
+              cat "${{ inputs.report-output }}" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ -f "${{ inputs.cases-output }}" ]; then
+              cat "${{ inputs.cases-output }}" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          else
+            if [ -f "${{ inputs.report-output }}" ]; then
+              cat "${{ inputs.report-output }}" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
         fi
 
