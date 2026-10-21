@@ -25,16 +25,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faac fdkaac ffmpeg valgrind meson ninja-build cmake
-
-      - name: Cache FAAD2
-        uses: actions/cache@v6
-        with:
-          path: bin/faad*
-          key: faad2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_faad2.sh') }}
-
-      - name: Build FAAD2
-        run: echo "FAAD_BIN=$(./scripts/build_faad2.sh)" >> "$GITHUB_ENV"
+          sudo apt-get install -y faac fdkaac ffmpeg valgrind meson ninja-build
 
       - name: Install Python dependencies
         run: |
@@ -46,8 +37,8 @@ jobs:
 
       - name: Build FAAC HEAD from Source
         run: |
-          git clone https://github.com/FreewareAdvancedAudio/faac.git ../faac_src
-          cd ../faac_src
+          git clone https://github.com/FreewareAdvancedAudio/faac.git ../faac
+          cd ../faac
           meson setup build --buildtype=release
           ninja -C build
 
@@ -63,8 +54,8 @@ jobs:
       - name: Run Benchmark (Candidate - FAAC HEAD)
         uses: ./
         with:
-          faac-bin: ${{ github.workspace }}/../faac_src/build/frontend/faac
-          libfaac-so: ${{ github.workspace }}/../faac_src/build/libfaac/libfaac.so
+          faac-bin: ${{ github.workspace }}/../faac/build/frontend/faac
+          libfaac-so: ${{ github.workspace }}/../faac/build/libfaac/libfaac.so
           run-name: faac_${{ matrix.rate_control }}_cand
           output-json: results/faac_${{ matrix.rate_control }}_cand.json
           baseline-json: results/faac_${{ matrix.rate_control }}_base.json

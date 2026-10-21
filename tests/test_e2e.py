@@ -91,6 +91,7 @@ class TestE2EMock(unittest.TestCase):
             sys.executable, "run_benchmark.py",
             "test", base_json,
             "--encoder-bin", self.faac_bin, "--encoder-lib", self.lib_path,
+            "--decoder", "ffmpeg",
             "--scenarios", "16k_mono_20k", "--sha", "base_123", "--skip-mos",
         ], check=True)
         with open(base_json) as f:
@@ -109,6 +110,7 @@ class TestE2EMock(unittest.TestCase):
             sys.executable, "run_benchmark.py",
             "test", cand_json,
             "--encoder-bin", self.faac_bin, "--encoder-lib", self.lib_path,
+            "--decoder", "ffmpeg",
             "--scenarios", "16k_mono_20k,24k_mono_32k,44k1_stereo_128k",
             "--include-tests", "sample_0.wav,sample_1.wav",
             "--sha", "cand_456", "--skip-mos",

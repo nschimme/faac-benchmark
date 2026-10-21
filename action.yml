@@ -85,7 +85,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg valgrind cmake
+        sudo apt-get install -y ffmpeg valgrind
 
     # hashFiles() only resolves paths under GITHUB_WORKSPACE, and action_path
     # is outside it, so the expression form of this key evaluated to the empty
