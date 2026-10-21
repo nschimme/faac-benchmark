@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build the optional FAAD2 2.11.4 reference decoder for compare_codecs.py.
+# Build the optional FAAD2 2.11.4 reference decoder.
 #
 # The binary is versioned so it cannot be mistaken for the default FAAD3 `faad`.
-# Pass its printed path to compare_codecs.py with --faad-bin when a FAAD2
-# reference row is wanted. It is not used by the main benchmark automatically.
+# Use its printed path explicitly with compare_codecs.py --faad-bin, or as the
+# Phase 5 --decoder-ref-bin when comparing FAAD2 against the in-tree FAAD3.
 #
 # Prints the path of the built binary. Idempotent: reuses bin/faad2-2.11.4
 # when it was built from this version.

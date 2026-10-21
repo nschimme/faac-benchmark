@@ -327,6 +327,11 @@ build directory). When `faad-bin` is a FAAD3, auto uses that build's own
 decoder. Pass `faad-bin` to both baseline and candidate runs when comparing
 builds so both runs use the corresponding FAAD3.
 
+The FAAC benchmark CI builds the pinned FAAD2 2.11.4 and passes it explicitly
+as `faad-ref-bin`, with the in-tree FAAD3 passed as `faad-bin`. This enables
+Phase 5 output comparisons without changing the default scoring decoder. Other
+workflows do not build or select the pinned FAAD2 automatically.
+
 The candidate's `decoder_diff` block compares both binaries on the same Phase 1
 matrix streams, sorted by path and capped at 200. Missing binaries or a missing
 candidate block skip the `decoder` gate with a reason. A candidate decode failure

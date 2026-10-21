@@ -142,8 +142,9 @@ printed path explicitly through the normal `--faad-bin` option:
 python3 compare_codecs.py --mode decoder --faad-bin "$(./scripts/build_faad2.sh)"
 ```
 
-The benchmark scoring and gapless phases use the merged FAAD3 build; they do
-not use this FAAD2 reference.
+Benchmark scoring and gapless checks use the merged FAAD3 build by default.
+The pinned FAAD2 is only used when explicitly passed as a reference, including
+the FAAD3-vs-FAAD2 Phase 5 comparison in benchmark CI.
 
 The leaderboard evaluates key dimensions:
 1. **Quality**: Average and 1st Percentile MOS ($P_1$) / 99% Floor MOS across scenarios (higher is better).

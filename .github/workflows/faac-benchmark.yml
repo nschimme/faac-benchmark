@@ -25,7 +25,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faac fdkaac ffmpeg valgrind meson ninja-build
+          sudo apt-get install -y faac fdkaac ffmpeg valgrind meson ninja-build cmake
+
+      - name: Cache FAAD2 reference
+        uses: actions/cache@v6
+        with:
+          path: bin/faad2-2.11.4*
+          key: faad2-2.11.4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build_faad2.sh') }}
+
+      - name: Build FAAD2 reference
+        run: ./scripts/build_faad2.sh
 
       - name: Install Python dependencies
         run: |
@@ -46,6 +55,8 @@ jobs:
         uses: ./
         with:
           faac-bin: /usr/bin/faac
+          faad-bin: ${{ github.workspace }}/../faac/build/frontend/faad
+          faad-ref-bin: ${{ github.workspace }}/bin/faad2-2.11.4
           run-name: faac_${{ matrix.rate_control }}_base
           output-json: results/faac_${{ matrix.rate_control }}_base.json
           rate-control: ${{ matrix.rate_control }}
@@ -55,6 +66,8 @@ jobs:
         uses: ./
         with:
           faac-bin: ${{ github.workspace }}/../faac/build/frontend/faac
+          faad-bin: ${{ github.workspace }}/../faac/build/frontend/faad
+          faad-ref-bin: ${{ github.workspace }}/bin/faad2-2.11.4
           libfaac-so: ${{ github.workspace }}/../faac/build/libfaac/libfaac.so
           run-name: faac_${{ matrix.rate_control }}_cand
           output-json: results/faac_${{ matrix.rate_control }}_cand.json
