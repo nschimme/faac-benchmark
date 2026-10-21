@@ -142,6 +142,7 @@ Summary, and writes `summary.md` for a PR comment.
 | `report-output` | Output filename for the full Markdown report. | No | `report.md` |
 | `summary-output` | Output filename for the Markdown summary. | No | `summary.md` |
 | `cases-output` | Output filename for per-clip test cases details (optional). | No | |
+| `github-summary` | Append the generated report to the GitHub Step Summary. | No | `true` |
 | `strict-decode` | Treat candidate decode validation failures as hard regressions. | No | `false` |
 | `gates` | Comma-separated gate names allowed to fail (`mos`, `footprint`, `throughput`, `bd_rate`, `haze`, `decoder`, `gapless`). | No | |
 | `footprint-allow` | Accept up to BYTES of code footprint growth without failing. | No | `0` |
@@ -337,8 +338,15 @@ matrix streams, sorted by path and capped at 200. Missing binaries or a missing
 candidate block skip the `decoder` gate with a reason. A candidate decode failure
 where the baseline succeeds, a frame-count difference, or any PCM difference
 fails. Baseline decode failures are recorded in cases, not counted as candidate
-regressions. The PR summary contains one decoder-output line; changed and failed
-stream details appear only in the cases document.
+regressions. The decoder-output section reports exact matches, differences, and
+decode failures; per-stream details appear only in the cases document. Differences
+do not indicate which decoder has better quality.
+
+The FAAC benchmark workflow keeps this cross-version FAAD2-vs-FAAD3 comparison
+informational by excluding the `decoder` gate. The per-rate summaries show exact
+PCM match counts and explain that differences are not a quality verdict. The
+consolidated GitHub summary rolls up the ABR and VBR summaries, leaving decoder
+and transient details in their per-rate reports.
 
 `--gates` lists gates permitted to fail the job, exactly as for `haze` and
 `footprint`. Include `decoder` to enforce it. To acknowledge an intentional decoder

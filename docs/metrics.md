@@ -169,7 +169,8 @@ stored under `gapless` in the results JSON.
 Phase 5 (`phase5_decoder_diff.py`) decodes each selected `.m4a` stream once with
 baseline faad and once with candidate faad into fresh temporary WAV paths. It
 compares signed 16-bit PCM samples exactly, excluding WAV headers. It performs no
-alignment, truncation, tolerance, MOS scoring, or reference-decoder comparison.
+alignment, truncation, tolerance, MOS scoring, or comparison against reference
+audio.
 Frame counts are samples per channel; `first_diff_sample` is a zero-based
 interleaved sample index (the common-prefix length for a pure length change).
 `max_abs_diff` is in PCM integer units, and `snr_db_vs_base` uses the baseline
@@ -178,4 +179,6 @@ Channel-count or sample-rate changes also count as changed output.
 
 The JSON `decoder_diff` block counts `streams` and `unchanged`, retaining details
 only in `changed` and `failed`; missing binaries produce `{"skipped": "reason"}`.
-The `decoder` gate answers exact equality, with no thresholds.
+This is an exact-equality check, not a quality score: a difference says neither
+decoder is better or worse. The `decoder` gate answers exact equality, with no
+thresholds, and should only be enabled when equality is the intended criterion.

@@ -1662,7 +1662,9 @@ def main():
         combined = {"streams": sum(b["streams"] for b in measured),
                     "unchanged": sum(b["unchanged"] for b in measured),
                     "changed": [x for b in measured for x in b["changed"]],
-                    "failed": [x for b in measured for x in b["failed"]]}
+                    "failed": [x for b in measured for x in b["failed"]],
+                    "reference_decoder": measured[0].get("reference_decoder"),
+                    "candidate_decoder": measured[0].get("candidate_decoder")}
         summary_lines.append("\n" + decoder_summary(combined))
     else:
         summary_lines.append("\n" + decoder_summary(next((b for b in decoder_blocks if b), None)))

@@ -42,7 +42,9 @@ def compare_streams(base_bin, cand_bin, streams):
             return {'skipped': f'{side} faad binary missing: {binary or "not supplied"}'}
     if not streams:
         return {'skipped': 'no Phase 1 .m4a streams available'}
-    block = {'streams': 0, 'unchanged': 0, 'changed': [], 'failed': []}
+    block = {'reference_decoder': Path(str(base_bin)).name,
+             'candidate_decoder': Path(str(cand_bin)).name,
+             'streams': 0, 'unchanged': 0, 'changed': [], 'failed': []}
     # Sort and cap deterministically; never select stale files outside the matrix.
     streams = sorted(streams, key=lambda s: str(s['path']))[:200]
     with tempfile.TemporaryDirectory(prefix='decoder-diff-') as tmp:
@@ -110,15 +112,37 @@ def store_block(path, block):
 
 
 def summary(block):
+    lines = [
+        "### Decoder Output Comparison",
+        "",
+        "_This checks exact PCM equality. Different output means neither better nor worse quality; it only means the decoders produced different samples. See per-stream cases for details._",
+        "",
+    ]
     if block is not None and 'error' in block:
-        return f"decoder output: DID NOT RUN ({block['error']})"
+        lines.extend(["**Status:** Did not run — " + str(block['error'])])
+        return "\n".join(lines)
     if not block or 'skipped' in block:
-        return 'decoder output: skipped (' + (block or {}).get('skipped', 'no decoder_diff block') + ')'
+        reason = (block or {}).get('skipped', 'no decoder_diff block')
+        lines.extend(["**Status:** Skipped — " + str(reason)])
+        return "\n".join(lines)
+
+    reference = block.get('reference_decoder')
+    candidate = block.get('candidate_decoder')
+    if reference or candidate:
+        lines.extend([f"**Compared:** `{reference or 'reference'}` vs `{candidate or 'candidate'}`", ""])
+
+    streams = block['streams']
+    unchanged = block['unchanged']
     changed = len(block['changed'])
     failed = len({x['file'] for x in block['failed']})
-    if changed or failed:
-        return f"decoder output: CHANGED on {changed} of {block['streams']} streams" + (f', failed on {failed}' if failed else '') + ' (see cases)'
-    return f"decoder output: unchanged on {block['unchanged']} streams"
+    lines.extend([
+        "| Result | Streams |",
+        "| :--- | ---: |",
+        f"| Bit-identical PCM | {unchanged}/{streams} |",
+        f"| Different PCM or format | {changed}/{streams} |",
+        f"| Decode failed on either side | {failed} |",
+    ])
+    return "\n".join(lines)
 
 
 def main():

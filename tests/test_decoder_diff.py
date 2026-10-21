@@ -52,7 +52,9 @@ with wave.open(out, 'wb') as w:
 
     def test_identical_pass(self):
         block = decoder.compare_streams(self.base, self.base, self.streams)
-        self.assertEqual(block, {'streams': 1, 'unchanged': 1, 'changed': [], 'failed': []})
+        self.assertEqual(block, {'reference_decoder': Path(self.base).name,
+                                 'candidate_decoder': Path(self.base).name,
+                                 'streams': 1, 'unchanged': 1, 'changed': [], 'failed': []})
         suite, gate = self.gate(block)
         self.assertEqual(gate['status'], 'pass')
         self.assertFalse(suite['has_regression'])
@@ -104,10 +106,12 @@ with wave.open(out, 'wb') as w:
         self.assertEqual(gate['status'], 'fail')
         self.assertTrue(suite['has_regression'])
         self.assertEqual(gate['detail'], 'decoder diff did not run: ' + error)
-        expected = 'decoder output: DID NOT RUN (' + error + ')'
-        self.assertEqual(decoder.summary({'error': error}), expected)
+        expected = '**Status:** Did not run — ' + error
+        self.assertIn(expected, decoder.summary({'error': error}))
         from render_job_summary import render_job_summary
-        self.assertIn(expected, render_job_summary({'decoder_diff': {'error': error}}))
+        rendered = render_job_summary({'decoder_diff': {'error': error}})
+        self.assertIn('### Decoder Output Comparison', rendered)
+        self.assertIn(expected, rendered)
 
     def test_missing_candidate_with_baseline_fails(self):
         for baseline in ({'streams': 1, 'unchanged': 1, 'changed': [], 'failed': []},
@@ -194,18 +198,21 @@ with wave.open(out, 'wb') as w:
                                '--summary-output', str(summary), '--output', str(report),
                                '--cases-output', str(cases)], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertEqual(summary.read_text().count('decoder output:'), 1)
+        self.assertEqual(summary.read_text().count('### Decoder Output Comparison'), 1)
         self.assertNotIn('first_diff_sample', report.read_text())
         self.assertIn('tiny.m4a', cases.read_text())
         self.assertIn('first_diff_sample', cases.read_text())
         decoder.store_block(result, {'error': 'exit code 7: decoder crashed'})
         proc = subprocess.run(proc.args, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 1, proc.stderr)
-        self.assertIn('decoder output: DID NOT RUN (exit code 7: decoder crashed)', summary.read_text())
+        self.assertIn('**Status:** Did not run — exit code 7: decoder crashed', summary.read_text())
 
-    def test_summary_one_line_no_details(self):
+    def test_summary_explains_exact_output_without_quality_claim(self):
         block = decoder.compare_streams(self.base, self.binary('cand', [11, 20, 30]), self.streams)
-        self.assertEqual(decoder.summary(block), 'decoder output: CHANGED on 1 of 1 streams (see cases)')
+        rendered = decoder.summary(block)
+        self.assertIn('Different PCM or format | 1/1', rendered)
+        self.assertIn('neither better nor worse quality', rendered)
+        self.assertIn('Compared:', rendered)
 
 
 if __name__ == '__main__':
