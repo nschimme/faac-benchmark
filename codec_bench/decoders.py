@@ -227,7 +227,7 @@ def probe_decoder_capability(decoder):
                     bitstream_input = demux_aac
 
             cmd_dec = decoder.get_decode_cmd(bitstream_input, dummy_out)
-            res_dec, _duration, _ram = measure_peak_ram(cmd_dec, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
+            res_dec = safe_run(cmd_dec, env=decoder.get_run_env() or None, capture_output=True, check=False)
 
             return res_dec.returncode == 0 and os.path.exists(dummy_out) and os.path.getsize(dummy_out) > 0
         except Exception:
