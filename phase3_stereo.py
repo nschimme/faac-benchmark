@@ -222,6 +222,17 @@ def coherence_error(ref_path, deg_path):
     return float(np.mean(pair_errs)) if pair_errs else None
 
 
+def reference_key(entry, external_data_dir):
+    """Identity of a row's reference WAV: (filename, channels, corpus directory).
+
+    Every clip exists under the same name in several corpora (48k, 44.1k, 32k),
+    each with different content, so the file name alone does not identify a
+    reference; a map keyed without the directory lets whichever corpus
+    finishes decoding last supply the reference for all of them."""
+    cfg = SCENARIOS.get(entry.get("scenario"), {})
+    return (entry.get("filename"), scenario_channels(cfg), corpus_dir(cfg, external_data_dir))
+
+
 def compute_single(key, aac_path, ref_wav_path, external_data_dir, ref_path=None,
                     ref_cache_dir=None, want_ic=True, want_transient=True, channels=2, decoder=None,
                     want_pre_echo=True):
@@ -337,9 +348,7 @@ def main():
 
     # Identify unique (filename, channels, corpus_dir) tuples for reference caching
     unique_ref_tuples = sorted(list(set(
-        (v.get("filename"),
-         scenario_channels(SCENARIOS.get(v.get("scenario"), {})),
-         corpus_dir(SCENARIOS.get(v.get("scenario"), {}), args.external_data_dir))
+        reference_key(v, args.external_data_dir)
         for v in pending.values()
         if v.get("filename")
     )))
@@ -371,7 +380,7 @@ def main():
                 for filename, chans, c_dir in unique_ref_tuples:
                     ref_path = os.path.join(c_dir, filename)
                     if os.path.exists(ref_path):
-                        ref_futs[pool.submit(get_cached_ref_wav, ref_cache_dir, ref_path, 48000, chans)] = (filename, chans)
+                        ref_futs[pool.submit(get_cached_ref_wav, ref_cache_dir, ref_path, 48000, chans)] = (filename, chans, c_dir)
                 for fut in concurrent.futures.as_completed(ref_futs):
                     key_tuple = ref_futs[fut]
                     wav_path = fut.result()
@@ -382,7 +391,7 @@ def main():
             futures = {
                 executor.submit(
                     compute_single, k, aac_path,
-                    ref_wav_map.get((entry.get("filename"), scenario_channels(SCENARIOS.get(entry.get("scenario"), {})))),
+                    ref_wav_map.get(reference_key(entry, args.external_data_dir)),
                     args.external_data_dir,
                     os.path.join(corpus_dir(SCENARIOS.get(entry.get("scenario"), {}), args.external_data_dir), entry.get("filename", "")),
                     ref_cache_dir,
