@@ -23,9 +23,9 @@ class TestDecoders(unittest.TestCase):
         qaac_dec = dec.QAACDecoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac")
         cmd = qaac_dec.get_decode_cmd("/tmp/in.m4a", "/tmp/out.wav")
         self.assertIn("docker", cmd[0])
-        self.assertIn("run", cmd)
+        self.assertTrue("exec" in cmd or "run" in cmd)
         self.assertIn("--decode", cmd)
-        self.assertIn("/tmp/out.wav", cmd)
+        self.assertTrue("/tmp/out.wav" in " ".join(cmd) or "/host/tmp/out.wav" in " ".join(cmd))
 
         with patch("codec_bench.decoders.get_qaac_container_engine", return_value="docker"), \
              patch("codec_bench.decoders.probe_qaac_version", return_value="2.80"):

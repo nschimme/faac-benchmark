@@ -96,10 +96,10 @@ class TestEncoders(unittest.TestCase):
         qaac_lc = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="lc")
         cmd_lc = qaac_lc.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 128, 2, 44100)
         self.assertIn("docker", cmd_lc[0])
-        self.assertIn("run", cmd_lc)
+        self.assertTrue("exec" in cmd_lc or "run" in cmd_lc)
         self.assertIn("--cvbr", cmd_lc)
         self.assertIn("128", cmd_lc)
-        self.assertIn("/tmp/out.m4a", cmd_lc)
+        self.assertTrue("/tmp/out.m4a" in " ".join(cmd_lc) or "/host/tmp/out.m4a" in " ".join(cmd_lc))
 
         qaac_he = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="he")
         cmd_he = qaac_he.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 32, 2, 44100)

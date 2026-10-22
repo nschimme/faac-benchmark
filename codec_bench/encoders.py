@@ -558,7 +558,9 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
     if isinstance(encoder, QAACEncoder):
         if not encoder.container_engine:
             return False
-    elif encoder.binary_path and not os.path.exists(encoder.binary_path):
+    elif not encoder.binary_path:
+        return False
+    elif not os.path.exists(encoder.binary_path):
         return True
 
     if bitrate_kbps is None:
