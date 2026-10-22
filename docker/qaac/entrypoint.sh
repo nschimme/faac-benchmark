@@ -22,4 +22,6 @@ if [ -n "$duration" ]; then
     echo "__QAAC_TIME__:$duration" >&2
 fi
 
+wineserver -k 2>/dev/null || true
+
 exit $ret
