@@ -141,6 +141,7 @@ class QAACDecoder(Decoder):
         super().__init__(name, None, tool_id, lib_name_substr=None)
         self.container_engine = container_engine
         self.image_tag = image_tag
+        self.timeout = 300
 
     def get_decode_cmd(self, input_path, output_path):
         input_abs = os.path.abspath(input_path)
@@ -226,7 +227,7 @@ def probe_decoder_capability(decoder):
                     bitstream_input = demux_aac
 
             cmd_dec = decoder.get_decode_cmd(bitstream_input, dummy_out)
-            res_dec, _duration, _ram = measure_peak_ram(cmd_dec, env=decoder.get_run_env() or None)
+            res_dec, _duration, _ram = measure_peak_ram(cmd_dec, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
 
             return res_dec.returncode == 0 and os.path.exists(dummy_out) and os.path.getsize(dummy_out) > 0
         except Exception:
@@ -838,7 +839,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
     cmd = decoder.get_decode_cmd(bitstream_input, output_path)
 
     try:
-        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
 
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
@@ -1137,7 +1138,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     passed = False
 
     try:
-        res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+        res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
         stderr_low = (res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")).lower()
         is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
         is_crash = (res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139)) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)

@@ -263,6 +263,7 @@ class QAACEncoder(Encoder):
         self.container_engine = container_engine
         self.image_tag = image_tag
         self.file_ext = ".m4a"
+        self.timeout = 300
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and channels > 2:
@@ -562,7 +563,7 @@ def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate
                 w.setframerate(sample_rate)
                 w.writeframes(b"\x00\x00" * sample_rate * channels)
             cmd = encoder.get_encode_cmd(dummy_wav, out_file, bitrate_kbps, channels, sample_rate)
-            res = safe_run(cmd, env=encoder.get_run_env() or None, capture_output=True, check=False)
+            res, _duration, _ram = measure_peak_ram(cmd, env=encoder.get_run_env() or None, timeout=getattr(encoder, "timeout", 120))
             if res.returncode != 0:
                 return False
             mux_cmd = encoder.get_mux_cmd(out_file)

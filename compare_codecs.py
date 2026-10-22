@@ -294,7 +294,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
     cmd = encoder.get_encode_cmd(input_path, output_path, bitrate_kbps, channels, sample_rate)
 
     try:
-        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None, timeout=getattr(encoder, "timeout", 120))
 
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")

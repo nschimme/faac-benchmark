@@ -193,7 +193,7 @@ def probe_qaac_version(container_engine, image_tag="qaac64:latest"):
     if not container_engine:
         return None
     try:
-        res = safe_run([container_engine, "run", "--rm", image_tag, "--check"], capture_output=True, check=False)
+        res = subprocess.run([container_engine, "run", "--rm", image_tag, "--check"], capture_output=True, text=True, timeout=30)
         out = (res.stdout or "") + "\n" + (res.stderr or "")
         m = re.search(r"qaac\s+v?(\d+\.\d+(?:\.\d+)*)", out, re.IGNORECASE)
         if m:
@@ -308,7 +308,7 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
     except Exception:
         return None, None
 
-def measure_peak_ram(cmd, env=None, check=False, timeout=30):
+def measure_peak_ram(cmd, env=None, check=False, timeout=120):
     """Runs a command in an isolated child process to accurately measure peak Resident Set Size (Max RSS in KB).
 
     Returns (CompletedProcess, duration, max_rss_kb).

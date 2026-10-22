@@ -211,7 +211,7 @@ class TestEncoders(unittest.TestCase):
     def test_detect_encoders_optin_variations(self):
         import argparse
         # By default, variations like PNS-off and ADTS should be omitted.
-        args_default = argparse.Namespace(mode="both", faac_bin=["/usr/bin/true"], faac_lib=None,
+        args_default = argparse.Namespace(mode="both", faac_bin=["/fake/bin/faac"], faac_lib=None,
                                           faac_bin_version="1.0.8", fdkaac_bin=None, aac_enc_bin=None,
                                           falabaac_bin=None, ffmpeg_bin=None, afconvert_bin=None)
         encs = enc.detect_encoders(args_default)
@@ -219,7 +219,7 @@ class TestEncoders(unittest.TestCase):
         self.assertTrue(all(not getattr(e, "adts", False) for e in encs))
 
         # When opt-in flags are provided, variations should be included.
-        args_variations = argparse.Namespace(mode="both", faac_bin=["/usr/bin/true"], faac_lib=None,
+        args_variations = argparse.Namespace(mode="both", faac_bin=["/fake/bin/faac"], faac_lib=None,
                                              faac_bin_version="1.0.8", fdkaac_bin=None, aac_enc_bin=None,
                                              falabaac_bin=None, ffmpeg_bin=None, afconvert_bin=None,
                                              include_encoder_variations=True)
