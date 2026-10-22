@@ -4,6 +4,10 @@
 # Measures execution time inside the container to exclude Docker/Podman startup overhead.
 #
 
+if [ "$1" = "tail" ] || [ "$1" = "sh" ] || [ "$1" = "sleep" ]; then
+    exec "$@"
+fi
+
 start_time=$(date +%s.%N 2>/dev/null)
 if [ -z "$start_time" ] || [ "$start_time" = "%s.%N" ]; then
     start_time=$(date +%s)

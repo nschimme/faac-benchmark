@@ -130,6 +130,19 @@ class TestEncoders(unittest.TestCase):
             res, duration, rss = utils.measure_peak_ram(["echo", "test"])
             self.assertAlmostEqual(duration, 0.123456)
 
+    def test_qaac_container_manager(self):
+        import utils
+        mgr = utils.QAACContainerManager.get_instance()
+        with patch.object(mgr, "engine", "docker"), \
+             patch("utils.safe_run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "container_id_123\n"
+            c_name = mgr.ensure_container("qaac64:latest")
+            self.assertIsNotNone(c_name)
+            self.assertIn("qaac64_bench_", c_name)
+            mgr.stop_container()
+            self.assertIsNone(mgr.container_name)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")

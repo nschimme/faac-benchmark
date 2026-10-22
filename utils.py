@@ -19,6 +19,7 @@ import tempfile
 import time
 import math
 import threading
+import atexit
 import concurrent.futures
 from functools import lru_cache
 
@@ -201,6 +202,55 @@ def probe_qaac_version(container_engine, image_tag="qaac64:latest"):
     except Exception:
         pass
     return None
+
+class QAACContainerManager:
+    """Manages a single background QAAC container daemon to eliminate container startup overhead."""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self.engine = None
+        self.image_tag = "qaac64:latest"
+        self.container_name = None
+        self.started = False
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    def ensure_container(self, image_tag=None):
+        self.engine = get_qaac_container_engine()
+        if not self.engine:
+            return None
+
+        tag = image_tag or self.image_tag
+
+        if self.started and self.container_name:
+            res = safe_run([self.engine, "ps", "-q", "-f", f"name={self.container_name}"], capture_output=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                return self.container_name
+
+        c_name = f"qaac64_bench_{os.getpid()}"
+
+        cmd = [self.engine, "run", "-d", "--name", c_name, "--rm", "-v", "/:/host", tag, "tail", "-f", "/dev/null"]
+        res = safe_run(cmd, capture_output=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            self.container_name = c_name
+            self.image_tag = tag
+            self.started = True
+            atexit.register(self.stop_container)
+            return self.container_name
+        return None
+
+    def stop_container(self):
+        if self.container_name and self.engine:
+            safe_run([self.engine, "rm", "-f", self.container_name], capture_output=True, check=False)
+            self.container_name = None
+            self.started = False
 
 def make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids):
     """Generates unique display name and sanitized tool ID."""

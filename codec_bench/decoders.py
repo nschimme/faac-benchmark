@@ -30,7 +30,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
                    get_cached_ref_wav, scenario_channels, scenario_rate, wav_conv, corpus_dir,
-                   get_qaac_container_engine, probe_qaac_version)
+                   get_qaac_container_engine, probe_qaac_version, QAACContainerManager)
 
 # Robustness runaway threshold: a corrupted-bitstream decode whose output PCM
 # exceeds this multiple of the intact decode's size did not fail cleanly --
@@ -146,6 +146,13 @@ class QAACDecoder(Decoder):
     def get_decode_cmd(self, input_path, output_path):
         input_abs = os.path.abspath(input_path)
         output_abs = os.path.abspath(output_path)
+
+        c_name = QAACContainerManager.get_instance().ensure_container(self.image_tag)
+        if c_name and self.container_engine:
+            cmd = [self.container_engine, "exec", c_name, "/qaac/entrypoint.sh", "--decode",
+                   "-o", f"/host{output_abs}", f"/host{input_abs}"]
+            return cmd
+
         in_dir = os.path.dirname(input_abs)
         out_dir = os.path.dirname(output_abs)
 

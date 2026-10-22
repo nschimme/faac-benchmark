@@ -21,7 +21,7 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    safe_run, find_linked_lib, is_faac_legacy, resolve_wrapper_target,
                    guess_lib_version_from_path, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, hosted_codec_ver,
-                   get_qaac_container_engine, probe_qaac_version)
+                   get_qaac_container_engine, probe_qaac_version, QAACContainerManager)
 
 PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard", "xhe": "xHE-AAC", "usac": "xHE-AAC"}
 
@@ -285,6 +285,24 @@ class QAACEncoder(Encoder):
                        rate_control="abr", vbr_q=None):
         input_abs = os.path.abspath(input_path)
         output_abs = os.path.abspath(output_path)
+
+        c_name = QAACContainerManager.get_instance().ensure_container(self.image_tag)
+        if c_name and self.container_engine:
+            cmd = [self.container_engine, "exec", c_name, "/qaac/entrypoint.sh"]
+            if self.profile in ("he", "hev2"):
+                cmd.append("--he")
+
+            if rate_control == "vbr":
+                q_val = vbr_q if vbr_q is not None else 64
+                cmd.extend(["-v", str(q_val)])
+            elif rate_control == "cbr":
+                cmd.extend(["--cbr", str(bitrate_kbps)])
+            else:
+                cmd.extend(["--cvbr", str(bitrate_kbps)])
+
+            cmd.extend(["-o", f"/host{output_abs}", f"/host{input_abs}"])
+            return cmd
+
         in_dir = os.path.dirname(input_abs)
         out_dir = os.path.dirname(output_abs)
 
