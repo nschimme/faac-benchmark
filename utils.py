@@ -181,6 +181,27 @@ def probe_version(bin_path, flag_list, patterns, env=None):
             pass
     return None
 
+def get_qaac_container_engine():
+    """Detects available container engine (docker or podman)."""
+    for engine in ("docker", "podman"):
+        if shutil.which(engine):
+            return engine
+    return None
+
+def probe_qaac_version(container_engine, image_tag="qaac64:latest"):
+    """Probes qaac version inside the container."""
+    if not container_engine:
+        return None
+    try:
+        res = safe_run([container_engine, "run", "--rm", image_tag, "--check"], capture_output=True, check=False)
+        out = (res.stdout or "") + "\n" + (res.stderr or "")
+        m = re.search(r"qaac\s+v?(\d+\.\d+(?:\.\d+)*)", out, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return None
+
 def make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids):
     """Generates unique display name and sanitized tool ID."""
     display_name = f"{base_name} {version}" if version else base_name

@@ -92,6 +92,33 @@ class TestEncoders(unittest.TestCase):
             self.assertIn("xHE-AAC (exhale)", content)
             self.assertIn("4.120", content)
 
+    def test_qaac_encoder_commands_and_support(self):
+        qaac_lc = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="lc")
+        cmd_lc = qaac_lc.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 128, 2, 44100)
+        self.assertIn("docker", cmd_lc[0])
+        self.assertIn("run", cmd_lc)
+        self.assertIn("--cvbr", cmd_lc)
+        self.assertIn("128", cmd_lc)
+        self.assertIn("/tmp/out.m4a", cmd_lc)
+
+        qaac_he = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="he")
+        cmd_he = qaac_he.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 32, 2, 44100)
+        self.assertIn("--he", cmd_he)
+
+        ok_he, _ = qaac_he.supports_scenario(32, 2, 44100)
+        self.assertTrue(ok_he)
+        fail_he, reason = qaac_he.supports_scenario(160, 6, 44100)
+        self.assertFalse(fail_he)
+        self.assertIn("max 2 channels", reason)
+
+    def test_get_encoder_instance_qaac(self):
+        with patch("codec_bench.encoders.get_qaac_container_engine", return_value="docker"), \
+             patch("codec_bench.encoders.probe_qaac_version", return_value="2.80"):
+            e = enc.get_encoder_instance("qaac")
+            self.assertIsInstance(e, enc.QAACEncoder)
+            self.assertEqual(e.name, "Apple AAC (qaac 2.80)")
+            self.assertEqual(e.container_engine, "docker")
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")

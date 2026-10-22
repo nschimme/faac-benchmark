@@ -5,6 +5,7 @@
 import os
 import unittest
 import tempfile
+from unittest.mock import patch
 import codec_bench.decoders as dec
 import utils
 
@@ -17,6 +18,20 @@ class TestDecoders(unittest.TestCase):
         faad2 = dec.FAADDecoder("FAAD2 2.11", "/usr/bin/faad", tool_id="faad2", is_faad3=False)
         cmd2 = faad2.get_decode_cmd("in.aac", "out.wav")
         self.assertNotIn("--strict", cmd2)
+
+    def test_qaac_decoder_commands_and_instance(self):
+        qaac_dec = dec.QAACDecoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac")
+        cmd = qaac_dec.get_decode_cmd("/tmp/in.m4a", "/tmp/out.wav")
+        self.assertIn("docker", cmd[0])
+        self.assertIn("run", cmd)
+        self.assertIn("--decode", cmd)
+        self.assertIn("/tmp/out.wav", cmd)
+
+        with patch("codec_bench.decoders.get_qaac_container_engine", return_value="docker"), \
+             patch("codec_bench.decoders.probe_qaac_version", return_value="2.80"):
+            d = dec.get_decoder_instance("qaac")
+            self.assertIsInstance(d, dec.QAACDecoder)
+            self.assertEqual(d.name, "Apple AAC (qaac 2.80)")
 
     def test_multi_version_faad_detection(self):
         class DummyArgs:
