@@ -119,6 +119,17 @@ class TestEncoders(unittest.TestCase):
             self.assertEqual(e.name, "Apple AAC (qaac 2.80)")
             self.assertEqual(e.container_engine, "docker")
 
+    def test_qaac_internal_timing_parsing(self):
+        import utils
+        import subprocess
+        from unittest.mock import MagicMock
+        mock_proc = MagicMock()
+        mock_proc.stdout = b"ok"
+        mock_proc.stderr = b"some output\n__QAAC_TIME__:0.123456\n__RSS__:1000\n__DUR__:0.500\n__RET__:0\n"
+        with patch("subprocess.run", return_value=mock_proc):
+            res, duration, rss = utils.measure_peak_ram(["echo", "test"])
+            self.assertAlmostEqual(duration, 0.123456)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")

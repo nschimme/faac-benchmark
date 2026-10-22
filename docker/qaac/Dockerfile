@@ -21,4 +21,7 @@ RUN cd /tmp && \
   mv *.dll /qaac/ && \
   rm -rf /tmp/*
 
-ENTRYPOINT ["wine64", "/qaac/qaac64.exe"]
+COPY entrypoint.sh /qaac/entrypoint.sh
+RUN chmod +x /qaac/entrypoint.sh
+
+ENTRYPOINT ["/qaac/entrypoint.sh"]

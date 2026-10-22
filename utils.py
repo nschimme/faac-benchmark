@@ -348,6 +348,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
 
             rss = None
             proc_dur = None
+            qaac_dur = None
             proc_ret = 0
             stderr_clean = []
             for line in proc.stderr.splitlines():
@@ -366,10 +367,18 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                         proc_ret = int(line.split(b":", 1)[1].strip())
                     except Exception:
                         pass
+                elif b"__QAAC_TIME__:" in line:
+                    try:
+                        val_str = line.split(b"__QAAC_TIME__:", 1)[1].strip()
+                        qaac_dur = float(val_str)
+                    except Exception:
+                        pass
                 else:
                     stderr_clean.append(line)
 
-            if proc_dur is not None:
+            if qaac_dur is not None and qaac_dur > 0:
+                duration = qaac_dur
+            elif proc_dur is not None:
                 duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
@@ -380,7 +389,18 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
         else:
             res = subprocess.run(cmd, capture_output=True, check=check, env=env)
             t_end = time.perf_counter()
-            return res, t_end - t_start, None
+            dur = t_end - t_start
+            if res.stderr:
+                for line in res.stderr.splitlines():
+                    if b"__QAAC_TIME__:" in line:
+                        try:
+                            val_str = line.split(b"__QAAC_TIME__:", 1)[1].strip()
+                            q_dur = float(val_str)
+                            if q_dur > 0:
+                                dur = q_dur
+                        except Exception:
+                            pass
+            return res, dur, None
     except Exception as e:
         t_end = time.perf_counter()
         if check and isinstance(e, subprocess.CalledProcessError):
