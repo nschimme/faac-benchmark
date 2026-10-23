@@ -278,7 +278,8 @@ class TestScenarioMatrix(unittest.TestCase):
         self.assertIn("44k1_51", self.FAMILY_ORDER)
 
         scen_51 = [name for name, cfg in self.SCENARIOS.items() if cfg["corpus"] == "audio_51"]
-        self.assertEqual(len(scen_51), 6)
+        # One HE rung and one LC rung: enough to see the multichannel paths move.
+        self.assertEqual(len(scen_51), 2)
         self.assertIn("44k1_51_96k", self.SCENARIOS)
         self.assertIn("44k1_51_448k", self.SCENARIOS)
 
