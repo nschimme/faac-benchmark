@@ -182,11 +182,13 @@ def main():
         # Phase 2 rewrites the result JSON; the block is merged in below.
         gapless_job = None
         if not args.skip_gapless and args.encoder == "faac" and not args.skip_encode and os.path.exists(run["output"]):
+            from gapless import faad_bin_args
             snapshot, side = run["output"] + ".gapless-in", run["output"] + ".gapless-out"
             shutil.copyfile(run["output"], snapshot)
             gapless_job = (subprocess.Popen(
                 [sys.executable, os.path.join(script_dir, "gapless.py"), run["output"],
-                 os.path.join(script_dir, "output"), external_data_dir, "--snapshot", snapshot, "--out", side],
+                 os.path.join(script_dir, "output"), external_data_dir, "--snapshot", snapshot, "--out", side,
+                 *faad_bin_args(scoring_decoder, scoring_decoder_bin)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True), snapshot, side)
 
         # Phase 2: MOS
