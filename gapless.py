@@ -148,6 +148,17 @@ def measure_matrix(data, aac_dir, external_data_dir, results_path, faad):
     return block
 
 
+def faad_bin_args(scoring_decoder, scoring_decoder_bin):
+    """Arguments that point the check at the run's own FAAD3.
+
+    The check decodes with FAAD3 only. When the run scores with one, the same
+    binary serves here; the default is a sibling FAAC build, which a CI runner
+    does not have next to the benchmark action."""
+    if scoring_decoder_bin and (scoring_decoder or "").lower() in ("faad", "faad2", "faad3"):
+        return ["--faad-bin", scoring_decoder_bin]
+    return []
+
+
 def store_block(path, block):
     with open(path) as f:
         data = json.load(f)
