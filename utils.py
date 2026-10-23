@@ -1242,7 +1242,8 @@ def select_corpus_clips(files, corpus):
     whole degradation types. Round-robin across the strata matched by the
     corpus's `strata` regex (falling back to an even-spaced stride when a
     filename doesn't match) keeps every stratum represented and the selection
-    reproducible.
+    reproducible. A corpus without strata can name clips to `keep`; the stride
+    fills the remaining slots.
     """
     files = sorted(files)
     max_clips = (corpus or {}).get("max_clips")
@@ -1251,8 +1252,12 @@ def select_corpus_clips(files, corpus):
 
     pattern = (corpus or {}).get("strata")
     if not pattern:
-        step = len(files) / max_clips
-        return [files[int(i * step)] for i in range(max_clips)]
+        # Clips the corpus must keep come first; the stride fills what is left.
+        keep = [f for f in (corpus or {}).get("keep", ()) if f in files]
+        rest = [f for f in files if f not in keep]
+        fill = max(max_clips - len(keep), 0)
+        step = len(rest) / fill if fill else 0
+        return sorted(keep + [rest[int(i * step)] for i in range(fill)])
 
     groups = {}
     rx = re.compile(pattern)

@@ -31,6 +31,24 @@
 # chart them together (a MOS-vs-bitrate line is only meaningful within one
 # family). "max_clips"/"strata" cap a corpus deterministically -- see
 # utils.select_corpus_clips.
+# Clips a capped music corpus always keeps: the 25 with at least three
+# scored onsets (the only ones the pre-echo metrics can measure) and six that
+# lose to both Apple and FDK at low rates. The cap fills the rest by stride.
+MUSIC_KEEP = [
+    "01 castanets.wav", "03 eig.wav", "04 Bachpsichord.wav", "06 trumpet.wav",
+    "07 applaud.wav", "08 velvet.wav", "10 Angels_Fall_First_ringing.wav",
+    "11 You look good to me.wav", "11ff_.wav", "13 fatboy_30sec.wav",
+    "17qu_.wav", "18vr_.wav", "19am_.wav", "23ht_.wav", "24td_.wav", "25rb_.wav",
+    "26fr_.wav", "27-last-song-drums-and-trampets.441.16b48k.wav",
+    "35_SQAM_glockenspiel_cut.16b48k.wav",
+    "Can't Wait Until Tonight (Dry Wurlitzer Mix).16b48k.wav",
+    "Changes.16b48k.wav", "ExitMusic.16b48k.wav",
+    "Last_Of_The_Mohicanz__Sample_.16b48k.wav", "Robots_old.16b48k.wav",
+    "Shinsho_pool_3min45_4min4.16b48k.wav", "SinceAlways.16b48k.wav",
+    "clapton_44k.16b48k.wav", "girl.16b48k.wav", "glk.wav", "mof.wav",
+    "take_your_finger_frin_my_head.16b48k.wav",
+]
+
 CORPORA = {
     "speech_clean_16k": {
         "dir": "speech_clean_16k",
@@ -90,7 +108,9 @@ CORPORA = {
         "channels": 2,
         "source": "music",
         "family": "44k1_stereo",
-        "label": "44.1 kHz Stereo"},
+        "label": "44.1 kHz Stereo",
+        "max_clips": 48,
+        "keep": MUSIC_KEEP},
     # 32 kHz is the SBR/HE-AAC eligibility boundary (see use_he_aac in
     # compare_codecs.py) as well as a real broadcast rate.
     "audio_32k": {
@@ -99,7 +119,9 @@ CORPORA = {
         "channels": 2,
         "source": "music",
         "family": "32k_stereo",
-        "label": "32 kHz Stereo"},
+        "label": "32 kHz Stereo",
+        "max_clips": 48,
+        "keep": MUSIC_KEEP},
     "audio_51": {
         "dir": "audio_51",
         "rate": 44100,
@@ -125,16 +147,16 @@ FAMILY_ORDER = ["16k_mono", "24k_mono", "32k_stereo", "44k1_stereo", "48k_stereo
 # change that could shift the quantizer curve", which this comment used to
 # say, defeats the VBR report's purpose.
 #
-# Two scenarios (48k_stereo_48k, 48k_stereo_56k) are UNAVOIDABLY off target:
+# One scenario (48k_stereo_48k) is UNAVOIDABLY off target:
 # for 48kHz stereo, libfaac's AUTO object-type resolution in VBR mode picks
 # HE-AAC when quantqual <= 75 and forces plain LC-AAC above that (see
 # HE_VBR_QUANTQUAL_MAX in libfaac/frame.c). On this content HE-AAC tops out
 # around ~41 kbps at q=75, and LC-AAC's cheapest encode is ~71 kbps at q=76 --
-# there is no -q value that lands in the 42-70 kbps gap between them. Both
-# scenarios use q=75 (the closer edge of the gap) and will show a real,
-# expected, non-regression bitrate-accuracy deficit (~-15% to -35%) in every
-# report; watch the baseline-vs-candidate DELTA for these two, not the
-# absolute deviation from "bitrate".
+# there is no -q value that lands in the 42-70 kbps gap between them. It
+# sits at the closer edge of the gap and will show a real, expected,
+# non-regression bitrate-accuracy deficit (~-15% to -35%) in every report;
+# watch the baseline-vs-candidate DELTA for it, not the absolute deviation
+# from "bitrate".
 #
 # REFERENCE BUILD for every bitrate figure quoted in this file:
 #   faac master @ 8aebaa31 ("faac-2.1", meson default build)
@@ -339,20 +361,19 @@ SCENARIOS = {
         # achievable is HE-AAC's ceiling at q=75 (~41 kbps, -15%).
         "vbr_q": 64,
         "thresh": 3.0},
-    "48k_stereo_56k": {
-        "mode": "audio",
-        "corpus": "audio_48k",
-        "bitrate": 56,
-        # Unreachable target -- see the module-level note above. q=75
-        # (~41 kbps, -27%) is marginally closer than q=76 (~71 kbps, +27%).
-        "vbr_q": 75,
-        "thresh": 3.2},
     "48k_stereo_64k": {
         "mode": "audio",
         "corpus": "audio_48k",
         "bitrate": 64,
         "vbr_q": 75,
         "thresh": 3.5},
+    # This rung places the HE/LC AUTO boundary between 0.67 x Fs and 1.0 x Fs per channel (AUTO resolves HE for rate-per-channel <= min(Fs,48000)).
+    "48k_stereo_80k": {
+        "mode": "audio",
+        "corpus": "audio_48k",
+        "bitrate": 80,
+        "vbr_q": 76,
+        "thresh": 3.65},
     "48k_stereo_96k": {
         "mode": "audio",
         "corpus": "audio_48k",
@@ -402,30 +423,6 @@ SCENARIOS = {
         "bitrate": 96,
         "vbr_q": 201,
         "thresh": 2.5},  # PROVISIONAL
-    "44k1_51_160k": {
-        "mode": "audio",
-        "corpus": "audio_51",
-        "bitrate": 160,
-        "vbr_q": 662,
-        "thresh": 3.0},  # PROVISIONAL
-    "44k1_51_224k": {
-        "mode": "audio",
-        "corpus": "audio_51",
-        "bitrate": 224,
-        "vbr_q": 1177,
-        "thresh": 3.5},  # PROVISIONAL
-    "44k1_51_256k": {
-        "mode": "audio",
-        "corpus": "audio_51",
-        "bitrate": 256,
-        "vbr_q": 1459,
-        "thresh": 3.8},  # PROVISIONAL
-    "44k1_51_384k": {
-        "mode": "audio",
-        "corpus": "audio_51",
-        "bitrate": 384,
-        "vbr_q": 2672,
-        "thresh": 4.1},  # PROVISIONAL
     "44k1_51_448k": {
         "mode": "audio",
         "corpus": "audio_51",
