@@ -92,6 +92,57 @@ class TestEncoders(unittest.TestCase):
             self.assertIn("xHE-AAC (exhale)", content)
             self.assertIn("4.120", content)
 
+    def test_qaac_encoder_commands_and_support(self):
+        qaac_lc = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="lc")
+        cmd_lc = qaac_lc.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 128, 2, 44100)
+        self.assertIn("docker", cmd_lc[0])
+        self.assertTrue("exec" in cmd_lc or "run" in cmd_lc)
+        self.assertIn("--cvbr", cmd_lc)
+        self.assertIn("128", cmd_lc)
+        self.assertTrue("/tmp/out.m4a" in " ".join(cmd_lc) or "/host/tmp/out.m4a" in " ".join(cmd_lc))
+
+        qaac_he = enc.QAACEncoder("Apple AAC (qaac 2.80)", "docker", "qaac64:latest", tool_id="qaac", profile="he")
+        cmd_he = qaac_he.get_encode_cmd("/tmp/in.wav", "/tmp/out.m4a", 32, 2, 44100)
+        self.assertIn("--he", cmd_he)
+
+        ok_he, _ = qaac_he.supports_scenario(32, 2, 44100)
+        self.assertTrue(ok_he)
+        fail_he, reason = qaac_he.supports_scenario(160, 6, 44100)
+        self.assertFalse(fail_he)
+        self.assertIn("max 2 channels", reason)
+
+    def test_get_encoder_instance_qaac(self):
+        with patch("codec_bench.encoders.get_qaac_container_engine", return_value="docker"), \
+             patch("codec_bench.encoders.probe_qaac_version", return_value="2.80"):
+            e = enc.get_encoder_instance("qaac")
+            self.assertIsInstance(e, enc.QAACEncoder)
+            self.assertEqual(e.name, "Apple AAC (qaac 2.80)")
+            self.assertEqual(e.container_engine, "docker")
+
+    def test_qaac_internal_timing_parsing(self):
+        import utils
+        import subprocess
+        from unittest.mock import MagicMock
+        mock_proc = MagicMock()
+        mock_proc.stdout = b"ok"
+        mock_proc.stderr = b"some output\n__QAAC_TIME__:0.123456\n__RSS__:1000\n__DUR__:0.500\n__RET__:0\n"
+        with patch("subprocess.run", return_value=mock_proc):
+            res, duration, rss = utils.measure_peak_ram(["echo", "test"])
+            self.assertAlmostEqual(duration, 0.123456)
+
+    def test_qaac_container_manager(self):
+        import utils
+        mgr = utils.QAACContainerManager.get_instance()
+        with patch.object(mgr, "engine", "docker"), \
+             patch("utils.safe_run") as mock_run:
+            mock_run.return_value.returncode = 0
+            mock_run.return_value.stdout = "container_id_123\n"
+            c_name = mgr.ensure_container("qaac64:latest")
+            self.assertIsNotNone(c_name)
+            self.assertIn("qaac64_bench_", c_name)
+            mgr.stop_container()
+            self.assertIsNone(mgr.container_name)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")
@@ -173,7 +224,7 @@ class TestEncoders(unittest.TestCase):
     def test_detect_encoders_optin_variations(self):
         import argparse
         # By default, variations like PNS-off and ADTS should be omitted.
-        args_default = argparse.Namespace(mode="both", faac_bin=["/usr/bin/true"], faac_lib=None,
+        args_default = argparse.Namespace(mode="both", faac_bin=["/fake/bin/faac"], faac_lib=None,
                                           faac_bin_version="1.0.8", fdkaac_bin=None, aac_enc_bin=None,
                                           falabaac_bin=None, ffmpeg_bin=None, afconvert_bin=None)
         encs = enc.detect_encoders(args_default)
@@ -181,7 +232,7 @@ class TestEncoders(unittest.TestCase):
         self.assertTrue(all(not getattr(e, "adts", False) for e in encs))
 
         # When opt-in flags are provided, variations should be included.
-        args_variations = argparse.Namespace(mode="both", faac_bin=["/usr/bin/true"], faac_lib=None,
+        args_variations = argparse.Namespace(mode="both", faac_bin=["/fake/bin/faac"], faac_lib=None,
                                              faac_bin_version="1.0.8", fdkaac_bin=None, aac_enc_bin=None,
                                              falabaac_bin=None, ffmpeg_bin=None, afconvert_bin=None,
                                              include_encoder_variations=True)

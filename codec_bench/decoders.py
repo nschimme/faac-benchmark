@@ -29,7 +29,8 @@ from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
                    measure_delay_offset, measure_peak_ram, corrupt_adts_bitstream,
-                   get_cached_ref_wav, scenario_channels, scenario_rate, wav_conv, corpus_dir)
+                   get_cached_ref_wav, scenario_channels, scenario_rate, wav_conv, corpus_dir,
+                   get_qaac_container_engine, probe_qaac_version, QAACContainerManager)
 
 # Robustness runaway threshold: a corrupted-bitstream decode whose output PCM
 # exceeds this multiple of the intact decode's size did not fail cleanly --
@@ -135,6 +136,38 @@ class AFConvertDecoder(Decoder):
         return [self.binary_path, "-f", "WAVE", "-d", "LEI16", input_path, output_path]
 
 
+class QAACDecoder(Decoder):
+    def __init__(self, name, container_engine, image_tag="qaac64:latest", tool_id="qaac"):
+        super().__init__(name, None, tool_id, lib_name_substr=None)
+        self.container_engine = container_engine
+        self.image_tag = image_tag
+        self.timeout = 300
+
+    def get_decode_cmd(self, input_path, output_path):
+        input_abs = os.path.abspath(input_path)
+        output_abs = os.path.abspath(output_path)
+
+        c_name = QAACContainerManager.get_instance().ensure_container(self.image_tag)
+        if c_name and self.container_engine:
+            cmd = [self.container_engine, "exec", c_name, "/qaac/entrypoint.sh", "--decode",
+                   "-o", f"/host{output_abs}", f"/host{input_abs}"]
+            return cmd
+
+        in_dir = os.path.dirname(input_abs)
+        out_dir = os.path.dirname(output_abs)
+
+        mounts = [f"{in_dir}:{in_dir}"]
+        if out_dir != in_dir:
+            mounts.append(f"{out_dir}:{out_dir}")
+
+        cmd = [self.container_engine, "run", "--rm"]
+        for m in mounts:
+            cmd.extend(["-v", m])
+
+        cmd.extend([self.image_tag, "--decode", "-o", output_abs, input_abs])
+        return cmd
+
+
 class HelixAACDecoder(Decoder):
     def __init__(self, name, binary_path, tool_id="helix_aac"):
         super().__init__(name, binary_path, tool_id, lib_name_substr=None)
@@ -163,9 +196,12 @@ import wave
 
 def probe_decoder_capability(decoder):
     """Probes whether a decoder binary exists and is capable of decoding."""
-    if not decoder.binary_path:
+    if isinstance(decoder, QAACDecoder):
+        if not decoder.container_engine:
+            return False
+    elif not decoder.binary_path:
         return False
-    if not os.path.exists(decoder.binary_path):
+    elif not os.path.exists(decoder.binary_path):
         return True
 
     ffmpeg_bin = get_ffmpeg_path()
@@ -198,7 +234,7 @@ def probe_decoder_capability(decoder):
                     bitstream_input = demux_aac
 
             cmd_dec = decoder.get_decode_cmd(bitstream_input, dummy_out)
-            res_dec, _duration, _ram = measure_peak_ram(cmd_dec, env=decoder.get_run_env() or None)
+            res_dec = safe_run(cmd_dec, env=decoder.get_run_env() or None, capture_output=True, check=False)
 
             return res_dec.returncode == 0 and os.path.exists(dummy_out) and os.path.getsize(dummy_out) > 0
         except Exception:
@@ -332,6 +368,13 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
         display_name = f"Apple AAC {ver}" if ver else "Apple AAC"
         return AFConvertDecoder(display_name, a_bin, "afconvert")
 
+    elif decoder_type in ("qaac", "qaac64", "apple_qaac"):
+        engine = get_qaac_container_engine()
+        image_tag = binary_path or "qaac64:latest"
+        ver = version or (probe_qaac_version(engine, image_tag) if engine else None)
+        display_name = f"Apple AAC (qaac {ver})" if ver else "Apple AAC (qaac)"
+        return QAACDecoder(display_name, engine, image_tag, "qaac")
+
     else:
         # If binary_path is provided directly or decoder_type is a file path
         if os.path.exists(decoder_type):
@@ -391,6 +434,7 @@ def detect_decoders(args):
         if probe_decoder_capability(dec):
             decoders.append(dec)
 
+    qaac_bin = getattr(args, "qaac_bin", None)
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
         dec = get_decoder_instance("afconvert", binary_path=afconvert_bin)
@@ -401,6 +445,25 @@ def detect_decoders(args):
         dec.tool_id = tool_id
         if probe_decoder_capability(dec):
             decoders.append(dec)
+
+    if qaac_bin or (not afconvert_bin and get_qaac_container_engine()):
+        engine = get_qaac_container_engine()
+        if engine:
+            image_tag = qaac_bin if (qaac_bin and not os.path.exists(qaac_bin)) else "qaac64:latest"
+            build_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "build_qaac.sh")
+            if os.path.exists(build_script):
+                try:
+                    res = safe_run([build_script], capture_output=True, check=False)
+                    if res.returncode == 0 and res.stdout.strip():
+                        image_tag = res.stdout.strip()
+                except Exception:
+                    pass
+            dec = get_decoder_instance("qaac", binary_path=image_tag)
+            name, tool_id = make_unique_name_and_id(dec.name, None, dec.tool_id, existing_names, existing_ids)
+            dec.name = name
+            dec.tool_id = tool_id
+            if probe_decoder_capability(dec):
+                decoders.append(dec)
 
     helix_bins = flatten_arg_list(getattr(args, "helix_bin", None))
     if not helix_bins:
@@ -783,7 +846,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
     cmd = decoder.get_decode_cmd(bitstream_input, output_path)
 
     try:
-        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
 
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
@@ -1082,7 +1145,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
     passed = False
 
     try:
-        res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None)
+        res, duration, _peak_ram = measure_peak_ram(cmd, env=decoder.get_run_env() or None, timeout=getattr(decoder, "timeout", 120))
         stderr_low = (res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")).lower()
         is_timeout = (res.returncode in (-124, 124, 252)) or ("timed out" in stderr_low) or ("timeout" in stderr_low)
         is_crash = (res.returncode < 0 or res.returncode in (132, 134, 135, 136, 139)) or ("segmentation fault" in stderr_low) or ("aborted" in stderr_low) or ("bus error" in stderr_low)

@@ -19,6 +19,7 @@ import tempfile
 import time
 import math
 import threading
+import atexit
 import concurrent.futures
 from functools import lru_cache
 
@@ -181,6 +182,76 @@ def probe_version(bin_path, flag_list, patterns, env=None):
             pass
     return None
 
+def get_qaac_container_engine():
+    """Detects available container engine (docker or podman)."""
+    for engine in ("docker", "podman"):
+        if shutil.which(engine):
+            return engine
+    return None
+
+def probe_qaac_version(container_engine, image_tag="qaac64:latest"):
+    """Probes qaac version inside the container."""
+    if not container_engine:
+        return None
+    try:
+        res = subprocess.run([container_engine, "run", "--rm", image_tag, "--check"], capture_output=True, text=True, timeout=30)
+        out = (res.stdout or "") + "\n" + (res.stderr or "")
+        m = re.search(r"qaac\s+v?(\d+\.\d+(?:\.\d+)*)", out, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        pass
+    return None
+
+class QAACContainerManager:
+    """Manages a single background QAAC container daemon to eliminate container startup overhead."""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self.engine = None
+        self.image_tag = "qaac64:latest"
+        self.container_name = None
+        self.started = False
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    def ensure_container(self, image_tag=None):
+        self.engine = get_qaac_container_engine()
+        if not self.engine:
+            return None
+
+        tag = image_tag or self.image_tag
+
+        if self.started and self.container_name:
+            res = safe_run([self.engine, "ps", "-q", "-f", f"name={self.container_name}"], capture_output=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                return self.container_name
+
+        c_name = f"qaac64_bench_{os.getpid()}"
+
+        cmd = [self.engine, "run", "-d", "--name", c_name, "--rm", "-v", "/:/host", tag, "tail", "-f", "/dev/null"]
+        res = safe_run(cmd, capture_output=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            self.container_name = c_name
+            self.image_tag = tag
+            self.started = True
+            atexit.register(self.stop_container)
+            return self.container_name
+        return None
+
+    def stop_container(self):
+        if self.container_name and self.engine:
+            safe_run([self.engine, "rm", "-f", self.container_name], capture_output=True, check=False)
+            self.container_name = None
+            self.started = False
+
 def make_unique_name_and_id(base_name, version, base_id, existing_names, existing_ids):
     """Generates unique display name and sanitized tool ID."""
     display_name = f"{base_name} {version}" if version else base_name
@@ -287,7 +358,7 @@ def measure_delay_offset(ref_wav_path, cand_wav_path):
     except Exception:
         return None, None
 
-def measure_peak_ram(cmd, env=None, check=False, timeout=30):
+def measure_peak_ram(cmd, env=None, check=False, timeout=120):
     """Runs a command in an isolated child process to accurately measure peak Resident Set Size (Max RSS in KB).
 
     Returns (CompletedProcess, duration, max_rss_kb).
@@ -327,6 +398,7 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
 
             rss = None
             proc_dur = None
+            qaac_dur = None
             proc_ret = 0
             stderr_clean = []
             for line in proc.stderr.splitlines():
@@ -345,10 +417,18 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
                         proc_ret = int(line.split(b":", 1)[1].strip())
                     except Exception:
                         pass
+                elif b"__QAAC_TIME__:" in line:
+                    try:
+                        val_str = line.split(b"__QAAC_TIME__:", 1)[1].strip()
+                        qaac_dur = float(val_str)
+                    except Exception:
+                        pass
                 else:
                     stderr_clean.append(line)
 
-            if proc_dur is not None:
+            if qaac_dur is not None and qaac_dur > 0:
+                duration = qaac_dur
+            elif proc_dur is not None:
                 duration = proc_dur
 
             clean_stderr = b"\n".join(stderr_clean)
@@ -359,7 +439,18 @@ def measure_peak_ram(cmd, env=None, check=False, timeout=30):
         else:
             res = subprocess.run(cmd, capture_output=True, check=check, env=env)
             t_end = time.perf_counter()
-            return res, t_end - t_start, None
+            dur = t_end - t_start
+            if res.stderr:
+                for line in res.stderr.splitlines():
+                    if b"__QAAC_TIME__:" in line:
+                        try:
+                            val_str = line.split(b"__QAAC_TIME__:", 1)[1].strip()
+                            q_dur = float(val_str)
+                            if q_dur > 0:
+                                dur = q_dur
+                        except Exception:
+                            pass
+            return res, dur, None
     except Exception as e:
         t_end = time.perf_counter()
         if check and isinstance(e, subprocess.CalledProcessError):

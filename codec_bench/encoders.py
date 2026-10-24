@@ -20,7 +20,8 @@ import re
 from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    safe_run, find_linked_lib, is_faac_legacy, resolve_wrapper_target,
                    guess_lib_version_from_path, is_system_library, flatten_arg_list,
-                   probe_version, make_unique_name_and_id, hosted_codec_ver)
+                   probe_version, make_unique_name_and_id, hosted_codec_ver,
+                   get_qaac_container_engine, probe_qaac_version, QAACContainerManager)
 
 PROFILE_LABELS = {"lc": "LC", "he": "HE-v1", "hev2": "HE-v2", "standard": "Standard", "xhe": "xHE-AAC", "usac": "xHE-AAC"}
 
@@ -256,6 +257,80 @@ class AFConvertEncoder(Encoder):
         return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-c", str(channels), input_path, output_path]
 
 
+class QAACEncoder(Encoder):
+    def __init__(self, name, container_engine, image_tag="qaac64:latest", tool_id="qaac", profile="lc"):
+        super().__init__(name, None, tool_id, profile, lib_name_substr=None)
+        self.container_engine = container_engine
+        self.image_tag = image_tag
+        self.file_ext = ".m4a"
+        self.timeout = 300
+
+    def supports_scenario(self, bitrate_kbps, channels, sample_rate):
+        if self.profile in ("he", "hev2") and channels > 2:
+            return False, f"Apple AAC ({profile_label(self.profile)}) only supports max 2 channels (got {channels})"
+
+        br_per_ch = bitrate_kbps / max(1, channels)
+        if self.profile == "he":
+            if br_per_ch < 12 or br_per_ch > 32:
+                return False, f"Apple AAC HE-v1 supports 12-32 kbps/ch (got {br_per_ch:.1f} kbps/ch)"
+        elif self.profile == "hev2":
+            if channels != 2:
+                return False, f"Apple AAC HE-v2 requires 2 channels (got {channels})"
+            if bitrate_kbps < 16 or bitrate_kbps > 48:
+                return False, f"Apple AAC HE-v2 supports 16-48 kbps total (got {bitrate_kbps} kbps)"
+
+        return super().supports_scenario(bitrate_kbps, channels, sample_rate)
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate,
+                       rate_control="abr", vbr_q=None):
+        input_abs = os.path.abspath(input_path)
+        output_abs = os.path.abspath(output_path)
+
+        c_name = QAACContainerManager.get_instance().ensure_container(self.image_tag)
+        if c_name and self.container_engine:
+            cmd = [self.container_engine, "exec", c_name, "/qaac/entrypoint.sh"]
+            if self.profile in ("he", "hev2"):
+                cmd.append("--he")
+
+            if rate_control == "vbr":
+                q_val = vbr_q if vbr_q is not None else 64
+                cmd.extend(["-v", str(q_val)])
+            elif rate_control == "cbr":
+                cmd.extend(["--cbr", str(bitrate_kbps)])
+            else:
+                cmd.extend(["--cvbr", str(bitrate_kbps)])
+
+            cmd.extend(["-o", f"/host{output_abs}", f"/host{input_abs}"])
+            return cmd
+
+        in_dir = os.path.dirname(input_abs)
+        out_dir = os.path.dirname(output_abs)
+
+        mounts = [f"{in_dir}:{in_dir}"]
+        if out_dir != in_dir:
+            mounts.append(f"{out_dir}:{out_dir}")
+
+        cmd = [self.container_engine, "run", "--rm"]
+        for m in mounts:
+            cmd.extend(["-v", m])
+
+        cmd.append(self.image_tag)
+
+        if self.profile in ("he", "hev2"):
+            cmd.append("--he")
+
+        if rate_control == "vbr":
+            q_val = vbr_q if vbr_q is not None else 64
+            cmd.extend(["-v", str(q_val)])
+        elif rate_control == "cbr":
+            cmd.extend(["--cbr", str(bitrate_kbps)])
+        else:
+            cmd.extend(["--cvbr", str(bitrate_kbps)])
+
+        cmd.extend(["-o", output_abs, input_abs])
+        return cmd
+
+
 class OpusEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="opusenc", profile="standard", is_ffmpeg=False):
         lib_substr = "libopus" if is_ffmpeg else "libopus"
@@ -427,6 +502,13 @@ def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=Non
         display_name = f"Apple AAC {ver}" if ver else "Apple AAC"
         return AFConvertEncoder(display_name, a_bin, "afconvert", profile)
 
+    elif encoder_type in ("qaac", "qaac64", "apple_qaac"):
+        engine = get_qaac_container_engine()
+        image_tag = binary_path or "qaac64:latest"
+        ver = version or (probe_qaac_version(engine, image_tag) if engine else None)
+        display_name = f"Apple AAC (qaac {ver})" if ver else "Apple AAC (qaac)"
+        return QAACEncoder(display_name, engine, image_tag, "qaac", profile)
+
     elif encoder_type in ("opus", "opusenc"):
         o_bin = binary_path or shutil.which("opusenc") or get_ffmpeg_path()
         ver = version
@@ -473,6 +555,14 @@ def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=Non
 
 
 def probe_encoder_capability(encoder, bitrate_kbps=None, channels=2, sample_rate=44100):
+    if isinstance(encoder, QAACEncoder):
+        if not encoder.container_engine:
+            return False
+    elif not encoder.binary_path:
+        return False
+    elif not os.path.exists(encoder.binary_path):
+        return True
+
     if bitrate_kbps is None:
         if encoder.profile == "hev2":
             bitrate_kbps = 24
@@ -669,6 +759,7 @@ def detect_encoders(args):
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
 
+    qaac_bin = getattr(args, "qaac_bin", None)
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):
         ver = probe_version(afconvert_bin, ["-h"], [r"afconvert\s+version\s+(\d+\.\d+(?:\.\d+)*)", r"version\s+(\d+\.\d+(?:\.\d+)*)"])
@@ -685,6 +776,26 @@ def detect_encoders(args):
             enc = AFConvertEncoder(name, afconvert_bin, tool_id, p)
             if probe_encoder_capability(enc):
                 encoders.append(enc)
+
+    if qaac_bin or (not afconvert_bin and get_qaac_container_engine()):
+        engine = get_qaac_container_engine()
+        if engine:
+            image_tag = qaac_bin if (qaac_bin and not os.path.exists(qaac_bin)) else "qaac64:latest"
+            build_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "build_qaac.sh")
+            if os.path.exists(build_script):
+                try:
+                    res = safe_run([build_script], capture_output=True, check=False)
+                    if res.returncode == 0 and res.stdout.strip():
+                        image_tag = res.stdout.strip()
+                except Exception:
+                    pass
+            ver = probe_qaac_version(engine, image_tag)
+            base_disp = f"Apple AAC (qaac {ver})" if ver else "Apple AAC (qaac)"
+            name, tool_id = make_unique_name_and_id(base_disp, None, "qaac", existing_names, existing_ids)
+            for p in ["lc", "he", "hev2"]:
+                enc = QAACEncoder(name, engine, image_tag, tool_id, p)
+                if probe_encoder_capability(enc):
+                    encoders.append(enc)
 
     if getattr(args, "include_other_codecs", False):
         opusenc_bin = getattr(args, "opusenc_bin", None) or shutil.which("opusenc") or ffmpeg_bin

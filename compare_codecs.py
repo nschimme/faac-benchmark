@@ -72,9 +72,9 @@ from config import SCENARIOS, CORPORA, FAMILY_ORDER, GATE_CLIPS, GATE_FALLBACK_N
 from codec_bench import (
     PROFILE_LABELS, profile_label, encoder_row_key, decoder_row_key, row_key,
     use_he_aac, use_he_v2_aac, Encoder, FAACEncoder, FFmpegEncoder,
-    FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder,
+    FDKAACEncoder, AACEncEncoder, FalabaacEncoder, AFConvertEncoder, QAACEncoder,
     OpusEncoder, LameEncoder, probe_faac_version, probe_encoder_capability,
-    detect_encoders, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder,
+    detect_encoders, Decoder, FAADDecoder, FFmpegDecoder, AFConvertDecoder, QAACDecoder,
     detect_decoders, process_decoder_task, time_decoder_serial, process_decoder_robustness_task,
     CLIP_PEER_BUG_GAP, cell_peer_gap, generate_leaderboard, generate_decoder_leaderboard,
     generate_decoder_report, get_conformance_ref_wav, CONFORMANCE_SNR_FLOOR_DB
@@ -294,7 +294,7 @@ def process_encoder_task(encoder, scenario_name, cfg, sample, data_dir, output_d
     cmd = encoder.get_encode_cmd(input_path, output_path, bitrate_kbps, channels, sample_rate)
 
     try:
-        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None)
+        res, duration, peak_ram_kb = measure_peak_ram(cmd, env=encoder.get_run_env() or None, timeout=getattr(encoder, "timeout", 120))
 
         if res.returncode != 0:
             stderr_text = res.stderr.decode(errors="replace") if isinstance(res.stderr, bytes) else (res.stderr or "")
@@ -684,6 +684,7 @@ def main():
     parser.add_argument("--fdkdec-bin", action="append", help="Path to fdkdec (libfdk-aac) decoder binary")
     parser.add_argument("--ffmpeg-bin", help="Path to ffmpeg binary")
     parser.add_argument("--afconvert-bin", help="Path to afconvert binary (macOS)")
+    parser.add_argument("--qaac-bin", help="Path to qaac container image or executable")
     parser.add_argument("--opusenc-bin", help="Path to opusenc binary")
     parser.add_argument("--lame-bin", help="Path to lame binary")
     parser.add_argument("--exhale-bin", "--xhe-bin", help="Path to exhale (xHE-AAC) binary")
