@@ -132,7 +132,24 @@ class AFConvertDecoder(Decoder):
         super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox")
 
     def get_decode_cmd(self, input_path, output_path):
-        return [self.binary_path, "-f", "WAVE", "-d", "LEI16", input_path, output_path]
+        cmd = [self.binary_path, "-f", "WAVE", "-d", "LEI16"]
+        # An 8-channel stream decodes in element order with no layout; WAVE_7_1 asks for
+        # L R C LFE Rls Rrs Ls Rs (WAVE order), which the other decoders write.
+        if self._channels(input_path) == 8:
+            cmd += ["-l", "WAVE_7_1"]
+        return cmd + [input_path, output_path]
+
+    @staticmethod
+    def _channels(path):
+        afinfo = shutil.which("afinfo")
+        if not afinfo:
+            return 0
+        try:
+            out = subprocess.run([afinfo, path], capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            return 0
+        m = re.search(r"(\d+) ch,", out)
+        return int(m.group(1)) if m else 0
 
 
 class HelixAACDecoder(Decoder):
