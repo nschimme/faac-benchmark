@@ -237,6 +237,8 @@ class AFConvertEncoder(Encoder):
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and channels > 2:
             return False, f"Apple AAC ({profile_label(self.profile)}) only supports max 2 channels (got {channels})"
+        if channels > 6 and channels != 8:
+            return False, f"Apple AAC is not encoded here for {channels} channels"
 
         br_per_ch = bitrate_kbps / max(1, channels)
         if self.profile == "he":
@@ -253,6 +255,13 @@ class AFConvertEncoder(Encoder):
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         d_val = "aacp" if self.profile == "hev2" else ("aach" if self.profile == "he" else "aac")
         bps = bitrate_kbps * 1000
+        if channels == 8:
+            # afconvert needs the output layout named for 8 channels. AAC_7_1_B is front, side
+            # and back pairs (C L R Ls Rs Rls Rrs LFE), the 7.1 of the 7.1 corpus; afconvert
+            # matches the input WAV's channels by label and writes channelConfiguration 12.
+            # MPEG_7_1_B and AAC_7_1 are the wide 7.1 and drop the back pair.
+            return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-l", "AAC_7_1_B",
+                    input_path, output_path]
         return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-c", str(channels), input_path, output_path]
 
 

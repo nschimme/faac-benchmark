@@ -96,6 +96,17 @@ class TestEncoders(unittest.TestCase):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")
 
+    def test_afconvert_encodes_7_1_with_the_front_side_back_layout(self):
+        af = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
+        self.assertTrue(af.supports_scenario(448, 8, 48000)[0])
+        self.assertFalse(af.supports_scenario(448, 7, 48000)[0])
+        self.assertFalse(enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="he")
+                         .supports_scenario(448, 8, 48000)[0])
+        cmd = af.get_encode_cmd("in.wav", "out.m4a", 448, 8, 48000)
+        # AAC_7_1_B carries the back pair; MPEG_7_1_B/AAC_7_1 is the wide 7.1 and drops it.
+        self.assertEqual(cmd[cmd.index("-l") + 1], "AAC_7_1_B")
+        self.assertEqual(cmd[0], "/usr/bin/afconvert")
+
     def test_afconvert_supports_scenario(self):
         af_lc = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
         ok_lc_6ch, _ = af_lc.supports_scenario(256, 6, 44100)

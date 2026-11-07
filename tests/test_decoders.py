@@ -9,6 +9,13 @@ import codec_bench.decoders as dec
 import utils
 
 class TestDecoders(unittest.TestCase):
+    def test_afconvert_decodes_8_channels_in_wave_order(self):
+        d = dec.AFConvertDecoder("Apple AAC", "/usr/bin/afconvert")
+        d._channels = staticmethod(lambda path: 8)
+        self.assertEqual(d.get_decode_cmd("in.m4a", "out.wav")[-4:-2], ["-l", "WAVE_7_1"])
+        d._channels = staticmethod(lambda path: 2)
+        self.assertNotIn("-l", d.get_decode_cmd("in.m4a", "out.wav"))
+
     def test_faad3_strict_mode(self):
         faad3 = dec.FAADDecoder("FAAD3 3.0", "/usr/bin/faad3", tool_id="faad3", is_faad3=True)
         cmd = faad3.get_decode_cmd("in.aac", "out.wav")
