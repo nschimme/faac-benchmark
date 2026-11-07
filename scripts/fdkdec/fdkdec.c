@@ -139,6 +139,9 @@ int main(int argc, char **argv) {
         if (!dec) { fprintf(stderr, "cannot open libfdk-aac decoder\n"); fclose(in); free(buf); return 1; }
     }
     aacDecoder_SetParam(dec, AAC_PCM_LIMITER_ENABLE, 0);
+    /* libfdk downmixes streams above 6 channels to 6 unless told otherwise;
+       0 keeps the coded channel count so 7.1 is scored as 7.1. */
+    aacDecoder_SetParam(dec, AAC_PCM_MAX_OUTPUT_CHANNELS, 0);
 
     size_t cap = 1 << 20, n = 0;   /* interleaved samples */
     int16_t *pcm = malloc(cap * sizeof(int16_t));
