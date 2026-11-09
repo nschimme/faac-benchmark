@@ -17,7 +17,7 @@ import wave
 import json
 import re
 
-from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
+from utils import (ffmpeg_aac_footprint, get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    safe_run, find_linked_lib, is_faac_legacy, resolve_wrapper_target,
                    guess_lib_version_from_path, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, hosted_codec_ver)
@@ -49,7 +49,7 @@ def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
 
 
 class Encoder:
-    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None):
+    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None, os_provided=False):
         self.name = name
         self.binary_path = binary_path
         self.tool_id = tool_id
@@ -60,7 +60,13 @@ class Encoder:
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
-        if lib_path and not lib_override and is_system_library(lib_path):
+        if os_provided:
+            # Ships with the OS (Apple AAC): its codec lives in the dyld shared
+            # cache / AudioCodecs.component, shared with other codecs and not
+            # something an integrator budgets for. Same as a /System/ library:
+            # zero, never the afconvert CLI stub.
+            self.size = 0
+        elif lib_path and not lib_override and is_system_library(lib_path):
             self.size = 0
         elif lib_path:
             self.size = get_binary_size(lib_path)
@@ -110,10 +116,36 @@ class Encoder:
         return env
 
 
+_FAAC_CBR_CACHE = {}
+
+
+def faac_has_cbr(binary_path, env=None):
+    """True when this faac build documents --cbr in its help text."""
+    key = (binary_path, tuple(sorted((env or {}).items())) if env else None)
+    if key not in _FAAC_CBR_CACHE:
+        found = False
+        for flag in ("--help", "-H", "--help-advanced", "-h"):
+            try:
+                res = safe_run([binary_path, flag], capture_output=True, check=False, env=env)
+                if "--cbr" in (res.stdout or "") + (res.stderr or ""):
+                    found = True
+                    break
+            except Exception:
+                pass
+        _FAAC_CBR_CACHE[key] = found
+    return _FAAC_CBR_CACHE[key]
+
+
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None, pns=True, adts=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
         self.legacy = is_faac_legacy(binary_path, lib_override=lib_override)
+        # Whether `--cbr` exists is a property of the build, not of --object-type
+        # support: a CLI can have one without the other.
+        self.supports_cbr = (not self.legacy) and faac_has_cbr(binary_path, self.get_run_env() or None)
+        # What get_encode_cmd uses when a caller names no rate_control. Callers
+        # that pass one explicitly (phase1, phase4_haze) are unaffected.
+        self.default_rate_control = "abr"
         # PNS noise is non-normative, so decoders cannot agree sample-for-sample
         # on PNS-coded bands; the pns=False variant exists to gate decoder
         # conformance on streams every compliant decoder must reproduce alike.
@@ -126,7 +158,8 @@ class FAACEncoder(Encoder):
             self.file_ext = ".aac"
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate,
-                       rate_control="abr", vbr_q=None):
+                       rate_control=None, vbr_q=None):
+        rate_control = rate_control or self.default_rate_control
         cmd = [self.binary_path]
         if self.legacy:
             cmd.append("-w")
@@ -154,11 +187,21 @@ class FAACEncoder(Encoder):
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="ffmpeg_aac", profile="lc", pns=True, adts=False):
-        super().__init__(name, binary_path, tool_id, profile, lib_name_substr=None)
+        # HE rows run libfdk_aac inside ffmpeg; size that library, as
+        # FDKAACEncoder does, not the launcher.
+        super().__init__(name, binary_path, tool_id, profile,
+                         lib_name_substr="libfdk-aac" if profile in ("he", "hev2") else None)
         # Same role as FAACEncoder's pns=False: a PNS-free stream from a
         # second muxer/encoder, so decoder conformance is gated on ffmpeg's
         # container and ASC signalling too, not only faac's.
         self.pns = pns
+        # The ffmpeg launcher and shared libavcodec hold every codec; size
+        # only the AAC objects when the install exposes them.
+        aac = {} if profile != "lc" else ffmpeg_aac_footprint(binary_path, "encoder")
+        if aac:
+            self.text_size, self.rodata_size = aac["text"], aac["rodata"]
+            self.bss_size, self.data_size = aac["bss"], aac["data"]
+            self.size = aac["text"] + aac["rodata"] + aac["data"]
         self.pns_free = not pns
         self.adts = adts
         if adts:
@@ -232,7 +275,7 @@ class FalabaacEncoder(Encoder):
 
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="afconvert", profile="lc"):
-        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox")
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox", os_provided=True)
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and channels > 2:
@@ -260,9 +303,9 @@ class AFConvertEncoder(Encoder):
             # and back pairs (C L R Ls Rs Rls Rrs LFE), the 7.1 of the 7.1 corpus; afconvert
             # matches the input WAV's channels by label and writes channelConfiguration 12.
             # MPEG_7_1_B and AAC_7_1 are the wide 7.1 and drop the back pair.
-            return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-l", "AAC_7_1_B",
+            return [self.binary_path, "-f", "m4af", "-d", d_val, "-s", "0", "-b", str(bps), "-l", "AAC_7_1_B",
                     input_path, output_path]
-        return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-c", str(channels), input_path, output_path]
+        return [self.binary_path, "-f", "m4af", "-d", d_val, "-s", "0", "-b", str(bps), "-c", str(channels), input_path, output_path]
 
 
 class OpusEncoder(Encoder):
@@ -274,8 +317,8 @@ class OpusEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         if self.is_ffmpeg:
-            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
-        return [self.binary_path, "--bitrate", str(bitrate_kbps), input_path, output_path]
+            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", "-vbr", "off", "-ac", str(channels), output_path]
+        return [self.binary_path, "--hard-cbr", "--bitrate", str(bitrate_kbps), input_path, output_path]
 
 
 class LameEncoder(Encoder):

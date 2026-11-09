@@ -61,6 +61,7 @@ from the corpus and the mode — never set them by hand.
 | `48k_stereo_48k` | audio_48k | 48k stereo | 48k | 24k/ch | low-rate music |
 | `48k_stereo_56k` | audio_48k | 48k stereo | 56k | 28k/ch | HE-AAC Ceiling |
 | `48k_stereo_64k` | audio_48k | 48k stereo | 64k | 32k/ch | LC-AAC Low |
+| `48k_stereo_80k` | audio_48k | 48k stereo | 80k | 40k/ch | AUTO boundary probe (HE) |
 | `48k_stereo_96k` | audio_48k | 48k stereo | 96k | 48k/ch | |
 | `48k_stereo_128k` | audio_48k | 48k stereo | 128k | 64k/ch | LC-AAC Common |
 | `48k_stereo_160k` | audio_48k | 48k stereo | 160k | 80k/ch | |

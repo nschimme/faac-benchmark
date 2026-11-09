@@ -1482,11 +1482,11 @@ class TestOpusLameEncoderCommands(unittest.TestCase):
         from compare_codecs import OpusEncoder
         op1 = OpusEncoder("Opus", "/usr/bin/opusenc", is_ffmpeg=False)
         cmd1 = op1.get_encode_cmd("in.wav", "out.opus", 128, 2, 48000)
-        self.assertEqual(cmd1, ["/usr/bin/opusenc", "--bitrate", "128", "in.wav", "out.opus"])
+        self.assertEqual(cmd1, ["/usr/bin/opusenc", "--hard-cbr", "--bitrate", "128", "in.wav", "out.opus"])
 
         op2 = OpusEncoder("Opus (FFmpeg)", "/usr/bin/ffmpeg", is_ffmpeg=True)
         cmd2 = op2.get_encode_cmd("in.wav", "out.opus", 128, 2, 48000)
-        self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libopus", "-b:a", "128k", "-ac", "2", "out.opus"])
+        self.assertEqual(cmd2, ["/usr/bin/ffmpeg", "-y", "-i", "in.wav", "-c:a", "libopus", "-b:a", "128k", "-vbr", "off", "-ac", "2", "out.opus"])
 
     def test_lame_command_and_ffmpeg_fallback(self):
         from compare_codecs import LameEncoder
