@@ -754,6 +754,13 @@ def main():
 
     if run_encoders:
         encoders = detect_encoders(args)
+        # CBR wherever the encoder offers it, so "bitrate" means the same thing
+        # across the field; set here so the capability probe and the real
+        # encode build the same command. faac defaults to ABR and older builds
+        # lack --cbr. (exhale has no rate control beyond its presets.)
+        for e in encoders:
+            if isinstance(e, FAACEncoder) and e.supports_cbr:
+                e.default_rate_control = "cbr"
         if not encoders:
             print("No encoders detected!")
             if not run_decoders:

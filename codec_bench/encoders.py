@@ -110,10 +110,36 @@ class Encoder:
         return env
 
 
+_FAAC_CBR_CACHE = {}
+
+
+def faac_has_cbr(binary_path, env=None):
+    """True when this faac build documents --cbr in its help text."""
+    key = (binary_path, tuple(sorted((env or {}).items())) if env else None)
+    if key not in _FAAC_CBR_CACHE:
+        found = False
+        for flag in ("--help", "-H", "--help-advanced", "-h"):
+            try:
+                res = safe_run([binary_path, flag], capture_output=True, check=False, env=env)
+                if "--cbr" in (res.stdout or "") + (res.stderr or ""):
+                    found = True
+                    break
+            except Exception:
+                pass
+        _FAAC_CBR_CACHE[key] = found
+    return _FAAC_CBR_CACHE[key]
+
+
 class FAACEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="faac", profile="lc", lib_override=None, pns=True, adts=False):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libfaac", lib_override=lib_override)
         self.legacy = is_faac_legacy(binary_path, lib_override=lib_override)
+        # Whether `--cbr` exists is a property of the build, not of --object-type
+        # support: a CLI can have one without the other.
+        self.supports_cbr = (not self.legacy) and faac_has_cbr(binary_path, self.get_run_env() or None)
+        # What get_encode_cmd uses when a caller names no rate_control. Callers
+        # that pass one explicitly (phase1, phase4_haze) are unaffected.
+        self.default_rate_control = "abr"
         # PNS noise is non-normative, so decoders cannot agree sample-for-sample
         # on PNS-coded bands; the pns=False variant exists to gate decoder
         # conformance on streams every compliant decoder must reproduce alike.
@@ -126,7 +152,8 @@ class FAACEncoder(Encoder):
             self.file_ext = ".aac"
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate,
-                       rate_control="abr", vbr_q=None):
+                       rate_control=None, vbr_q=None):
+        rate_control = rate_control or self.default_rate_control
         cmd = [self.binary_path]
         if self.legacy:
             cmd.append("-w")
@@ -260,9 +287,9 @@ class AFConvertEncoder(Encoder):
             # and back pairs (C L R Ls Rs Rls Rrs LFE), the 7.1 of the 7.1 corpus; afconvert
             # matches the input WAV's channels by label and writes channelConfiguration 12.
             # MPEG_7_1_B and AAC_7_1 are the wide 7.1 and drop the back pair.
-            return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-l", "AAC_7_1_B",
+            return [self.binary_path, "-f", "m4af", "-d", d_val, "-s", "0", "-b", str(bps), "-l", "AAC_7_1_B",
                     input_path, output_path]
-        return [self.binary_path, "-f", "m4af", "-d", d_val, "-b", str(bps), "-c", str(channels), input_path, output_path]
+        return [self.binary_path, "-f", "m4af", "-d", d_val, "-s", "0", "-b", str(bps), "-c", str(channels), input_path, output_path]
 
 
 class OpusEncoder(Encoder):
@@ -274,8 +301,8 @@ class OpusEncoder(Encoder):
 
     def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
         if self.is_ffmpeg:
-            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", "-ac", str(channels), output_path]
-        return [self.binary_path, "--bitrate", str(bitrate_kbps), input_path, output_path]
+            return [self.binary_path, "-y", "-i", input_path, "-c:a", "libopus", "-b:a", f"{bitrate_kbps}k", "-vbr", "off", "-ac", str(channels), output_path]
+        return [self.binary_path, "--hard-cbr", "--bitrate", str(bitrate_kbps), input_path, output_path]
 
 
 class LameEncoder(Encoder):

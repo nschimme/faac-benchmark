@@ -8,6 +8,16 @@ import codec_bench.encoders as enc
 import compare_codecs as cd
 from tests.helpers import scenario_at
 
+import contextlib
+from unittest import mock as _mock
+
+
+@contextlib.contextmanager
+def unittest_mock_ffmpeg(path):
+    with _mock.patch.object(enc, "get_ffmpeg_path", return_value=path):
+        yield
+
+
 class TestEncoders(unittest.TestCase):
     def test_profile_labels(self):
         self.assertEqual(enc.profile_label("lc"), "LC")
@@ -43,6 +53,35 @@ class TestEncoders(unittest.TestCase):
         self.assertIn("faac", cmd[0])
         self.assertIn("-b", cmd)
         self.assertIn("128", cmd)
+
+    def test_faac_default_rate_control_follows_cbr_support(self):
+        e = enc.FAACEncoder("FAAC", "/nonexistent/faac")
+        e.legacy, e.supports_cbr = False, True
+        self.assertNotIn("--cbr", e.get_encode_cmd("in.wav", "o.m4a", 64, 2, 48000))
+        e.default_rate_control = "cbr"   # what compare_codecs sets when supports_cbr
+        cmd = e.get_encode_cmd("in.wav", "o.m4a", 64, 2, 48000)
+        self.assertIn("--cbr", cmd)
+        self.assertEqual(cmd[cmd.index("-b") + 1], "64")
+        # an explicit caller (phase1, phase4_haze) still wins over the default
+        self.assertNotIn("--cbr", e.get_encode_cmd("in.wav", "o.m4a", 64, 2, 48000, rate_control="abr"))
+
+    def test_faac_without_cbr_in_help_is_not_cbr_capable(self):
+        from unittest import mock
+        enc._FAAC_CBR_CACHE.clear()
+        out = mock.Mock(stdout="usage: faac --object-type", stderr="")
+        with mock.patch.object(enc, "safe_run", return_value=out):
+            self.assertFalse(enc.faac_has_cbr("/x/faac"))
+        enc._FAAC_CBR_CACHE.clear()
+        out = mock.Mock(stdout="-b ABR  --cbr CBR", stderr="")
+        with mock.patch.object(enc, "safe_run", return_value=out):
+            self.assertTrue(enc.faac_has_cbr("/y/faac"))
+        enc._FAAC_CBR_CACHE.clear()
+
+    def test_afconvert_is_forced_to_cbr(self):
+        af = enc.AFConvertEncoder("Apple AAC", "/usr/bin/afconvert", profile="lc")
+        with unittest_mock_ffmpeg(None):
+            cmd = af.get_encode_cmd("in.wav", "o.m4a", 64, 2, 44100)
+        self.assertEqual(cmd[cmd.index("-s") + 1], "0")
 
     def test_exhale_encoder_commands(self):
         exhale_enc = enc.ExhaleEncoder("xHE-AAC", "/usr/bin/exhale", tool_id="exhale")
