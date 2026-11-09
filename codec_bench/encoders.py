@@ -17,7 +17,7 @@ import wave
 import json
 import re
 
-from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
+from utils import (ffmpeg_aac_footprint, get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    safe_run, find_linked_lib, is_faac_legacy, resolve_wrapper_target,
                    guess_lib_version_from_path, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, hosted_codec_ver)
@@ -49,7 +49,7 @@ def use_he_v2_aac(bitrate_kbps, channels, sample_rate):
 
 
 class Encoder:
-    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None):
+    def __init__(self, name, binary_path, tool_id, profile, lib_name_substr=None, lib_override=None, os_provided=False):
         self.name = name
         self.binary_path = binary_path
         self.tool_id = tool_id
@@ -60,7 +60,13 @@ class Encoder:
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
-        if lib_path and not lib_override and is_system_library(lib_path):
+        if os_provided:
+            # Ships with the OS (Apple AAC): its codec lives in the dyld shared
+            # cache / AudioCodecs.component, shared with other codecs and not
+            # something an integrator budgets for. Same as a /System/ library:
+            # zero, never the afconvert CLI stub.
+            self.size = 0
+        elif lib_path and not lib_override and is_system_library(lib_path):
             self.size = 0
         elif lib_path:
             self.size = get_binary_size(lib_path)
@@ -181,11 +187,21 @@ class FAACEncoder(Encoder):
 
 class FFmpegEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="ffmpeg_aac", profile="lc", pns=True, adts=False):
-        super().__init__(name, binary_path, tool_id, profile, lib_name_substr=None)
+        # HE rows run libfdk_aac inside ffmpeg; size that library, as
+        # FDKAACEncoder does, not the launcher.
+        super().__init__(name, binary_path, tool_id, profile,
+                         lib_name_substr="libfdk-aac" if profile in ("he", "hev2") else None)
         # Same role as FAACEncoder's pns=False: a PNS-free stream from a
         # second muxer/encoder, so decoder conformance is gated on ffmpeg's
         # container and ASC signalling too, not only faac's.
         self.pns = pns
+        # The ffmpeg launcher and shared libavcodec hold every codec; size
+        # only the AAC objects when the install exposes them.
+        aac = {} if profile != "lc" else ffmpeg_aac_footprint(binary_path, "encoder")
+        if aac:
+            self.text_size, self.rodata_size = aac["text"], aac["rodata"]
+            self.bss_size, self.data_size = aac["bss"], aac["data"]
+            self.size = aac["text"] + aac["rodata"] + aac["data"]
         self.pns_free = not pns
         self.adts = adts
         if adts:
@@ -259,7 +275,7 @@ class FalabaacEncoder(Encoder):
 
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="afconvert", profile="lc"):
-        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox")
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox", os_provided=True)
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if self.profile in ("he", "hev2") and channels > 2:

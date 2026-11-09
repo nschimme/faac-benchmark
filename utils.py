@@ -539,17 +539,23 @@ def resolve_wrapper_target(path):
             return target
     return path
 
+def _otool_deps(path):
+    r = subprocess.run(["otool", "-L", path], capture_output=True, text=True)
+    return [l.strip().split(" ")[0] for l in r.stdout.splitlines()[1:]] if r.returncode == 0 else []
+
+
 def find_linked_lib(binary_path, name_substr):
     """Resolve the on-disk path of a shared library linked into binary_path."""
     try:
         if sys.platform == "darwin":
             res = subprocess.run(["otool", "-L", binary_path], capture_output=True, text=True, check=True)
-            for line in res.stdout.splitlines():
-                line = line.strip()
-                if name_substr in line:
-                    lib_path = line.split(" ")[0]
-                    if os.path.exists(lib_path):
-                        return lib_path
+            deps = [l.strip().split(" ")[0] for l in res.stdout.splitlines()[1:]]
+            # ldd is transitive; otool is not. ffmpeg reaches libfdk-aac only
+            # through libavcodec, so look one level down as well.
+            for dep in deps + [d for dep in deps if "libavcodec" in dep
+                               for d in _otool_deps(dep)]:
+                if name_substr in dep and os.path.exists(dep):
+                    return dep
         else:
             res = subprocess.run(["ldd", binary_path], capture_output=True, text=True, check=True)
             for line in res.stdout.splitlines():
@@ -706,6 +712,60 @@ def get_section_sizes(path):
                     sizes = {"text": int(parts[0]), "data": int(parts[1]),
                              "bss": int(parts[2])}
     return sizes
+
+
+# libavcodec members that make up FFmpeg's native AAC codec. The shared
+# libavcodec (and the ffmpeg launcher) bundle every codec, so neither is the
+# AAC library; the static archive keeps one object per source file, which lets
+# the AAC share be summed. Shared helpers (windows, tables) are charged to each
+# role that links them, as a standalone AAC build would carry them.
+_FFMPEG_AAC_COMMON = {"aactab", "kbdwin", "sinewin", "mpeg4audio",
+                      "mpeg4audio_sample_rates", "cbrt_data",
+                      "cbrt_tablegen_common"}
+_FFMPEG_AAC_ROLES = {
+    "decoder": _FFMPEG_AAC_COMMON | {
+        "aacdec", "aacdec_float", "aacdec_ac", "aacdec_lpd", "aacdec_tab",
+        "aacdec_usac", "aacdec_usac_mps212", "aacsbr", "aacps_common",
+        "aacps_float", "aacpsdsp_float", "aacpsdsp_init_aarch64",
+        "aacpsdsp_neon", "ps", "sbrdsp", "sbrdsp_init_aarch64", "sbrdsp_neon",
+        "adts_header", "aac_ac3_parser", "dct32_float"},
+    "encoder": _FFMPEG_AAC_COMMON | {
+        "aacenc", "aaccoder", "aacenc_is", "aacenc_tns", "aacencdsp",
+        "aacencdsp_neon", "aacenctab", "aacpsy", "psymodel", "lpc"},
+}
+
+
+def ffmpeg_aac_footprint(ffmpeg_bin, role):
+    """Section sizes of FFmpeg's AAC encoder/decoder objects, or {} when the
+    install has no libavcodec.a (distro packages usually ship only the stripped
+    shared library, which carries no per-codec symbols or sizes)."""
+    if not ffmpeg_bin or role not in _FFMPEG_AAC_ROLES:
+        return {}
+    real = os.path.realpath(ffmpeg_bin)
+    archive = os.path.join(os.path.dirname(os.path.dirname(real)), "lib", "libavcodec.a")
+    if not os.path.exists(archive):
+        return {}
+    wanted = _FFMPEG_AAC_ROLES[role]
+    r = subprocess.run(["ar", "t", archive], capture_output=True, text=True)
+    if r.returncode != 0:
+        return {}
+    members = sorted({m for m in r.stdout.split() if m.endswith(".o")
+                      and m[:-2] in wanted})
+    if not members:
+        return {}
+    totals = {"text": 0, "rodata": 0, "bss": 0, "data": 0}
+    with tempfile.TemporaryDirectory() as tmp:
+        # Unix ar takes one member name at a time for duplicates; extract all
+        # wanted names, then size every object that landed.
+        for m in members:
+            subprocess.run(["ar", "x", archive, m], cwd=tmp, capture_output=True)
+        for m in members:
+            path = os.path.join(tmp, m)
+            if not os.path.exists(path):
+                continue
+            for k, v in get_section_sizes(path).items():
+                totals[k] += v
+    return totals if any(totals.values()) else {}
 
 
 def get_object_sizes(build_dir, target="libfaac"):

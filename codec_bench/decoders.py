@@ -24,7 +24,7 @@ import hashlib
 import platform
 from contextlib import contextmanager
 
-from utils import (get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
+from utils import (ffmpeg_aac_footprint, get_binary_size, get_elf_section_sizes, get_ffmpeg_path,
                    get_faad_path, ffmpeg_probe, durations_match, decode_validate, find_linked_lib,
                    resolve_wrapper_target, is_system_library, flatten_arg_list,
                    probe_version, make_unique_name_and_id, compute_snr, safe_run,
@@ -59,7 +59,7 @@ def decoder_row_key(decoder):
 
 
 class Decoder:
-    def __init__(self, name, binary_path, tool_id, lib_name_substr=None, lib_override=None):
+    def __init__(self, name, binary_path, tool_id, lib_name_substr=None, lib_override=None, os_provided=False):
         self.name = name
         self.binary_path = binary_path
         self.tool_id = tool_id
@@ -70,7 +70,13 @@ class Decoder:
         lib_path = lib_override or (find_linked_lib(measure_bin, lib_name_substr) if lib_name_substr else None)
 
         measured_path = None
-        if lib_path and not lib_override and is_system_library(lib_path):
+        if os_provided:
+            # Ships with the OS (Apple AAC): its codec lives in the dyld shared
+            # cache / AudioCodecs.component, shared with other codecs and not
+            # something an integrator budgets for. Same as a /System/ library:
+            # zero, never the afconvert CLI stub.
+            self.size = 0
+        elif lib_path and not lib_override and is_system_library(lib_path):
             self.size = 0
         elif lib_path:
             self.size = get_binary_size(lib_path)
@@ -122,6 +128,13 @@ class FAADDecoder(Decoder):
 class FFmpegDecoder(Decoder):
     def __init__(self, name, binary_path, tool_id="ffmpeg_aac"):
         super().__init__(name, binary_path, tool_id, lib_name_substr=None)
+        # The ffmpeg launcher and shared libavcodec hold every codec; size
+        # only the AAC objects when the install exposes them.
+        aac = ffmpeg_aac_footprint(binary_path, "decoder")
+        if aac:
+            self.text_size, self.rodata_size = aac["text"], aac["rodata"]
+            self.bss_size, self.data_size = aac["bss"], aac["data"]
+            self.size = aac["text"] + aac["rodata"] + aac["data"]
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, "-y", "-i", input_path, "-sample_fmt", "s16", output_path]
@@ -129,7 +142,7 @@ class FFmpegDecoder(Decoder):
 
 class AFConvertDecoder(Decoder):
     def __init__(self, name, binary_path, tool_id="afconvert"):
-        super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox")
+        super().__init__(name, binary_path, tool_id, lib_name_substr="AudioToolbox", os_provided=True)
 
     def get_decode_cmd(self, input_path, output_path):
         cmd = [self.binary_path, "-f", "WAVE", "-d", "LEI16"]

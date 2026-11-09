@@ -238,6 +238,7 @@ try:
 
     z_engine = zimtohrli.Pyohrli()
     num_channels = ref_aligned.shape[1]
+    per_channel_out = None
     per_channel_dist = [
         z_engine.distance(
             np.ascontiguousarray(ref_aligned[:n, ch], dtype=np.float32),
@@ -251,6 +252,7 @@ try:
             for d in per_channel_dist
         ]
         mos = float(sum(per_channel_mos) / len(per_channel_mos))
+        per_channel_out = per_channel_mos
     else:
         dist = math.sqrt(sum(d * d for d in per_channel_dist))
         if is_mono_downmix and num_ref_ch >= 2:
@@ -261,19 +263,21 @@ try:
             spatial_ratio = ref_side_e / ref_total_e
             dist = dist * (1.0 + math.sqrt(spatial_ratio))
         mos = float(zimtohrli.mos_from_zimtohrli(dist))
-    print(json.dumps({"mos": mos, "backend": "zimtohrli"}))
+    print(json.dumps({"mos": mos, "backend": "zimtohrli", "per_channel_mos": per_channel_out}))
 except Exception:
     sys.exit(1)
 """
 
-def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
+def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None, per_channel_out=None):
     """Score an already-converted ref/deg WAV pair.
 
     Speech mode strictly uses visqol-python (16 kHz mono); audio mode strictly
     uses Zimtohrli (48 kHz). The engine is chosen by the scenario's mode ALONE
     to prevent mixing different metric scale distributions.
     Returns (mos, backend_used); mos is None on failure. A decode whose duration
-    is off by more than 3% is scored 1.0 without invoking the scorer."""
+    is off by more than 3% is scored 1.0 without invoking the scorer.
+    For more than two channels, per_channel_out (a list) receives each channel's
+    MOS, since the returned mean hides the centre and LFE channels."""
     if not durations_match(v_ref, v_deg):
         print("  Duration mismatch: decoded length differs from reference")
         return 1.0, "duration_mismatch"
@@ -312,6 +316,8 @@ def score_wav_pair(v_ref, v_deg, mode_str="audio", sample_rate=None):
                                           capture_output=True, text=True, timeout=30, env=env)
                     if proc.returncode == 0 and proc.stdout.strip():
                         data = json.loads(proc.stdout.strip())
+                        if per_channel_out is not None and data.get("per_channel_mos"):
+                            per_channel_out.extend(data["per_channel_mos"])
                         return data.get("mos"), data.get("backend", "zimtohrli")
                 tail = proc.stderr.strip().splitlines()[-3:] if proc.stderr else []
                 print(f"  ERROR: zimtohrli scoring subprocess failed twice (exit {proc.returncode}): "
@@ -389,10 +395,12 @@ def compute_single_mos(key, entry, aac_dir, external_data_dir, results_path, aac
             print(f"  Decode failed for {key}")
             return key, 1.0, "none"
 
-        mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"))
+        per_channel = []
+        mos, backend_used = score_wav_pair(v_ref, v_deg, cfg["mode"], sample_rate=cfg.get("rate"),
+                                           per_channel_out=per_channel)
         if mos is None and backend_used != "none":
             print(f"  ERROR: backend '{backend_used}' failed for {key}")
-        return key, mos, backend_used
+        return key, mos, backend_used, per_channel
 
 def main():
     parser = argparse.ArgumentParser(description="Perceptual MOS computation (Phase 2)")
@@ -460,6 +468,7 @@ def main():
         return
 
     mos_results = {}
+    per_channel_results = {}
 
     if HAS_VISQOL_PYTHON:
         batch_results = run_visqol_python_batch(pending, aac_dir, external_data_dir, results_path, aac_files)
@@ -479,13 +488,18 @@ def main():
 
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
                 res = future.result()
-                if len(res) == 3:
+                per_channel = []
+                if len(res) == 4:
+                    key, mos, backend_used, per_channel = res
+                elif len(res) == 3:
                     key, mos, backend_used = res
                 else:
                     key, mos = res
                     backend_used = "zimtohrli"
                 if mos is not None:
                     mos_results[key] = (mos, backend_used)
+                    if per_channel:
+                        per_channel_results[key] = per_channel
                 mos_str = f"{mos:.2f}" if mos is not None else "N/A"
                 print(f"  ({i+1}/{len(still_pending)}) {key}: {mos_str}")
 
@@ -494,6 +508,8 @@ def main():
             if isinstance(item, tuple):
                 matrix[key]["mos"] = item[0]
                 matrix[key]["mos_backend"] = item[1]
+                if key in per_channel_results:
+                    matrix[key]["mos_per_channel"] = per_channel_results[key]
             else:
                 matrix[key]["mos"] = item
 
