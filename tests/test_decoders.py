@@ -18,9 +18,9 @@ class TestDecoders(unittest.TestCase):
 
     def test_ittiam_aac_decoder_command_and_factory(self):
         dec_ittiam = dec.IttiamAACDecoder("Ittiam AAC 1.41", "/usr/bin/xaacdec", tool_id="xaac_dec")
-        self.assertTrue(dec_ittiam.requires_adts)
-        cmd = dec_ittiam.get_decode_cmd("in.aac", "out.wav")
-        self.assertEqual(cmd, ["/usr/bin/xaacdec", "-ifile:in.aac", "-ofile:out.wav"])
+        self.assertFalse(dec_ittiam.requires_adts)
+        cmd = dec_ittiam.get_decode_cmd("in.m4a", "out.wav")
+        self.assertEqual(cmd, ["/usr/bin/xaacdec", "in.m4a", "out.wav"])
 
         d1 = dec.get_decoder_instance("ittiam", binary_path="/usr/bin/xaacdec")
         self.assertIsInstance(d1, dec.IttiamAACDecoder)

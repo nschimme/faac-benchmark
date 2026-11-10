@@ -133,21 +133,21 @@ class TestEncoders(unittest.TestCase):
 
     def test_ittiam_aac_encoder_commands_and_support(self):
         enc_lc = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="lc")
-        self.assertEqual(enc_lc.file_ext, ".aac")
-        cmd_lc = enc_lc.get_encode_cmd("in.wav", "out.aac", 128, 2, 48000)
-        self.assertEqual(cmd_lc, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:128000", "-aot:2", "-adts:1"])
+        self.assertEqual(enc_lc.file_ext, ".m4a")
+        cmd_lc = enc_lc.get_encode_cmd("in.wav", "out.m4a", 128, 2, 48000)
+        self.assertEqual(cmd_lc, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.m4a", "-br:128000", "-aot:2"])
 
         enc_he = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="he")
-        cmd_he = enc_he.get_encode_cmd("in.wav", "out.aac", 64, 2, 48000)
-        self.assertEqual(cmd_he, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:64000", "-aot:5", "-adts:1"])
+        cmd_he = enc_he.get_encode_cmd("in.wav", "out.m4a", 64, 2, 48000)
+        self.assertEqual(cmd_he, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.m4a", "-br:64000", "-aot:5"])
 
         enc_hev2 = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="hev2")
-        cmd_hev2 = enc_hev2.get_encode_cmd("in.wav", "out.aac", 32, 2, 48000)
-        self.assertEqual(cmd_hev2, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:32000", "-aot:29", "-adts:1"])
+        cmd_hev2 = enc_hev2.get_encode_cmd("in.wav", "out.m4a", 32, 2, 48000)
+        self.assertEqual(cmd_hev2, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.m4a", "-br:32000", "-aot:29"])
 
         enc_usac = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="usac")
-        cmd_usac = enc_usac.get_encode_cmd("in.wav", "out.aac", 64, 2, 48000)
-        self.assertEqual(cmd_usac, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:64000", "-aot:42"])
+        cmd_usac = enc_usac.get_encode_cmd("in.wav", "out.m4a", 64, 2, 48000)
+        self.assertEqual(cmd_usac, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.m4a", "-br:64000", "-aot:42"])
 
         # Channel support
         ok_2ch, _ = enc_lc.supports_scenario(128, 2, 48000)
