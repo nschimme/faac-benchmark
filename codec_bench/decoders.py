@@ -177,7 +177,7 @@ class HelixAACDecoder(Decoder):
 class IttiamAACDecoder(Decoder):
     def __init__(self, name, binary_path, tool_id="xaac_dec"):
         super().__init__(name, binary_path, tool_id, lib_name_substr="libxaacdec")
-        self.requires_adts = True
+        self.requires_adts = False
 
     def get_decode_cmd(self, input_path, output_path):
         return [self.binary_path, f"-ifile:{input_path}", f"-ofile:{output_path}"]
@@ -749,18 +749,8 @@ def prepared_decode_input(decoder, source, output_dir, target_seconds=SPEED_TARG
         if getattr(decoder, "requires_adts", False) and source.lower().endswith((".m4a", ".mp4")):
             current = os.path.join(output_dir, f"speed_demux_{tag}.aac")
             paths.append(current)
-            faam_bin = shutil.which("faam")
-            if not faam_bin:
-                script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                cand_faam = os.path.join(script_root, "bin", "faam")
-                if os.path.exists(cand_faam):
-                    faam_bin = cand_faam
-            if faam_bin:
-                cmd_demux = [faam_bin, "demux", source, "-o", current, "--overwrite"]
-            else:
-                cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-v", "error", "-i", source,
-                             "-c:a", "copy", current]
-            res = safe_run(cmd_demux, capture_output=True, check=False)
+            res = safe_run([get_ffmpeg_path() or "ffmpeg", "-y", "-v", "error", "-i", source,
+                            "-c:a", "copy", current], capture_output=True, check=False)
             if res.returncode != 0:
                 raise RuntimeError("Timing demux failed")
         one_pass = ffmpeg_probe(current)
@@ -875,17 +865,7 @@ def process_decoder_task(decoder, res_item, output_dir, skip_mos=False, ref_cach
 
     if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
         temp_adts = os.path.join(output_dir, f"demux_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_"))
-        faam_bin = shutil.which("faam")
-        if not faam_bin:
-            script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            cand_faam = os.path.join(script_root, "bin", "faam")
-            if os.path.exists(cand_faam):
-                faam_bin = cand_faam
-
-        if faam_bin:
-            cmd_demux = [faam_bin, "demux", aac_path, "-o", temp_adts, "--overwrite"]
-        else:
-            cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
+        cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
         try:
             res_demux = safe_run(cmd_demux, capture_output=True, check=False)
             if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:
@@ -1170,17 +1150,7 @@ def process_decoder_robustness_task(decoder, res_item, output_dir):
 
     if requires_adts and aac_path.lower().endswith((".m4a", ".mp4")):
         temp_adts = os.path.join(output_dir, f"demux_rob_{decoder_row_key(decoder)}_{res_item['row_key']}_{scenario_name}_{sample}.aac".replace(" ", "_"))
-        faam_bin = shutil.which("faam")
-        if not faam_bin:
-            script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            cand_faam = os.path.join(script_root, "bin", "faam")
-            if os.path.exists(cand_faam):
-                faam_bin = cand_faam
-
-        if faam_bin:
-            cmd_demux = [faam_bin, "demux", aac_path, "-o", temp_adts, "--overwrite"]
-        else:
-            cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
+        cmd_demux = [get_ffmpeg_path() or "ffmpeg", "-y", "-i", aac_path, "-c:a", "copy", temp_adts]
         try:
             res_demux = safe_run(cmd_demux, capture_output=True, check=False)
             if res_demux.returncode == 0 and os.path.exists(temp_adts) and os.path.getsize(temp_adts) > 0:

@@ -274,13 +274,9 @@ class FalabaacEncoder(Encoder):
 
 
 class IttiamAACEncoder(Encoder):
-    def __init__(self, name, binary_path, tool_id="xaac_enc", profile="lc", faam_bin=None):
+    def __init__(self, name, binary_path, tool_id="xaac_enc", profile="lc"):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libxaacenc")
-        self.faam_bin = faam_bin
-        if faam_bin and os.path.exists(faam_bin):
-            self.file_ext = ".m4a"
-        else:
-            self.file_ext = ".aac"
+        self.file_ext = ".m4a"
 
     def supports_scenario(self, bitrate_kbps, channels, sample_rate):
         if channels > 2:
@@ -298,19 +294,10 @@ class IttiamAACEncoder(Encoder):
             aot = "29"
         elif self.profile in ("usac", "xhe"):
             aot = "42"
-        actual_output = output_path + ".es" if self.get_mux_cmd(output_path) else output_path
-        cmd = [self.binary_path, f"-ifile:{input_path}", f"-ofile:{actual_output}", f"-br:{bps}", f"-aot:{aot}"]
+        cmd = [self.binary_path, f"-ifile:{input_path}", f"-ofile:{output_path}", f"-br:{bps}", f"-aot:{aot}"]
         if self.profile != "usac":
             cmd.append("-adts:1")
         return cmd
-
-    def get_mux_cmd(self, output_path):
-        if not self.faam_bin or not os.path.exists(self.faam_bin):
-            return None
-        # Mux elementary ADTS stream into progressive gapless MP4
-        delay = 2048 if self.profile in ("he", "hev2") else 1024
-        return [self.faam_bin, "-i", output_path + ".es", "-o", output_path,
-                "--overwrite", "--encoder-delay", str(delay), "--padding-delay", str(delay)]
 
 
 class AFConvertEncoder(Encoder):
@@ -516,12 +503,7 @@ def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=Non
         if not ver and x_bin and os.path.exists(x_bin):
             ver = probe_version(x_bin, ["-help", "-h", "-v"], [r"IXHEAACE\s*:\s*V?(\d+\.\d+(?:\.\d+)*)"])
         display_name = f"Ittiam AAC {ver}" if ver else "Ittiam AAC"
-        faam_bin = shutil.which("faam")
-        if not faam_bin:
-            cand_faam = os.path.join(script_root, "bin", "faam")
-            if os.path.exists(cand_faam):
-                faam_bin = cand_faam
-        return IttiamAACEncoder(display_name, x_bin, "xaac_enc", profile, faam_bin=faam_bin)
+        return IttiamAACEncoder(display_name, x_bin, "xaac_enc", profile)
 
     elif encoder_type in ("afconvert", "apple"):
         a_bin = binary_path or shutil.which("afconvert")
@@ -792,23 +774,16 @@ def detect_encoders(args):
             if which_xaac:
                 xaac_enc_bins = [which_xaac]
 
-    faam_bin = getattr(args, "faam_bin", None) or shutil.which("faam")
-    if not faam_bin:
-        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cand_faam = os.path.join(script_root, "bin", "faam")
-        if os.path.exists(cand_faam):
-            faam_bin = cand_faam
-
     for x_bin in xaac_enc_bins:
         ver = probe_version(x_bin, ["-help", "-h", "-v"], [r"IXHEAACE\s*:\s*V?(\d+\.\d+(?:\.\d+)*)"])
         name, tool_id = make_unique_name_and_id("Ittiam AAC", ver, "xaac_enc", existing_names, existing_ids)
         for p in ["lc", "he", "hev2"]:
-            enc = IttiamAACEncoder(name, x_bin, tool_id, p, faam_bin=faam_bin)
+            enc = IttiamAACEncoder(name, x_bin, tool_id, p)
             if probe_encoder_capability(enc):
                 encoders.append(enc)
 
         if getattr(args, "include_other_codecs", False):
-            enc_usac = IttiamAACEncoder(name, x_bin, tool_id, "usac", faam_bin=faam_bin)
+            enc_usac = IttiamAACEncoder(name, x_bin, tool_id, "usac")
             if probe_encoder_capability(enc_usac, bitrate_kbps=64):
                 encoders.append(enc_usac)
 
