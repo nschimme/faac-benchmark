@@ -241,15 +241,18 @@ int main(int argc, char **argv) {
 
     faam_io io = make_file_io(fm4a);
 
-    /* Construct AudioSpecificConfig (2-byte base AAC-LC ASC) */
+    /* In HE-AAC (AOT 5) and HE-AAC v2 (AOT 29), the core coder runs at half the input sample rate */
+    uint32_t core_rate = (aot == 5 || aot == 29) ? (sample_rate / 2) : sample_rate;
+    uint32_t sr_idx = get_sr_index(core_rate);
+
+    /* Construct AudioSpecificConfig (base AAC-LC at core rate) */
     uint8_t asc[64];
     uint32_t asc_len = 0;
-    uint32_t sr_idx = get_sr_index(sample_rate);
     asc[0] = (uint8_t)((2 << 3) | ((sr_idx >> 1) & 0x7));
     asc[1] = (uint8_t)(((sr_idx & 0x1) << 7) | ((num_channels & 0xF) << 3));
     asc_len = 2;
 
-    /* Priming / delay setup: libxaac introduces 1600 samples for AAC-LC */
+    /* Priming / delay setup: libxaac introduces 1600 core samples for AAC-LC */
     uint32_t encoder_delay = (aot == 5 || aot == 29) ? 4165 : 1600;
 
     faam_gapless_info gapless;
@@ -263,8 +266,8 @@ int main(int argc, char **argv) {
     faam_track_config_init(&track, sizeof(track));
     track.codec_id = FAAM_CODEC_AAC;
     track.track_type = FAAM_TRACK_AUDIO;
-    track.timescale = sample_rate;
-    track.sample_rate = sample_rate;
+    track.timescale = core_rate;
+    track.sample_rate = core_rate;
     track.channels = num_channels;
     track.codec_data = asc;
     track.codec_data_len = asc_len;

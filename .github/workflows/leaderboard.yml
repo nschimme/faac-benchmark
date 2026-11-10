@@ -49,6 +49,10 @@ jobs:
         run: |
           ./scripts/build_helix_aac.sh
 
+      - name: Build Ittiam libxaac Encoder & Decoder
+        run: |
+          ./scripts/build_libxaac.sh
+
       - name: Run Codec Leaderboard
         run: |
           # Use --gate for PRs and push to save time/resources.

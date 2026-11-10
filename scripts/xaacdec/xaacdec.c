@@ -2,9 +2,9 @@
  * xaacdec - Ittiam libxaac M4A Decoder Wrapper using libfaam
  *
  * Uses libfaam to demux MP4/M4A containers into AAC frames, extracts
- * gapless info (priming delay and padding), runs libxaac decoder in-process,
- * and trims priming delay and padding for sample-accurate gapless WAV output.
- * No child processes, no fork/exec.
+ * gapless info (priming delay and padding), runs libxaac decoder entirely
+ * in-memory, and writes sample-accurate gapless WAV output directly without
+ * intermediate temporary disk files.
  */
 
 #define _GNU_SOURCE
@@ -80,44 +80,40 @@ static faam_io make_file_io(FILE *f) {
     return io;
 }
 
-static void trim_wav(const char *raw_wav, const char *final_wav, uint32_t delay_samples, uint32_t padding_samples) {
-    FILE *in = fopen(raw_wav, "rb");
-    if (!in) return;
+static void trim_and_save_wav(const uint8_t *raw_buf, size_t raw_sz, const char *final_wav,
+                              uint32_t delay_samples, uint32_t padding_samples) {
+    FILE *out = fopen(final_wav, "wb");
+    if (!out) return;
 
-    uint8_t hdr[44];
-    if (fread(hdr, 1, 44, in) < 44 || memcmp(hdr, "RIFF", 4) != 0) {
-        fclose(in);
-        rename(raw_wav, final_wav);
+    if (raw_sz < 44 || memcmp(raw_buf, "RIFF", 4) != 0) {
+        fwrite(raw_buf, 1, raw_sz, out);
+        fclose(out);
         return;
     }
+
+    uint8_t hdr[44];
+    memcpy(hdr, raw_buf, 44);
 
     uint16_t channels = hdr[22] | (hdr[23] << 8);
     uint16_t bits_per_sample = hdr[34] | (hdr[35] << 8);
     uint32_t orig_bytes = hdr[40] | (hdr[41] << 8) | (hdr[42] << 16) | (hdr[43] << 24);
     uint32_t bytes_per_sample = (bits_per_sample / 8) * channels;
 
-    if (bytes_per_sample == 0) {
-        fclose(in);
-        rename(raw_wav, final_wav);
+    if (bytes_per_sample == 0 || orig_bytes + 44 > raw_sz) {
+        fwrite(raw_buf, 1, raw_sz, out);
+        fclose(out);
         return;
     }
 
     uint32_t total_samples = orig_bytes / bytes_per_sample;
     if (delay_samples + padding_samples >= total_samples) {
-        fclose(in);
-        rename(raw_wav, final_wav);
+        fwrite(raw_buf, 1, raw_sz, out);
+        fclose(out);
         return;
     }
 
     uint32_t keep_samples = total_samples - delay_samples - padding_samples;
     uint32_t keep_bytes = keep_samples * bytes_per_sample;
-
-    FILE *out = fopen(final_wav, "wb");
-    if (!out) {
-        fclose(in);
-        rename(raw_wav, final_wav);
-        return;
-    }
 
     /* Update WAV header */
     uint32_t riff_size = 36 + keep_bytes;
@@ -133,23 +129,10 @@ static void trim_wav(const char *raw_wav, const char *final_wav, uint32_t delay_
 
     fwrite(hdr, 1, 44, out);
 
-    /* Skip delay */
-    fseeko(in, 44 + (off_t)delay_samples * bytes_per_sample, SEEK_SET);
-
-    /* Copy kept PCM bytes */
-    uint8_t buf[8192];
-    uint32_t remaining = keep_bytes;
-    while (remaining > 0) {
-        uint32_t chunk = remaining > sizeof(buf) ? (uint32_t)sizeof(buf) : remaining;
-        size_t r = fread(buf, 1, chunk, in);
-        if (r == 0) break;
-        fwrite(buf, 1, r, out);
-        remaining -= (uint32_t)r;
-    }
-
-    fclose(in);
+    /* Write trimmed PCM samples */
+    const uint8_t *pcm_start = raw_buf + 44 + ((size_t)delay_samples * bytes_per_sample);
+    fwrite(pcm_start, 1, keep_bytes, out);
     fclose(out);
-    unlink(raw_wav);
 }
 
 int main(int argc, char **argv) {
@@ -192,11 +175,12 @@ int main(int argc, char **argv) {
     memset(&gapless, 0, sizeof(gapless));
     gapless.struct_size = sizeof(gapless);
 
-    char tmp_adts[1024];
-    const char *decode_input = in_file;
+    char *adts_mem_buf = NULL;
+    size_t adts_mem_sz = 0;
+    FILE *f_adts_mem = NULL;
 
     if (is_mp4) {
-        /* Input is MP4/M4A: demux using libfaam directly */
+        /* Input is MP4/M4A: demux in-memory using libfaam directly */
         faam_io io = make_file_io(fin);
         faam_demuxer *demuxer = NULL;
         faam_status st = faam_demuxer_open(NULL, &io, &demuxer);
@@ -223,12 +207,10 @@ int main(int argc, char **argv) {
         tinfo.struct_size = sizeof(tinfo);
         faam_demuxer_get_track_info(demuxer, 0, &tinfo);
 
-        /* Dump frames to temporary ADTS stream */
-        snprintf(tmp_adts, sizeof(tmp_adts), "%s.tmp.%d.aac", in_file, (int)getpid());
-
-        FILE *fadts = fopen(tmp_adts, "wb");
-        if (!fadts) {
-            perror("Failed to create temporary demuxed AAC file");
+        /* Open in-memory buffer stream for demuxed ADTS */
+        f_adts_mem = open_memstream(&adts_mem_buf, &adts_mem_sz);
+        if (!f_adts_mem) {
+            perror("Failed to open memstream for ADTS frames");
             faam_demuxer_close(&demuxer);
             fclose(fin);
             return 1;
@@ -259,23 +241,14 @@ int main(int argc, char **argv) {
             adts[5] = (uint8_t)(((frame_length & 0x7) << 5) | 0x1F);
             adts[6] = 0xFC;
 
-            fwrite(adts, 1, 7, fadts);
-            fwrite(frame_buf, 1, frame_len, fadts);
+            fwrite(adts, 1, 7, f_adts_mem);
+            fwrite(frame_buf, 1, frame_len, f_adts_mem);
         }
-        fclose(fadts);
+        fclose(f_adts_mem);
         faam_demuxer_close(&demuxer);
         fclose(fin);
-        decode_input = tmp_adts;
     } else {
         fclose(fin);
-    }
-
-    /* Destination raw WAV before trimming */
-    char raw_wav[1024];
-    if (is_mp4 && (gapless.encoder_delay > 0 || gapless.end_padding > 0)) {
-        snprintf(raw_wav, sizeof(raw_wav), "%s.raw.%d.wav", out_wav, (int)getpid());
-    } else {
-        snprintf(raw_wav, sizeof(raw_wav), "%s", out_wav);
     }
 
     /* Build args for in-process libxaac decoder call */
@@ -284,15 +257,9 @@ int main(int argc, char **argv) {
     int cidx = 1;
     for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "-ifile:", 7)) {
-            char *tmp_arg = NULL;
-            if (asprintf(&tmp_arg, "-ifile:%s", decode_input) > 0) {
-                core_argv[cidx++] = tmp_arg;
-            }
+            core_argv[cidx++] = "-ifile:memory_input";
         } else if (!strncmp(argv[i], "-ofile:", 7)) {
-            char *tmp_arg = NULL;
-            if (asprintf(&tmp_arg, "-ofile:%s", raw_wav) > 0) {
-                core_argv[cidx++] = tmp_arg;
-            }
+            core_argv[cidx++] = "-ofile:memory_output";
         } else {
             core_argv[cidx++] = argv[i];
         }
@@ -301,19 +268,35 @@ int main(int argc, char **argv) {
 
     /* Initialize decoder global state */
     ia_testbench_error_handler_init();
-    g_pf_inp = FileWrapper_Open((char *)decode_input);
-    if (!g_pf_inp) {
-        fprintf(stderr, "Failed to open decode input: %s\n", decode_input);
-        if (is_mp4) unlink(tmp_adts);
-        return 1;
+
+    FileWrapperPtr transport = (FileWrapper *)calloc(1, sizeof(FileWrapper));
+    transport->isMp4File = 0;
+    if (is_mp4) {
+        transport->inputFile = fmemopen(adts_mem_buf, adts_mem_sz, "rb");
+    } else {
+        transport->inputFile = fopen(in_file, "rb");
     }
-    g_pf_out = fopen(raw_wav, "wb");
-    if (!g_pf_out) {
-        perror("Failed to open output WAV");
+    g_pf_inp = transport;
+
+    /* In-memory output buffer stream for decoded WAV PCM using preallocated fmemopen buffer */
+    size_t wav_mem_cap = 64 * 1024 * 1024; /* 64 MB buffer */
+    uint8_t *wav_mem_buf = malloc(wav_mem_cap);
+    if (!wav_mem_buf) {
+        perror("Failed to allocate in-memory WAV buffer");
         FileWrapper_Close(g_pf_inp);
-        if (is_mp4) unlink(tmp_adts);
+        if (adts_mem_buf) free(adts_mem_buf);
         return 1;
     }
+    FILE *f_wav_mem = fmemopen(wav_mem_buf, wav_mem_cap, "w+b");
+    if (!f_wav_mem) {
+        perror("Failed to fmemopen decoded WAV buffer");
+        free(wav_mem_buf);
+        FileWrapper_Close(g_pf_inp);
+        if (adts_mem_buf) free(adts_mem_buf);
+        return 1;
+    }
+    g_pf_out = f_wav_mem;
+
     g_w_malloc_count = 0;
     raw_testing = 0;
     eld_testing = 0;
@@ -324,24 +307,41 @@ int main(int argc, char **argv) {
     for (int i = 0; i < g_w_malloc_count; i++) {
         if (g_pv_arr_alloc_memory[i]) free(g_pv_arr_alloc_memory[i]);
     }
-    if (g_pf_out) { fclose(g_pf_out); g_pf_out = NULL; }
+
+    size_t wav_mem_sz = 0;
+    if (g_pf_out) {
+        fflush(g_pf_out);
+        if (wav_mem_buf[0] == 'R' && wav_mem_buf[1] == 'I' && wav_mem_buf[2] == 'F' && wav_mem_buf[3] == 'F') {
+            uint32_t riff_sz = wav_mem_buf[4] | (wav_mem_buf[5] << 8) | (wav_mem_buf[6] << 16) | (wav_mem_buf[7] << 24);
+            wav_mem_sz = riff_sz + 8;
+        } else {
+            long p = ftell(g_pf_out);
+            wav_mem_sz = p > 0 ? (size_t)p : 0;
+        }
+        fclose(g_pf_out);
+        g_pf_out = NULL;
+    }
     if (g_pf_meta) { fclose(g_pf_meta); g_pf_meta = NULL; metadata_mp4_stsz_size_free(&meta_info); }
     if (g_pf_inp) { FileWrapper_Close(g_pf_inp); g_pf_inp = NULL; }
-
-    if (is_mp4) {
-        unlink(tmp_adts);
-    }
+    if (adts_mem_buf) { free(adts_mem_buf); adts_mem_buf = NULL; }
 
     if (ret != 0) {
         fprintf(stderr, "libxaac decoding failed with code %d\n", ret);
-        unlink(raw_wav);
+        if (wav_mem_buf) free(wav_mem_buf);
         return 1;
     }
 
-    /* Apply gapless trimming if needed */
+    /* Apply gapless trimming and write final output WAV directly */
     if (is_mp4 && (gapless.encoder_delay > 0 || gapless.end_padding > 0)) {
-        trim_wav(raw_wav, out_wav, gapless.encoder_delay, gapless.end_padding);
+        trim_and_save_wav((const uint8_t *)wav_mem_buf, wav_mem_sz, out_wav, gapless.encoder_delay, gapless.end_padding);
+    } else {
+        FILE *fout = fopen(out_wav, "wb");
+        if (fout && wav_mem_buf) {
+            fwrite(wav_mem_buf, 1, wav_mem_sz, fout);
+            fclose(fout);
+        }
     }
 
+    if (wav_mem_buf) free(wav_mem_buf);
     return 0;
 }
