@@ -31,15 +31,28 @@ fi
 LIBFAAM_A="$FAAC_DIR/build/libfaam/libfaam.a"
 if [[ ! -f "$LIBFAAM_A" ]]; then
     echo "==> Building libfaam..." >&2
-    (
-        cd "$FAAC_DIR"
-        if [[ ! -d "build" ]]; then
-            meson setup build -Dfrontend-static=true >&2
-        else
-            meson configure build -Dfrontend-static=true >&2
-        fi
-        ninja -C build >&2
-    )
+    if command -v meson >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
+        (
+            cd "$FAAC_DIR"
+            if [[ ! -d "build" ]]; then
+                meson setup build -Dfrontend-static=true >&2
+            else
+                meson configure build -Dfrontend-static=true >&2
+            fi
+            ninja -C build >&2
+        )
+    else
+        echo "==> meson/ninja not found, building libfaam.a directly with gcc..." >&2
+        mkdir -p "$FAAC_DIR/build/libfaam"
+        (
+            cd "$FAAC_DIR/libfaam"
+            gcc -O3 -c -I../include -I../common \
+                -DFAAM_MUXER_VIDEO=1 -DFAAM_MUXER_FRAGMENTED=1 -DFAAM_MUXER_CHAPTERS=1 \
+                demux.c mux.c metadata.c faam_util.c tag.c chapter.c atom_patch.c
+            ar rcs "$LIBFAAM_A" demux.o mux.o metadata.o faam_util.o tag.o chapter.o atom_patch.o
+            rm -f demux.o mux.o metadata.o faam_util.o tag.o chapter.o atom_patch.o
+        )
+    fi
 fi
 
 # Clone and build libxaac static libraries
