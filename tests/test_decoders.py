@@ -16,6 +16,19 @@ class TestDecoders(unittest.TestCase):
         d._channels = staticmethod(lambda path: 2)
         self.assertNotIn("-l", d.get_decode_cmd("in.m4a", "out.wav"))
 
+    def test_ittiam_aac_decoder_command_and_factory(self):
+        dec_ittiam = dec.IttiamAACDecoder("Ittiam AAC 1.41", "/usr/bin/xaacdec", tool_id="xaac_dec")
+        self.assertTrue(dec_ittiam.requires_adts)
+        cmd = dec_ittiam.get_decode_cmd("in.aac", "out.wav")
+        self.assertEqual(cmd, ["/usr/bin/xaacdec", "-ifile:in.aac", "-ofile:out.wav"])
+
+        d1 = dec.get_decoder_instance("ittiam", binary_path="/usr/bin/xaacdec")
+        self.assertIsInstance(d1, dec.IttiamAACDecoder)
+        self.assertEqual(d1.binary_path, "/usr/bin/xaacdec")
+
+        d2 = dec.get_decoder_instance("xaacdec", binary_path="/usr/bin/xaacdec")
+        self.assertIsInstance(d2, dec.IttiamAACDecoder)
+
     def test_faad3_strict_mode(self):
         faad3 = dec.FAADDecoder("FAAD3 3.0", "/usr/bin/faad3", tool_id="faad3", is_faad3=True)
         cmd = faad3.get_decode_cmd("in.aac", "out.wav")
@@ -53,7 +66,10 @@ class TestDecoders(unittest.TestCase):
             self.assertTrue(os.path.exists(out_aac))
 
     def test_process_decoder_task_channel_mismatch(self):
-        from helpers import write_wav
+        try:
+            from tests.helpers import write_wav
+        except ImportError:
+            from helpers import write_wav
         class DummyDecoder(dec.Decoder):
             def __init__(self, out_wav):
                 super().__init__("DummyDecoder", "/usr/bin/true", "dummy_dec")
@@ -100,7 +116,10 @@ class TestDecoders(unittest.TestCase):
         return RawWritingDecoder()
 
     def _decode_task_item(self, td):
-        from helpers import write_wav
+        try:
+            from tests.helpers import write_wav
+        except ImportError:
+            from helpers import write_wav
         ref_wav = os.path.join(td, "ref.wav")
         src_wav = os.path.join(td, "src.wav")
         bitstream = os.path.join(td, "test.aac")

@@ -131,6 +131,46 @@ class TestEncoders(unittest.TestCase):
             self.assertIn("xHE-AAC (exhale)", content)
             self.assertIn("4.120", content)
 
+    def test_ittiam_aac_encoder_commands_and_support(self):
+        enc_lc = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="lc")
+        self.assertEqual(enc_lc.file_ext, ".aac")
+        cmd_lc = enc_lc.get_encode_cmd("in.wav", "out.aac", 128, 2, 48000)
+        self.assertEqual(cmd_lc, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:128000", "-aot:2", "-adts:1"])
+
+        enc_he = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="he")
+        cmd_he = enc_he.get_encode_cmd("in.wav", "out.aac", 64, 2, 48000)
+        self.assertEqual(cmd_he, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:64000", "-aot:5", "-adts:1"])
+
+        enc_hev2 = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="hev2")
+        cmd_hev2 = enc_hev2.get_encode_cmd("in.wav", "out.aac", 32, 2, 48000)
+        self.assertEqual(cmd_hev2, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:32000", "-aot:29", "-adts:1"])
+
+        enc_usac = enc.IttiamAACEncoder("Ittiam AAC 2.0", "/usr/bin/xaacenc", tool_id="xaac_enc", profile="usac")
+        cmd_usac = enc_usac.get_encode_cmd("in.wav", "out.aac", 64, 2, 48000)
+        self.assertEqual(cmd_usac, ["/usr/bin/xaacenc", "-ifile:in.wav", "-ofile:out.aac", "-br:64000", "-aot:42"])
+
+        # Channel support
+        ok_2ch, _ = enc_lc.supports_scenario(128, 2, 48000)
+        self.assertTrue(ok_2ch)
+        ok_6ch, reason_6ch = enc_lc.supports_scenario(256, 6, 48000)
+        self.assertFalse(ok_6ch)
+        self.assertIn("max 2 channels", reason_6ch)
+
+        # USAC bitrates
+        ok_usac_64, _ = enc_usac.supports_scenario(64, 2, 48000)
+        self.assertTrue(ok_usac_64)
+        ok_usac_48, reason_usac = enc_usac.supports_scenario(48, 2, 48000)
+        self.assertFalse(ok_usac_48)
+        self.assertIn("restricted to 64 or 96 kbps", reason_usac)
+
+    def test_get_encoder_instance_ittiam(self):
+        e1 = enc.get_encoder_instance("ittiam", binary_path="/usr/bin/xaacenc")
+        self.assertIsInstance(e1, enc.IttiamAACEncoder)
+        self.assertEqual(e1.binary_path, "/usr/bin/xaacenc")
+
+        e2 = enc.get_encoder_instance("xaacenc", binary_path="/usr/bin/xaacenc")
+        self.assertIsInstance(e2, enc.IttiamAACEncoder)
+
     def test_afconvert_rebranding(self):
         af_enc = enc.AFConvertEncoder("Apple AAC 15.3", "/usr/bin/afconvert", tool_id="afconvert", profile="lc")
         self.assertEqual(af_enc.name, "Apple AAC 15.3")
