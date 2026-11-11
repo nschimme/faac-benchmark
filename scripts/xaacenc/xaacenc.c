@@ -137,6 +137,7 @@ int main(int argc, char **argv) {
 
     /* Scan for data chunk */
     uint32_t data_bytes = 0;
+    long data_off = 0;
     fseek(fw, 12, SEEK_SET);
     while (!feof(fw)) {
         char chunk_id[4];
@@ -145,6 +146,7 @@ int main(int argc, char **argv) {
         if (fread(&chunk_sz, 1, 4, fw) < 4) break;
         if (memcmp(chunk_id, "data", 4) == 0) {
             data_bytes = chunk_sz;
+            data_off = ftell(fw);
             break;
         }
         fseek(fw, (chunk_sz + 1) & ~1, SEEK_CUR);
@@ -194,20 +196,49 @@ int main(int argc, char **argv) {
         }
     }
 
-    ctx.pf_inp = fopen(in_wav, "rb");
+    /* libxaac stops where its input ends without draining its delay, which cut the tail off
+     * the audio. Encode a copy with zeros appended instead, held in memory; the container
+     * still states the original length. */
+    uint8_t *enc_buf = NULL;
+    size_t enc_sz = 0;
+    if (data_off >= 8 && num_channels > 0 && bits_per_sample >= 8) {
+        const uint32_t pad_bytes = 8192u * num_channels * (bits_per_sample / 8);
+        const size_t used = (size_t)data_off + data_bytes;
+        FILE *src = fopen(in_wav, "rb");
+        enc_sz = used + pad_bytes;
+        enc_buf = calloc(1, enc_sz);
+        if (src && enc_buf && fread(enc_buf, 1, used, src) == used) {
+            uint32_t riff = enc_buf[4] | (enc_buf[5] << 8) | (enc_buf[6] << 16) | ((uint32_t)enc_buf[7] << 24);
+            riff += pad_bytes;
+            uint32_t dsz = data_bytes + pad_bytes;
+            for (int i = 0; i < 4; i++) {
+                enc_buf[4 + i] = (uint8_t)(riff >> (8 * i));
+                enc_buf[data_off - 4 + i] = (uint8_t)(dsz >> (8 * i));
+            }
+        } else {
+            free(enc_buf);
+            enc_buf = NULL;
+        }
+        if (src) fclose(src);
+    }
+
+    ctx.pf_inp = enc_buf ? fmemopen(enc_buf, enc_sz, "rb") : fopen(in_wav, "rb");
     if (!ctx.pf_inp) {
         perror("Failed to open input WAV for libxaac");
+        free(enc_buf);
         return 1;
     }
     ctx.pf_out = fopen(tmp_adts, "wb");
     if (!ctx.pf_out) {
         perror("Failed to open output bitstream for libxaac");
         fclose(ctx.pf_inp);
+        free(enc_buf);
         return 1;
     }
 
     IA_ERRORCODE err = ia_enhaacplus_enc_main_process(&ctx, cidx, (pWORD8 *)core_argv);
     if (ctx.pf_inp) fclose(ctx.pf_inp);
+    free(enc_buf);
     if (ctx.pf_out) fclose(ctx.pf_out);
     if (ctx.pf_meta) {
         fclose(ctx.pf_meta);
@@ -245,21 +276,44 @@ int main(int argc, char **argv) {
     uint32_t core_rate = (aot == 5 || aot == 29) ? (sample_rate / 2) : sample_rate;
     uint32_t sr_idx = get_sr_index(core_rate);
 
-    /* Construct AudioSpecificConfig (base AAC-LC at core rate) */
-    uint8_t asc[64];
-    uint32_t asc_len = 0;
-    asc[0] = (uint8_t)((2 << 3) | ((sr_idx >> 1) & 0x7));
-    asc[1] = (uint8_t)(((sr_idx & 0x1) << 7) | ((num_channels & 0xF) << 3));
-    asc_len = 2;
+    /* AudioSpecificConfig: AAC-LC at the core rate, then for HE-AAC the backward-compatible
+     * extensions that tell a decoder SBR (and PS, with a mono core) are present. Without them
+     * a decoder reads a plain AAC-LC stream at the core rate. */
+    uint8_t asc[16] = {0};
+    uint32_t asc_pos = 0;
+#define ASC_BITS(v, n) do { for (int b_ = (n) - 1; b_ >= 0; b_--, asc_pos++) \
+        if (((v) >> b_) & 1) asc[asc_pos >> 3] |= (uint8_t)(0x80 >> (asc_pos & 7)); } while (0)
+    ASC_BITS(2, 5);                                  /* audioObjectType: AAC-LC */
+    ASC_BITS(sr_idx, 4);                             /* core sampling frequency index */
+    ASC_BITS(aot == 29 ? 1 : num_channels, 4);       /* PS codes a mono core */
+    ASC_BITS(0, 3);                                  /* frame length, core coder, extension flags */
+    if (aot == 5 || aot == 29) {
+        ASC_BITS(0x2b7, 11);                         /* syncExtensionType */
+        ASC_BITS(5, 5);                              /* extensionAudioObjectType: SBR */
+        ASC_BITS(1, 1);                              /* sbrPresentFlag */
+        ASC_BITS(get_sr_index(sample_rate), 4);      /* extensionSamplingFrequencyIndex */
+        if (aot == 29) {
+            ASC_BITS(0x548, 11);                     /* syncExtensionType */
+            ASC_BITS(1, 1);                          /* psPresentFlag */
+        }
+    }
+#undef ASC_BITS
+    uint32_t asc_len = (asc_pos + 7) / 8;
 
-    /* Priming / delay setup: libxaac introduces 1600 core samples for AAC-LC */
-    uint32_t encoder_delay = (aot == 5 || aot == 29) ? 4165 : 1600;
+    /* The container counts gapless samples at the core rate, which is half the output rate with SBR. */
+    const uint32_t unit = (aot == 5 || aot == 29) ? 2 : 1;
+
+    /* Priming in core-rate samples. libxaac has no call that reports it; its own constant
+     * for AAC-LC is CORE_DELAY (1600), and the SBR and PS values are measured on its output:
+     * what puts the first source sample first with FDK, Apple and FAAD3 at 32, 44.1 and
+     * 48 kHz. HE v1 sits at 1601.5, so it is off by one output sample. */
+    uint32_t encoder_delay = aot == 29 ? 2080 : aot == 5 ? 1602 : 1600;
 
     faam_gapless_info gapless;
     memset(&gapless, 0, sizeof(gapless));
     gapless.struct_size = sizeof(gapless);
     gapless.encoder_delay = encoder_delay;
-    gapless.total_samples = total_pcm_samples;
+    gapless.total_samples = total_pcm_samples / unit;
     gapless.end_padding = 0;
 
     faam_track_config track;
@@ -328,8 +382,8 @@ int main(int argc, char **argv) {
 
     if (total_pcm_samples > 0 && frames_written > 0) {
         uint64_t total_decoded_samples = (uint64_t)frames_written * 1024;
-        if (total_decoded_samples > total_pcm_samples + encoder_delay) {
-            gapless.end_padding = (uint32_t)(total_decoded_samples - (total_pcm_samples + encoder_delay));
+        if (total_decoded_samples > total_pcm_samples / unit + encoder_delay) {
+            gapless.end_padding = (uint32_t)(total_decoded_samples - (total_pcm_samples / unit + encoder_delay));
             faam_muxer_update_params params;
             memset(&params, 0, sizeof(params));
             params.struct_size = sizeof(params);

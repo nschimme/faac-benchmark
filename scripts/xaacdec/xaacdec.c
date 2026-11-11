@@ -80,26 +80,42 @@ static faam_io make_file_io(FILE *f) {
     return io;
 }
 
+static uint32_t le32(const uint8_t *p) {
+    return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 static void trim_and_save_wav(const uint8_t *raw_buf, size_t raw_sz, const char *final_wav,
-                              uint32_t delay_samples, uint32_t padding_samples) {
+                              uint32_t delay_samples, uint32_t padding_samples, uint64_t keep_hint) {
     FILE *out = fopen(final_wav, "wb");
     if (!out) return;
 
-    if (raw_sz < 44 || memcmp(raw_buf, "RIFF", 4) != 0) {
-        fwrite(raw_buf, 1, raw_sz, out);
-        fclose(out);
-        return;
+    /* Find the format and data chunks: more than two channels get a longer header. */
+    size_t data_off = 0;
+    uint32_t orig_bytes = 0;
+    uint16_t channels = 0, bits_per_sample = 0;
+    if (raw_sz >= 12 && memcmp(raw_buf, "RIFF", 4) == 0 && memcmp(raw_buf + 8, "WAVE", 4) == 0) {
+        size_t pos = 12;
+        while (pos + 8 <= raw_sz) {
+            uint32_t csz = le32(raw_buf + pos + 4);
+            if (memcmp(raw_buf + pos, "fmt ", 4) == 0 && pos + 24 <= raw_sz) {
+                channels = (uint16_t)(raw_buf[pos + 10] | (raw_buf[pos + 11] << 8));
+                bits_per_sample = (uint16_t)(raw_buf[pos + 22] | (raw_buf[pos + 23] << 8));
+            } else if (memcmp(raw_buf + pos, "data", 4) == 0) {
+                data_off = pos + 8;
+                orig_bytes = csz;
+                break;
+            }
+            pos += 8 + (((size_t)csz + 1) & ~(size_t)1);
+        }
     }
 
-    uint8_t hdr[44];
-    memcpy(hdr, raw_buf, 44);
+    /* libxaac sizes the chunks as if the header were 44 bytes, so with more channels the data
+     * chunk claims more than the file holds: trust the bytes that are there. */
+    if (data_off > 0 && data_off + orig_bytes > raw_sz)
+        orig_bytes = (uint32_t)(raw_sz - data_off);
 
-    uint16_t channels = hdr[22] | (hdr[23] << 8);
-    uint16_t bits_per_sample = hdr[34] | (hdr[35] << 8);
-    uint32_t orig_bytes = hdr[40] | (hdr[41] << 8) | (hdr[42] << 16) | (hdr[43] << 24);
     uint32_t bytes_per_sample = (bits_per_sample / 8) * channels;
-
-    if (bytes_per_sample == 0 || orig_bytes + 44 > raw_sz) {
+    if (data_off == 0 || bytes_per_sample == 0) {
         fwrite(raw_buf, 1, raw_sz, out);
         fclose(out);
         return;
@@ -113,24 +129,28 @@ static void trim_and_save_wav(const uint8_t *raw_buf, size_t raw_sz, const char 
     }
 
     uint32_t keep_samples = total_samples - delay_samples - padding_samples;
+    /* The container's unpadded length, when it has one, is exact; a short decode keeps what it has. */
+    if (keep_hint > 0 && keep_hint < (uint64_t)(total_samples - delay_samples))
+        keep_samples = (uint32_t)keep_hint;
     uint32_t keep_bytes = keep_samples * bytes_per_sample;
 
-    /* Update WAV header */
-    uint32_t riff_size = 36 + keep_bytes;
-    hdr[4] = (uint8_t)(riff_size & 0xFF);
-    hdr[5] = (uint8_t)((riff_size >> 8) & 0xFF);
-    hdr[6] = (uint8_t)((riff_size >> 16) & 0xFF);
-    hdr[7] = (uint8_t)((riff_size >> 24) & 0xFF);
-
-    hdr[40] = (uint8_t)(keep_bytes & 0xFF);
-    hdr[41] = (uint8_t)((keep_bytes >> 8) & 0xFF);
-    hdr[42] = (uint8_t)((keep_bytes >> 16) & 0xFF);
-    hdr[43] = (uint8_t)((keep_bytes >> 24) & 0xFF);
-
-    fwrite(hdr, 1, 44, out);
+    /* Keep the header as written and update the two sizes */
+    uint8_t *hdr = malloc(data_off);
+    if (!hdr) {
+        fclose(out);
+        return;
+    }
+    memcpy(hdr, raw_buf, data_off);
+    uint32_t riff_size = (uint32_t)(data_off - 8) + keep_bytes;
+    for (int k = 0; k < 4; k++) {
+        hdr[4 + k] = (uint8_t)(riff_size >> (8 * k));
+        hdr[data_off - 4 + k] = (uint8_t)(keep_bytes >> (8 * k));
+    }
+    fwrite(hdr, 1, data_off, out);
+    free(hdr);
 
     /* Write trimmed PCM samples */
-    const uint8_t *pcm_start = raw_buf + 44 + ((size_t)delay_samples * bytes_per_sample);
+    const uint8_t *pcm_start = raw_buf + data_off + ((size_t)delay_samples * bytes_per_sample);
     fwrite(pcm_start, 1, keep_bytes, out);
     fclose(out);
 }
@@ -174,6 +194,8 @@ int main(int argc, char **argv) {
     faam_gapless_info gapless;
     memset(&gapless, 0, sizeof(gapless));
     gapless.struct_size = sizeof(gapless);
+    uint32_t core_rate_hz = 0; /* the container's sample unit; the output is twice that for SBR */
+    bool sbr_signalled = false; /* the configuration says SBR (and PS) are present */
 
     char *adts_mem_buf = NULL;
     size_t adts_mem_sz = 0;
@@ -206,6 +228,7 @@ int main(int argc, char **argv) {
         memset(&tinfo, 0, sizeof(tinfo));
         tinfo.struct_size = sizeof(tinfo);
         faam_demuxer_get_track_info(demuxer, 0, &tinfo);
+        core_rate_hz = tinfo.sample_rate;
 
         /* Open in-memory buffer stream for demuxed ADTS */
         f_adts_mem = open_memstream(&adts_mem_buf, &adts_mem_sz);
@@ -227,6 +250,9 @@ int main(int argc, char **argv) {
             aot = (cdata[0] >> 3) & 0x1F;
             sr_idx = ((cdata[0] & 0x7) << 1) | ((cdata[1] >> 7) & 0x1);
             asc_channels = (cdata[1] >> 3) & 0xF;
+            /* Backward-compatible signalling follows the core config: sync extension 0x2b7 */
+            sbr_signalled = aot == 5 || aot == 29 ||
+                            (clen >= 4 && (((cdata[2] << 3) | (cdata[3] >> 5)) & 0x7ff) == 0x2b7);
         }
 
         if (sr_idx < 0 || sr_idx > 12) {
@@ -243,7 +269,24 @@ int main(int argc, char **argv) {
         uint8_t frame_buf[8192];
         uint32_t frame_len = 0;
 
-        while (faam_demuxer_read_frame(demuxer, frame_buf, sizeof(frame_buf), &frame_len) == FAAM_OK) {
+        uint8_t last_frame[8192];
+        uint32_t last_len = 0;
+        int flush_left = 0, flushed = 0;
+        for (;;) {
+            if (flush_left > 0) {
+                /* Replay the last frame: the decoder holds back its final delay, and the
+                 * output past the container's unpadded length is cut afterwards. */
+                memcpy(frame_buf, last_frame, last_len);
+                frame_len = last_len;
+                flush_left--;
+            } else if (faam_demuxer_read_frame(demuxer, frame_buf, sizeof(frame_buf), &frame_len) != FAAM_OK) {
+                if (!flushed && last_len > 0 && gapless.total_samples > 0) {
+                    flushed = 1;
+                    flush_left = 2;
+                    continue;
+                }
+                break;
+            }
             uint8_t adts[7];
             int aot = 2; /* AAC LC default */
             int profile = aot - 1;
@@ -269,6 +312,10 @@ int main(int argc, char **argv) {
 
             fwrite(adts, 1, 7, f_adts_mem);
             fwrite(frame_buf, 1, frame_len, f_adts_mem);
+            if (flush_left == 0 && frame_len > 0 && frame_len <= sizeof(last_frame)) {
+                memcpy(last_frame, frame_buf, frame_len);
+                last_len = frame_len;
+            }
         }
         fclose(f_adts_mem);
         faam_demuxer_close(&demuxer);
@@ -359,7 +406,19 @@ int main(int argc, char **argv) {
 
     /* Apply gapless trimming and write final output WAV directly */
     if (is_mp4 && (gapless.encoder_delay > 0 || gapless.end_padding > 0)) {
-        trim_and_save_wav((const uint8_t *)wav_mem_buf, wav_mem_sz, out_wav, gapless.encoder_delay, gapless.end_padding);
+        /* Gapless values count samples at the container's core rate; HE-AAC decodes to a multiple of it. */
+        uint32_t unit = 1;
+        if (core_rate_hz > 0 && wav_mem_sz >= 44) {
+            uint32_t out_rate = wav_mem_buf[24] | (wav_mem_buf[25] << 8) | (wav_mem_buf[26] << 16) | ((uint32_t)wav_mem_buf[27] << 24);
+            if (out_rate > core_rate_hz && out_rate % core_rate_hz == 0) unit = out_rate / core_rate_hz;
+        }
+        /* libxaac has no call that reports its output latency. Measured on faac, FDK and
+         * libxaac streams at 32, 44.1 and 48 kHz, mono and stereo, it places SBR output 962
+         * samples later than the reference decoders the container's priming assumes. */
+        const uint32_t sbr_extra = (unit > 1 || sbr_signalled) ? 962 : 0;
+        trim_and_save_wav((const uint8_t *)wav_mem_buf, wav_mem_sz, out_wav,
+                          gapless.encoder_delay * unit + sbr_extra, gapless.end_padding * unit,
+                          gapless.total_samples * unit);
     } else {
         FILE *fout = fopen(out_wav, "wb");
         if (fout && wav_mem_buf) {
