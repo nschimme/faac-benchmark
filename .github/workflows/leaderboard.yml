@@ -35,7 +35,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y faac fdkaac ffmpeg
+          sudo apt-get install -y faac fdkaac ffmpeg meson ninja-build cmake
 
       - name: Install Python dependencies
         run: |
@@ -48,6 +48,10 @@ jobs:
       - name: Build Helix AAC Decoder
         run: |
           ./scripts/build_helix_aac.sh
+
+      - name: Build Ittiam libxaac Encoder & Decoder
+        run: |
+          ./scripts/build_libxaac.sh
 
       - name: Run Codec Leaderboard
         run: |

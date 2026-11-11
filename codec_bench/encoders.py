@@ -273,6 +273,33 @@ class FalabaacEncoder(Encoder):
         return [self.binary_path, "-b", str(bitrate_kbps), "-o", output_path, input_path]
 
 
+class IttiamAACEncoder(Encoder):
+    def __init__(self, name, binary_path, tool_id="xaac_enc", profile="lc"):
+        super().__init__(name, binary_path, tool_id, profile, lib_name_substr="libxaacenc")
+        self.file_ext = ".m4a"
+
+    def supports_scenario(self, bitrate_kbps, channels, sample_rate):
+        if channels > 2:
+            return False, f"Ittiam AAC supports max 2 channels (got {channels})"
+        if self.profile == "usac" and bitrate_kbps not in (64, 96):
+            return False, f"Ittiam AAC USAC operating points restricted to 64 or 96 kbps (got {bitrate_kbps})"
+        return super().supports_scenario(bitrate_kbps, channels, sample_rate)
+
+    def get_encode_cmd(self, input_path, output_path, bitrate_kbps, channels, sample_rate):
+        bps = bitrate_kbps * 1000
+        aot = "2"
+        if self.profile == "he":
+            aot = "5"
+        elif self.profile == "hev2":
+            aot = "29"
+        elif self.profile in ("usac", "xhe"):
+            aot = "42"
+        cmd = [self.binary_path, f"-ifile:{input_path}", f"-ofile:{output_path}", f"-br:{bps}", f"-aot:{aot}"]
+        if self.profile != "usac":
+            cmd.append("-adts:1")
+        return cmd
+
+
 class AFConvertEncoder(Encoder):
     def __init__(self, name, binary_path, tool_id="afconvert", profile="lc"):
         super().__init__(name, binary_path, tool_id, profile, lib_name_substr="AudioToolbox", os_provided=True)
@@ -462,6 +489,21 @@ def get_encoder_instance(encoder_type="faac", binary_path=None, lib_override=Non
             ver = probe_version(f_bin, ["-h", "--help", "-v"], [r"falabaac\s+v?(\d+\.\d+(?:\.\d+)*)"])
         display_name = f"falabaac {ver}" if ver else "falabaac"
         return FalabaacEncoder(display_name, f_bin, "falabaac", profile)
+
+    elif encoder_type in ("xaac", "xaacenc", "libxaac", "ittiam", "ittiam_aac"):
+        x_bin = binary_path
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if not x_bin:
+            default_bin = os.path.join(script_root, "bin", "xaacenc")
+            if os.path.exists(default_bin):
+                x_bin = default_bin
+            else:
+                x_bin = shutil.which("xaacenc")
+        ver = version
+        if not ver and x_bin and os.path.exists(x_bin):
+            ver = probe_version(x_bin, ["-help", "-h", "-v"], [r"IXHEAACE\s*:\s*V?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"Ittiam AAC {ver}" if ver else "Ittiam AAC"
+        return IttiamAACEncoder(display_name, x_bin, "xaac_enc", profile)
 
     elif encoder_type in ("afconvert", "apple"):
         a_bin = binary_path or shutil.which("afconvert")
@@ -720,6 +762,30 @@ def detect_encoders(args):
                 enc = FFmpegEncoder(name, ffmpeg_bin, tool_id, p)
                 if probe_encoder_capability(enc):
                     encoders.append(enc)
+
+    xaac_enc_bins = flatten_arg_list(getattr(args, "xaac_enc_bin", None))
+    if not xaac_enc_bins:
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_bin = os.path.join(script_root, "bin", "xaacenc")
+        if os.path.exists(default_bin):
+            xaac_enc_bins = [default_bin]
+        else:
+            which_xaac = shutil.which("xaacenc")
+            if which_xaac:
+                xaac_enc_bins = [which_xaac]
+
+    for x_bin in xaac_enc_bins:
+        ver = probe_version(x_bin, ["-help", "-h", "-v"], [r"IXHEAACE\s*:\s*V?(\d+\.\d+(?:\.\d+)*)"])
+        name, tool_id = make_unique_name_and_id("Ittiam AAC", ver, "xaac_enc", existing_names, existing_ids)
+        for p in ["lc", "he", "hev2"]:
+            enc = IttiamAACEncoder(name, x_bin, tool_id, p)
+            if probe_encoder_capability(enc):
+                encoders.append(enc)
+
+        if getattr(args, "include_other_codecs", False):
+            enc_usac = IttiamAACEncoder(name, x_bin, tool_id, "usac")
+            if probe_encoder_capability(enc_usac, bitrate_kbps=64):
+                encoders.append(enc_usac)
 
     afconvert_bin = getattr(args, "afconvert_bin", None) or shutil.which("afconvert")
     if afconvert_bin and os.path.exists(afconvert_bin):

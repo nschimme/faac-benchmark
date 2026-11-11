@@ -174,6 +174,15 @@ class HelixAACDecoder(Decoder):
         return [self.binary_path, input_path, output_path]
 
 
+class IttiamAACDecoder(Decoder):
+    def __init__(self, name, binary_path, tool_id="xaac_dec"):
+        super().__init__(name, binary_path, tool_id, lib_name_substr="libxaacdec")
+        self.requires_adts = False
+
+    def get_decode_cmd(self, input_path, output_path):
+        return [self.binary_path, f"-ifile:{input_path}", f"-ofile:{output_path}"]
+
+
 class FDKDecoder(Decoder):
     """Wraps scripts/fdkdec (Homebrew libfdk-aac): decodes MP4/M4A via
     TT_MP4_RAW + FAAC's mp4read.c for gapless trim, or raw ADTS via
@@ -346,6 +355,30 @@ def get_decoder_instance(decoder_type="ffmpeg", binary_path=None, lib_override=N
         display_name = f"FDK AAC {ver}" if ver else "FDK AAC"
         return FDKDecoder(display_name, f_bin, "fdk_aac_dec")
 
+    elif decoder_type in ("xaac", "xaacdec", "libxaac", "ittiam", "ittiam_aac"):
+        x_bin = binary_path
+        if not x_bin:
+            script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            default_bin = os.path.join(script_root, "bin", "xaacdec")
+            if os.path.exists(default_bin):
+                x_bin = default_bin
+            else:
+                build_script = os.path.join(script_root, "scripts", "build_libxaac.sh")
+                if os.path.exists(build_script):
+                    try:
+                        res = safe_run([build_script], capture_output=True, check=False)
+                        if res.returncode == 0 and os.path.exists(default_bin):
+                            x_bin = default_bin
+                    except Exception:
+                        pass
+                if not x_bin:
+                    x_bin = shutil.which("xaacdec")
+        ver = version
+        if not ver and x_bin and os.path.exists(x_bin):
+            ver = probe_version(x_bin, ["-help", "-h", "-v"], [r"Rev:\s*(\d+\.\d+(?:\.\d+)*)", r"v?(\d+\.\d+(?:\.\d+)*)"])
+        display_name = f"Ittiam AAC {ver}" if ver else "Ittiam AAC"
+        return IttiamAACDecoder(display_name, x_bin, "xaac_dec")
+
     elif decoder_type in ("afconvert", "apple"):
         a_bin = binary_path or shutil.which("afconvert")
         ver = version
@@ -478,6 +511,37 @@ def detect_decoders(args):
     for f_bin in fdkdec_bins:
         if os.path.exists(f_bin):
             dec = get_decoder_instance("fdkdec", binary_path=f_bin)
+            name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
+                                                    dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
+                                                    dec.tool_id, existing_names, existing_ids)
+            dec.name = name
+            dec.tool_id = tool_id
+            if probe_decoder_capability(dec):
+                decoders.append(dec)
+
+    xaac_dec_bins = flatten_arg_list(getattr(args, "xaac_dec_bin", None))
+    if not xaac_dec_bins:
+        script_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_bin = os.path.join(script_root, "bin", "xaacdec")
+        if os.path.exists(default_bin):
+            xaac_dec_bins = [default_bin]
+        else:
+            build_script = os.path.join(script_root, "scripts", "build_libxaac.sh")
+            if os.path.exists(build_script):
+                try:
+                    res = safe_run([build_script], capture_output=True, check=False)
+                    if res.returncode == 0 and os.path.exists(default_bin):
+                        xaac_dec_bins = [default_bin]
+                except Exception:
+                    pass
+            if not xaac_dec_bins:
+                which_xaac = shutil.which("xaacdec")
+                if which_xaac:
+                    xaac_dec_bins = [which_xaac]
+
+    for x_bin in xaac_dec_bins:
+        if os.path.exists(x_bin):
+            dec = get_decoder_instance("xaac", binary_path=x_bin)
             name, tool_id = make_unique_name_and_id(dec.name.rsplit(" ", 1)[0] if " " in dec.name else dec.name,
                                                     dec.name.rsplit(" ", 1)[1] if " " in dec.name else None,
                                                     dec.tool_id, existing_names, existing_ids)
