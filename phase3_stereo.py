@@ -123,6 +123,11 @@ def read_audio_channels(path):
         return np.array([]).reshape(0, 1)
 
 
+def wav_sample_rate(path):
+    with wave.open(path, "rb") as w:
+        return w.getframerate()
+
+
 def read_stereo(path):
     a = read_audio_channels(path)
     if a.shape[1] >= 2:
@@ -173,6 +178,11 @@ def coherence_error(ref_path, deg_path):
 
     if len(r_data) == 0 or len(d_data) == 0:
         return None
+
+    # Frames are compared by index, so differing rates would score unrelated audio.
+    r_rate, d_rate = wav_sample_rate(ref_path), wav_sample_rate(deg_path)
+    if r_rate != d_rate:
+        raise ValueError(f"reference/decode sample-rate mismatch: {r_rate} vs {d_rate}")
 
     ch = r_data.shape[1]
     if ch < 2:
