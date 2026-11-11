@@ -48,6 +48,7 @@
  already produces, so it costs no extra decode.
 """
 
+import math
 import os
 import sys
 import json
@@ -60,7 +61,7 @@ import hashlib
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, resample_poly
 
 from config import SCENARIOS
 from utils import (get_aac_path, wav_conv, get_cached_ref_wav, scenario_channels, corpus_dir,
@@ -123,6 +124,11 @@ def read_audio_channels(path):
         return np.array([]).reshape(0, 1)
 
 
+def wav_sample_rate(path):
+    with wave.open(path, "rb") as w:
+        return w.getframerate()
+
+
 def read_stereo(path):
     a = read_audio_channels(path)
     if a.shape[1] >= 2:
@@ -173,6 +179,12 @@ def coherence_error(ref_path, deg_path):
 
     if len(r_data) == 0 or len(d_data) == 0:
         return None
+
+    # Frames are compared by index, so a decode at another rate goes onto the reference's grid.
+    r_rate, d_rate = wav_sample_rate(ref_path), wav_sample_rate(deg_path)
+    if r_rate != d_rate:
+        g = math.gcd(r_rate, d_rate)
+        d_data = resample_poly(d_data, r_rate // g, d_rate // g, axis=0)
 
     ch = r_data.shape[1]
     if ch < 2:
