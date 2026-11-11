@@ -65,20 +65,38 @@ XAAC_SRC="$BUILD_DIR/src"
 
 # Patch ixheaace_testbench.c to support WAV files with LIST/INFO metadata chunks
 if grep -q "count > 40" "$XAAC_SRC/test/encoder/ixheaace_testbench.c" 2>/dev/null; then
-    sed -i 's/count > 40/count > 65536/g' "$XAAC_SRC/test/encoder/ixheaace_testbench.c"
+    sed -i.bak 's/count > 40/count > 65536/g' "$XAAC_SRC/test/encoder/ixheaace_testbench.c"
+    rm -f "$XAAC_SRC/test/encoder/ixheaace_testbench.c.bak"
+fi
+
+# Clang on Apple Silicon defines __ARM_NEON__, which compiles out libxaac's
+# generic C fallback, while its CMake picks the AArch64 assembly only for a
+# "aarch64" processor and macOS reports "arm64". Build the generic C code there.
+# The frontends below are built from libxaac's own test sources, which behave
+# differently without the definitions its CMake gives them (test/decoder/xaacdec.cmake
+# and test/encoder/xaacenc.cmake): HE-AAC output came out 2048 samples late.
+DEC_DEFS=(-UARM_PROFILE_HW -UARM_PROFILE_BOARD -DDRC_ENABLE -DMULTICHANNEL_ENABLE
+          -DECLIPSE -DWIN32 -DLOUDNESS_LEVELING_SUPPORT)
+ENC_DEFS=(-D_X86_ -DLOUDNESS_LEVELING_SUPPORT)
+CMAKE_ARGS=()
+NEON_UNDEFS=()
+if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    NEON_UNDEFS=(-U__ARM_NEON__ -U__ARM_NEON)
+    CMAKE_ARGS+=(-DCMAKE_C_FLAGS="${CFLAGS:-} ${NEON_UNDEFS[*]}"
+                 -DCMAKE_CXX_FLAGS="${CXXFLAGS:-} ${NEON_UNDEFS[*]}")
 fi
 
 echo "==> Building libxaac static libraries with CMake..." >&2
 mkdir -p "$BUILD_DIR/build"
 (
     cd "$BUILD_DIR/build"
-    cmake "$XAAC_SRC" >&2
+    cmake "$XAAC_SRC" ${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"} >&2
     make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" libxaacenc libxaacdec >&2
 )
 
 # Compile testbench support objects with renamed main to avoid symbol collisions
 echo "==> Compiling in-process frontends linked with libxaac and libfaam..." >&2
-gcc -O3 -c \
+gcc -O3 ${ENC_DEFS[@]} ${NEON_UNDEFS[@]+"${NEON_UNDEFS[@]}"} -c \
     -I"$XAAC_SRC/encoder" \
     -I"$XAAC_SRC/encoder/drc_src" \
     -I"$XAAC_SRC/common" \
@@ -87,7 +105,7 @@ gcc -O3 -c \
     "$XAAC_SRC/test/encoder/ixheaace_testbench.c" \
     -o "$BUILD_DIR/build/ixheaace_testbench.o"
 
-gcc -O3 \
+gcc -O3 ${ENC_DEFS[@]} ${NEON_UNDEFS[@]+"${NEON_UNDEFS[@]}"} \
     -I"$XAAC_SRC/encoder" \
     -I"$XAAC_SRC/encoder/drc_src" \
     -I"$XAAC_SRC/common" \
@@ -102,7 +120,7 @@ gcc -O3 \
     -lm -lpthread \
     -o "$BIN_DIR/xaacenc"
 
-gcc -O3 -c \
+gcc -O3 ${DEC_DEFS[@]} ${NEON_UNDEFS[@]+"${NEON_UNDEFS[@]}"} -c \
     -I"$XAAC_SRC/decoder" \
     -I"$XAAC_SRC/decoder/drc_src" \
     -I"$XAAC_SRC/common" \
@@ -111,7 +129,7 @@ gcc -O3 -c \
     "$XAAC_SRC/test/decoder/ixheaacd_main.c" \
     -o "$BUILD_DIR/build/ixheaacd_main.o"
 
-gcc -O3 \
+gcc -O3 ${DEC_DEFS[@]} ${NEON_UNDEFS[@]+"${NEON_UNDEFS[@]}"} \
     -I"$XAAC_SRC/decoder" \
     -I"$XAAC_SRC/decoder/drc_src" \
     -I"$XAAC_SRC/common" \
