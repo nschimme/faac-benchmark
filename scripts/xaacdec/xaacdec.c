@@ -216,16 +216,32 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+        /* Read track's AudioSpecificConfig (codec_data) to determine the exact core rate & profile */
+        uint8_t cdata[64];
+        uint32_t clen = 0;
+        int aot = 2;
+        int sr_idx = -1;
+        int asc_channels = -1;
+
+        if (faam_demuxer_get_codec_data(demuxer, 1, cdata, sizeof(cdata), &clen) == FAAM_OK && clen >= 2) {
+            aot = (cdata[0] >> 3) & 0x1F;
+            sr_idx = ((cdata[0] & 0x7) << 1) | ((cdata[1] >> 7) & 0x1);
+            asc_channels = (cdata[1] >> 3) & 0xF;
+        }
+
+        if (sr_idx < 0 || sr_idx > 12) {
+            static const uint32_t srs[] = {
+                96000, 88200, 64000, 48000, 44100, 32000,
+                24000, 22050, 16000, 12000, 11025, 8000, 7350
+            };
+            sr_idx = 4;
+            for (int i = 0; i < 13; i++) {
+                if (srs[i] == tinfo.sample_rate) { sr_idx = i; break; }
+            }
+        }
+
         uint8_t frame_buf[8192];
         uint32_t frame_len = 0;
-        static const uint32_t srs[] = {
-            96000, 88200, 64000, 48000, 44100, 32000,
-            24000, 22050, 16000, 12000, 11025, 8000, 7350
-        };
-        int sr_idx = 4;
-        for (int i = 0; i < 13; i++) {
-            if (srs[i] == tinfo.sample_rate) { sr_idx = i; break; }
-        }
 
         while (faam_demuxer_read_frame(demuxer, frame_buf, sizeof(frame_buf), &frame_len) == FAAM_OK) {
             uint8_t adts[7];
@@ -233,10 +249,20 @@ int main(int argc, char **argv) {
             int profile = aot - 1;
             int frame_length = frame_len + 7;
 
+            /* In AAC elementary bitstreams, determine core channels from the first syntax element:
+             * Element ID 0 = ID_SCE (Single Channel Element / Mono / HE-v2 Parametric Stereo) -> 1 ch
+             * Element ID 1 = ID_CPE (Channel Pair Element / Stereo) -> 2 ch */
+            int ch = tinfo.channels;
+            if (frame_len > 0) {
+                int elem_id = (frame_buf[0] >> 5) & 7;
+                if (elem_id == 0) ch = 1;
+                else if (elem_id == 1) ch = 2;
+            }
+
             adts[0] = 0xFF;
             adts[1] = 0xF1;
-            adts[2] = (uint8_t)((profile << 6) | ((sr_idx & 0xF) << 2) | ((tinfo.channels >> 2) & 0x1));
-            adts[3] = (uint8_t)(((tinfo.channels & 0x3) << 6) | ((frame_length >> 11) & 0x3));
+            adts[2] = (uint8_t)((profile << 6) | ((sr_idx & 0xF) << 2) | ((ch >> 2) & 0x1));
+            adts[3] = (uint8_t)(((ch & 0x3) << 6) | ((frame_length >> 11) & 0x3));
             adts[4] = (uint8_t)((frame_length >> 3) & 0xFF);
             adts[5] = (uint8_t)(((frame_length & 0x7) << 5) | 0x1F);
             adts[6] = 0xFC;
